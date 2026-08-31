@@ -1,0 +1,80 @@
+{
+  "name": "pi-desktop",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Portable Codex-style desktop client for Pi",
+  "type": "module",
+  "main": "dist-electron/electron/main.js",
+  "scripts": {
+    "dev": "concurrently -k -n renderer,electron -c cyan,magenta \"vite\" \"wait-on http://127.0.0.1:5173 && cross-env VITE_DEV_SERVER_URL=http://127.0.0.1:5173 npm run electron:build && electron .\"",
+    "electron:build": "tsc -p tsconfig.electron.json",
+    "build": "tsc -p tsconfig.json --noEmit && vite build && npm run electron:build",
+    "start": "electron .",
+    "pack": "npm run build && electron-builder --win dir",
+    "portable": "npm run build && electron-builder --win portable"
+  },
+  "dependencies": {
+    "@earendil-works/pi-coding-agent": "0.84.2",
+    "diff": "8.0.4",
+    "lucide-react": "1.38.0",
+    "pi-lens": "4.0.0",
+    "pi-llama-cpp-stats": "0.1.6",
+    "pi-loop-police": "1.14.1",
+    "pi-mcp-adapter": "2.26.0",
+    "pi-token-speed": "0.7.1",
+    "pi-tool-repair": "0.2.1",
+    "pi-web-access": "0.23.0",
+    "react": "19.2.8",
+    "react-dom": "19.2.8",
+    "react-markdown": "10.1.0",
+    "remark-gfm": "4.0.1"
+  },
+  "devDependencies": {
+    "@types/node": "24.10.1",
+    "@types/react": "19.2.14",
+    "@types/react-dom": "19.2.3",
+    "@vitejs/plugin-react": "6.1.1",
+    "concurrently": "9.2.1",
+    "cross-env": "10.1.0",
+    "electron": "44.1.0",
+    "electron-builder": "26.15.3",
+    "typescript": "7.0.2",
+    "vite": "8.2.2",
+    "wait-on": "9.0.4"
+  },
+  "build": {
+    "appId": "local.pi.desktop",
+    "productName": "Pi Desktop",
+    "asar": false,
+    "directories": {
+      "output": "release"
+    },
+    "files": [
+      "dist/**/*",
+      "dist-electron/**/*",
+      "resources/**/*",
+      "node_modules/**/*",
+      "package.json"
+    ],
+    "extraFiles": [
+      {
+        "from": "README.md",
+        "to": "README.md"
+      }
+    ],
+    "win": {
+      "target": [
+        {
+          "target": "portable",
+          "arch": [
+            "x64"
+          ]
+        }
+      ],
+      "artifactName": "Pi-Desktop-${version}-portable.${ext}"
+    },
+    "portable": {
+      "artifactName": "Pi-Desktop-${version}-portable.${ext}"
+    }
+  }
+}

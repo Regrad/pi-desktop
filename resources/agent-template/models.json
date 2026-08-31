@@ -1,0 +1,81 @@
+{
+  "providers": {
+    "llama-cpp": {
+      "baseUrl": "http://192.168.31.194:1234/v1",
+      "api": "openai-completions",
+      "apiKey": "llama-cpp-local",
+      "compat": {
+        "supportsDeveloperRole": false,
+        "supportsReasoningEffort": false,
+        "supportsUsageInStreaming": true,
+        "maxTokensField": "max_tokens"
+      },
+      "models": [
+        {
+          "id": "laguna-s21-chadrock-rocmfp4-v4",
+          "name": "Laguna S 2.1 Chadrock ROCmFP4 V4 (llama.cpp LAN)",
+          "reasoning": true,
+          "input": ["text"],
+          "contextWindow": 262144,
+          "maxTokens": 262144,
+          "compat": {
+            "thinkingFormat": "chat-template",
+            "chatTemplateKwargs": {
+              "enable_thinking": { "$var": "thinking.enabled" }
+            }
+          }
+        },
+        {
+          "id": "qwen3.8-27b-q8_0-xhigh",
+          "name": "Qwen3.8 27B Q8_0 (llama.cpp LAN)",
+          "reasoning": true,
+          "thinkingLevelMap": {
+            "off": "none",
+            "minimal": null,
+            "low": "low",
+            "medium": "medium",
+            "high": null,
+            "xhigh": "xhigh",
+            "max": null
+          },
+          "input": ["text", "image"],
+          "contextWindow": 262144,
+          "maxTokens": 262144,
+          "compat": {
+            "thinkingFormat": "chat-template",
+            "chatTemplateKwargs": {
+              "enable_thinking": { "$var": "thinking.enabled" },
+              "preserve_thinking": true,
+              "reasoning_effort": { "$var": "thinking.effort" }
+            }
+          }
+        },
+        {
+          "id": "qwen3.8-flash-next-ud-q4-k-xl",
+          "name": "Qwen3.8 Flash Next UD-Q4_K_XL (llama.cpp LAN)",
+          "reasoning": true,
+          "thinkingLevelMap": {
+            "off": "none",
+            "minimal": null,
+            "low": "low",
+            "medium": "medium",
+            "high": null,
+            "xhigh": "xhigh",
+            "max": null
+          },
+          "input": ["text", "image"],
+          "contextWindow": 262144,
+          "maxTokens": 262144,
+          "compat": {
+            "thinkingFormat": "chat-template",
+            "chatTemplateKwargs": {
+              "enable_thinking": { "$var": "thinking.enabled" },
+              "preserve_thinking": true,
+              "reasoning_effort": { "$var": "thinking.effort" }
+            }
+          }
+        }
+      ]
+    }
+  }
+}
