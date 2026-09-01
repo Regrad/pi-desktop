@@ -32,7 +32,8 @@ import {
   X,
   Zap,
 } from "lucide-react";
-import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { Fragment, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import type { ReactNode, RefObject } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import type { Plugin } from "unified";
@@ -190,6 +191,187 @@ interface MarkdownTreeNode {
     start?: { offset?: number };
     end?: { offset?: number };
   };
+}
+
+interface VirtualFilmLayout {
+  resetKey: string;
+  keys: string[];
+  heights: number[];
+  offsets: number[];
+  totalHeight: number;
+}
+
+function VirtualFilm<T>({
+  items,
+  itemKey,
+  renderItem,
+  resetKey,
+  scrollRef,
+}: {
+  items: T[];
+  itemKey: (item: T, index: number) => string;
+  renderItem: (item: T, index: number) => ReactNode;
+  resetKey: string;
+  scrollRef: RefObject<HTMLDivElement | null>;
+}) {
+  const filmRef = useRef<HTMLDivElement>(null);
+  const layoutRef = useRef<VirtualFilmLayout>({ resetKey: "", keys: [], heights: [], offsets: [], totalHeight: 0 });
+  const [calibrating, setCalibrating] = useState(true);
+  const [layoutRevision, setLayoutRevision] = useState(0);
+  const [range, setRange] = useState({ start: 0, end: items.length });
+
+  if (layoutRef.current.resetKey !== resetKey) {
+    layoutRef.current = { resetKey, keys: [], heights: [], offsets: [], totalHeight: 0 };
+  }
+
+  useLayoutEffect(() => {
+    layoutRef.current = { resetKey, keys: [], heights: [], offsets: [], totalHeight: 0 };
+    setCalibrating(true);
+    setRange({ start: 0, end: items.length });
+  }, [resetKey]);
+
+  useLayoutEffect(() => {
+    if (!calibrating) return;
+    const film = filmRef.current;
+    if (!film) return;
+    const rows = [...film.querySelectorAll<HTMLElement>("[data-virtual-film-row]")];
+    const keys = items.map(itemKey);
+    const heights = rows.map((row) => row.getBoundingClientRect().height);
+    const offsets: number[] = [];
+    let totalHeight = 0;
+    heights.forEach((height) => {
+      offsets.push(totalHeight);
+      totalHeight += height;
+    });
+    layoutRef.current = { resetKey, keys, heights, offsets, totalHeight };
+    setCalibrating(false);
+    setLayoutRevision((value) => value + 1);
+  }, [calibrating, items, itemKey, resetKey]);
+
+  const layout = layoutRef.current;
+  if (!calibrating && layout.resetKey === resetKey) {
+    const previousCount = layout.keys.length;
+    if (items.length > previousCount && (previousCount === 0 || itemKey(items[previousCount - 1], previousCount - 1) === layout.keys[previousCount - 1])) {
+      for (let index = previousCount; index < items.length; index += 1) {
+        layout.keys.push(itemKey(items[index], index));
+        layout.offsets.push(layout.totalHeight);
+        layout.heights.push(120);
+        layout.totalHeight += 120;
+      }
+    } else if (items.length !== previousCount || (items.length > 0 && itemKey(items[items.length - 1], items.length - 1) !== layout.keys[items.length - 1])) {
+      layout.keys = items.map(itemKey);
+      layout.heights = items.map((_, index) => layout.heights[index] ?? 120);
+      layout.offsets = [];
+      layout.totalHeight = 0;
+      layout.heights.forEach((height) => {
+        layout.offsets.push(layout.totalHeight);
+        layout.totalHeight += height;
+      });
+    }
+  }
+
+  const updateRange = useCallback(() => {
+    if (calibrating) return;
+    const scroll = scrollRef.current;
+    const film = filmRef.current;
+    if (!scroll || !film || items.length === 0) return;
+    const overscan = Math.max(700, scroll.clientHeight);
+    const viewportTop = Math.max(0, scroll.scrollTop - film.offsetTop - overscan);
+    const viewportBottom = scroll.scrollTop - film.offsetTop + scroll.clientHeight + overscan;
+    const current = layoutRef.current;
+    let low = 0;
+    let high = current.offsets.length;
+    while (low < high) {
+      const middle = (low + high) >> 1;
+      if (current.offsets[middle] + current.heights[middle] < viewportTop) low = middle + 1;
+      else high = middle;
+    }
+    const start = low;
+    low = start;
+    high = current.offsets.length;
+    while (low < high) {
+      const middle = (low + high) >> 1;
+      if (current.offsets[middle] <= viewportBottom) low = middle + 1;
+      else high = middle;
+    }
+    const end = Math.max(start, low);
+    setRange((value) => value.start === start && value.end === end ? value : { start, end });
+  }, [calibrating, items.length, scrollRef]);
+
+  useLayoutEffect(() => {
+    if (calibrating) return;
+    updateRange();
+    const scroll = scrollRef.current;
+    if (!scroll) return;
+    let frame = 0;
+    let measuredWidth = scroll.clientWidth;
+    const schedule = () => {
+      cancelAnimationFrame(frame);
+      frame = requestAnimationFrame(updateRange);
+    };
+    scroll.addEventListener("scroll", schedule, { passive: true });
+    const observer = new ResizeObserver(() => {
+      if (Math.abs(scroll.clientWidth - measuredWidth) > 1) {
+        measuredWidth = scroll.clientWidth;
+        setCalibrating(true);
+        return;
+      }
+      schedule();
+    });
+    observer.observe(scroll);
+    return () => {
+      cancelAnimationFrame(frame);
+      scroll.removeEventListener("scroll", schedule);
+      observer.disconnect();
+    };
+  }, [calibrating, layoutRevision, scrollRef, updateRange]);
+
+  useLayoutEffect(() => {
+    if (calibrating) return;
+    const film = filmRef.current;
+    if (!film) return;
+    const observer = new ResizeObserver((entries) => {
+      let changed = false;
+      for (const entry of entries) {
+        const row = entry.target as HTMLElement;
+        const index = Number(row.dataset.virtualIndex);
+        const nextHeight = entry.borderBoxSize?.[0]?.blockSize ?? row.getBoundingClientRect().height;
+        const current = layoutRef.current;
+        if (!Number.isInteger(index) || index < 0 || Math.abs((current.heights[index] ?? 0) - nextHeight) < 0.5) continue;
+        const difference = nextHeight - current.heights[index];
+        current.heights[index] = nextHeight;
+        current.totalHeight += difference;
+        for (let next = index + 1; next < current.offsets.length; next += 1) current.offsets[next] += difference;
+        changed = true;
+      }
+      if (changed) setLayoutRevision((value) => value + 1);
+    });
+    film.querySelectorAll<HTMLElement>("[data-virtual-index]").forEach((row) => observer.observe(row));
+    return () => observer.disconnect();
+  }, [calibrating, range.start, range.end]);
+
+  if (calibrating) {
+    return (
+      <div className="virtual-film-calibration" ref={filmRef}>
+        {items.map((item, index) => <div data-virtual-film-row key={itemKey(item, index)}>{renderItem(item, index)}</div>)}
+      </div>
+    );
+  }
+
+  const visible: ReactNode[] = [];
+  for (let index = range.start; index < Math.min(range.end, items.length); index += 1) {
+    visible.push(
+      <div
+        className="virtual-film-frame"
+        data-virtual-index={index}
+        key={itemKey(items[index], index)}
+        style={{ transform: `translateY(${layout.offsets[index] ?? 0}px)` }}
+      >
+        {renderItem(items[index], index)}
+      </div>,
+    );
+  }
+  return <div className="virtual-film" ref={filmRef} style={{ height: `${layout.totalHeight}px` }}>{visible}</div>;
 }
 
 function createRevealTailPlugin(revealFrom: number): Plugin {
@@ -2429,52 +2611,73 @@ export default function App() {
       addNotice(error instanceof Error ? error.message : String(error), "error");
     }
   };
-  const renderedMessages = streamingMessage ? [...messages, streamingMessage] : messages;
-  const visibleExtensionEntries = (snapshot?.entries ?? []).filter((entry) => entry.renderedLines?.length);
-  const compactionEntries = (snapshot?.entries ?? []).filter((entry) => entry.type === "compaction");
-  const transcriptItems: TranscriptTimelineItem[] = [
-    ...renderedMessages.map((message, sourceIndex): TranscriptTimelineItem => ({
+  const historicalTranscriptItems = useMemo(() => {
+    const visibleExtensionEntries = (snapshot?.entries ?? []).filter((entry) => entry.renderedLines?.length);
+    const compactionEntries = (snapshot?.entries ?? []).filter((entry) => entry.type === "compaction");
+    return [
+      ...messages.map((message, sourceIndex): TranscriptTimelineItem => ({
+        kind: "message",
+        message,
+        sourceIndex,
+        timestamp: transcriptTimestamp(message.timestamp, Number.MAX_SAFE_INTEGER - 100_000 + sourceIndex),
+        order: sourceIndex * 2,
+      })),
+      ...visibleExtensionEntries.map((entry, sourceIndex): TranscriptTimelineItem => ({
+        kind: "extension",
+        entry,
+        sourceIndex,
+        timestamp: transcriptTimestamp(entry.timestamp, Number.MAX_SAFE_INTEGER - 50_000 + sourceIndex),
+        order: sourceIndex * 2 + 1,
+      })),
+      ...compactionEntries.map((entry, sourceIndex): TranscriptTimelineItem => ({
+        kind: "compaction",
+        entry,
+        record: snapshot?.compactions.find((record) => record.entryId === entry.id),
+        sourceIndex,
+        timestamp: transcriptTimestamp(entry.timestamp, Number.MAX_SAFE_INTEGER - 25_000 + sourceIndex),
+        order: sourceIndex * 2 + 2,
+      })),
+    ].sort((left, right) => left.timestamp - right.timestamp || left.order - right.order);
+  }, [messages, snapshot?.entries, snapshot?.compactions]);
+  const transcriptItems: TranscriptTimelineItem[] = streamingMessage ? [
+    ...historicalTranscriptItems,
+    {
       kind: "message",
-      message,
-      sourceIndex,
-      timestamp: transcriptTimestamp(message.timestamp, Number.MAX_SAFE_INTEGER - 100_000 + sourceIndex),
-      order: sourceIndex * 2,
-    })),
-    ...visibleExtensionEntries.map((entry, sourceIndex): TranscriptTimelineItem => ({
-      kind: "extension",
-      entry,
-      sourceIndex,
-      timestamp: transcriptTimestamp(entry.timestamp, Number.MAX_SAFE_INTEGER - 50_000 + sourceIndex),
-      order: sourceIndex * 2 + 1,
-    })),
-    ...compactionEntries.map((entry, sourceIndex): TranscriptTimelineItem => ({
-      kind: "compaction",
-      entry,
-      record: snapshot?.compactions.find((record) => record.entryId === entry.id),
-      sourceIndex,
-      timestamp: transcriptTimestamp(entry.timestamp, Number.MAX_SAFE_INTEGER - 25_000 + sourceIndex),
-      order: sourceIndex * 2 + 2,
-    })),
-  ].sort((left, right) => left.timestamp - right.timestamp || left.order - right.order);
+      message: streamingMessage,
+      sourceIndex: messages.length,
+      timestamp: Number.MAX_SAFE_INTEGER,
+      order: Number.MAX_SAFE_INTEGER,
+    },
+  ] : historicalTranscriptItems;
   const slashQuery = input.startsWith("/") && !input.includes(" ") ? input.slice(1).toLocaleLowerCase() : undefined;
   const slashCommands = slashQuery === undefined ? [] : (snapshot?.commands ?? [])
     .filter((command) => command.name.toLocaleLowerCase().includes(slashQuery))
     .slice(0, 10);
-  const toolResultsById = new Map<string, JsonObject>();
-  const transcriptToolIds = new Set<string>();
-  renderedMessages.forEach((message, messageIndex) => {
-    if (message.role === "toolResult" || message.role === "tool") {
-      const id = toolResultIdentifier(message);
-      if (id) toolResultsById.set(id, message);
-    }
-    toolCallParts(message).forEach((call, callIndex) => {
-      transcriptToolIds.add(toolCallIdentifier(call, `message-${messageIndex}-tool-${callIndex}`));
+  const historicalToolIndex = useMemo(() => {
+    const results = new Map<string, JsonObject>();
+    const calls = new Set<string>();
+    messages.forEach((message, messageIndex) => {
+      if (message.role === "toolResult" || message.role === "tool") {
+        const id = toolResultIdentifier(message);
+        if (id) results.set(id, message);
+      }
+      toolCallParts(message).forEach((call, callIndex) => {
+        calls.add(toolCallIdentifier(call, `message-${messageIndex}-tool-${callIndex}`));
+      });
     });
-  });
+    return { results, calls };
+  }, [messages]);
+  const streamingToolIds = new Set<string>();
+  if (streamingMessage) {
+    toolCallParts(streamingMessage).forEach((call, callIndex) => {
+      streamingToolIds.add(toolCallIdentifier(call, `message-${messages.length}-tool-${callIndex}`));
+    });
+  }
+  const hasTranscriptTool = (id: string): boolean => historicalToolIndex.calls.has(id) || streamingToolIds.has(id);
   const buildToolActivity = (call: JsonObject, fallbackId: string): ToolActivity => {
     const id = toolCallIdentifier(call, fallbackId);
     const live = tools[id];
-    const persisted = toolResultsById.get(id);
+    const persisted = historicalToolIndex.results.get(id);
     return {
       id,
       name: String(call.name && call.name !== "Инструмент" ? call.name : live?.name ?? persisted?.toolName ?? "Инструмент"),
@@ -2487,7 +2690,7 @@ export default function App() {
       startedAt: live?.startedAt ?? 0,
     };
   };
-  const orphanTools = Object.values(tools).filter((tool) => !transcriptToolIds.has(tool.id));
+  const orphanTools = Object.values(tools).filter((tool) => !hasTranscriptTool(tool.id));
   const runningTool = Object.values(tools).find((tool) => tool.running);
   const streamingParts = Array.isArray(streamingMessage?.content) ? streamingMessage.content as JsonObject[] : [];
   const hasStreamingAnswer = streamingParts.some((part) => part.type === "text" && String(part.text ?? "").trim());
@@ -2499,8 +2702,65 @@ export default function App() {
       : hasStreamingAnswer
         ? "Модель формирует ответ…"
         : hasStreamingThinking
-          ? hiddenThinkingLabel || "Модель размышляет…"
-          : "Модель работает…";
+        ? hiddenThinkingLabel || "Модель размышляет…"
+        : "Модель работает…";
+  const transcriptItemKey = (item: TranscriptTimelineItem, index: number): string => {
+    if (item.kind === "message") return messageKey(item.message, item.sourceIndex);
+    return String(item.entry.id ?? `${item.kind}-${item.sourceIndex}-${index}`);
+  };
+  const renderTranscriptItem = (item: TranscriptTimelineItem): ReactNode => {
+    if (item.kind === "compaction") {
+      const tokensBefore = item.record?.tokensBefore ?? Number(item.entry.tokensBefore);
+      const tokensAfter = item.record?.tokensAfter ?? Number(item.entry.estimatedTokensAfter);
+      return (
+        <div className="compaction-entry">
+          <Check size={14} />
+          <span>Контекст сжат: <strong>{formatCompactTokens(tokensBefore)}</strong> → <strong>{formatCompactTokens(tokensAfter)}</strong>{item.record?.durationMs !== undefined ? ` за ${formatElapsed(item.record.durationMs)}` : ""}</span>
+        </div>
+      );
+    }
+    if (item.kind === "extension") {
+      return (
+        <div className="extension-entry">
+          {item.entry.renderedLines!.map((line, lineIndex) => {
+            const cleanLine = stripTerminalCodes(line);
+            return <div key={`${lineIndex}-${cleanLine}`}>{cleanLine}</div>;
+          })}
+        </div>
+      );
+    }
+    const { message, sourceIndex: index } = item;
+    if (message.role === "toolResult" || message.role === "tool") {
+      const id = toolResultIdentifier(message);
+      if (id && hasTranscriptTool(id)) return null;
+      return <ToolCard tool={{
+        id: id ?? messageKey(message, index),
+        name: String(message.toolName ?? message.name ?? "Инструмент"),
+        result: resultMessagePayload(message),
+        running: false,
+        error: Boolean(message.isError),
+        startedAt: 0,
+      }} />;
+    }
+    const visibleMessage = messageWithoutToolCalls(message);
+    const calls = toolCallParts(message);
+    const isStreamingMessage = message === streamingMessage;
+    return (
+      <>
+        {visibleMessage && <article className={`message ${message.role ?? "assistant"}`}>
+          {message.role === "user" ? (
+            <div className="user-bubble"><MessageContent message={visibleMessage} /></div>
+          ) : (
+            <div className="assistant-message"><MessageContent message={visibleMessage} assistant streaming={isStreamingMessage} /></div>
+          )}
+        </article>}
+        {calls.map((call, callIndex) => <ToolCard
+          key={toolCallIdentifier(call, `${messageKey(message, index)}-${callIndex}`)}
+          tool={buildToolActivity(call, `${messageKey(message, index)}-${callIndex}`)}
+        />)}
+      </>
+    );
+  };
 
   return (
     <div className="app-shell">
@@ -2613,60 +2873,13 @@ export default function App() {
             ) : (
               <div className="thread" ref={conversationThreadRef}>
                 {headerLines.length > 0 && <div className="extension-frame header-frame">{headerLines.map((line, index) => <div key={`${index}-${line}`}>{line}</div>)}</div>}
-                {transcriptItems.map((item) => {
-                  if (item.kind === "compaction") {
-                    const tokensBefore = item.record?.tokensBefore ?? Number(item.entry.tokensBefore);
-                    const tokensAfter = item.record?.tokensAfter ?? Number(item.entry.estimatedTokensAfter);
-                    return (
-                      <div className="compaction-entry" key={item.entry.id ?? `compaction-${item.sourceIndex}`}>
-                        <Check size={14} />
-                        <span>Контекст сжат: <strong>{formatCompactTokens(tokensBefore)}</strong> → <strong>{formatCompactTokens(tokensAfter)}</strong>{item.record?.durationMs !== undefined ? ` за ${formatElapsed(item.record.durationMs)}` : ""}</span>
-                      </div>
-                    );
-                  }
-                  if (item.kind === "extension") {
-                    const { entry, sourceIndex } = item;
-                    return (
-                      <div className="extension-entry" key={entry.id ?? `${entry.type}-${sourceIndex}`}>
-                        {entry.renderedLines!.map((line, lineIndex) => {
-                          const cleanLine = stripTerminalCodes(line);
-                          return <div key={`${lineIndex}-${cleanLine}`}>{cleanLine}</div>;
-                        })}
-                      </div>
-                    );
-                  }
-                  const { message, sourceIndex: index } = item;
-                  if (message.role === "toolResult" || message.role === "tool") {
-                    const id = toolResultIdentifier(message);
-                    if (id && transcriptToolIds.has(id)) return null;
-                    return <ToolCard key={messageKey(message, index)} tool={{
-                      id: id ?? messageKey(message, index),
-                      name: String(message.toolName ?? message.name ?? "Инструмент"),
-                      result: resultMessagePayload(message),
-                      running: false,
-                      error: Boolean(message.isError),
-                      startedAt: 0,
-                    }} />;
-                  }
-                  const visibleMessage = messageWithoutToolCalls(message);
-                  const calls = toolCallParts(message);
-                  const isStreamingMessage = message === streamingMessage;
-                  return (
-                    <Fragment key={messageKey(message, index)}>
-                      {visibleMessage && <article className={`message ${message.role ?? "assistant"}`}>
-                        {message.role === "user" ? (
-                          <div className="user-bubble"><MessageContent message={visibleMessage} /></div>
-                        ) : (
-                          <div className="assistant-message"><MessageContent message={visibleMessage} assistant streaming={isStreamingMessage} /></div>
-                        )}
-                      </article>}
-                      {calls.map((call, callIndex) => <ToolCard
-                        key={toolCallIdentifier(call, `${messageKey(message, index)}-${callIndex}`)}
-                        tool={buildToolActivity(call, `${messageKey(message, index)}-${callIndex}`)}
-                      />)}
-                    </Fragment>
-                  );
-                })}
+                <VirtualFilm
+                  items={transcriptItems}
+                  itemKey={transcriptItemKey}
+                  renderItem={renderTranscriptItem}
+                  resetKey={activeConversationId}
+                  scrollRef={conversationScrollRef}
+                />
                 {orphanTools.map((tool) => <ToolCard key={tool.id} tool={tool} />)}
                 {footerLines.length > 0 && <div className="extension-frame footer-frame">{footerLines.map((line, index) => <div key={`${index}-${line}`}>{line}</div>)}</div>}
                 {working && (

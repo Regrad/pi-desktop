@@ -85,6 +85,9 @@ button:not(:disabled) { cursor: pointer; }
 .icon-button:hover { background: var(--hover); }
 .conversation-scroll { flex: 1; min-height: 0; overflow-y: auto; overscroll-behavior: contain; }
 .thread { width: min(760px, calc(100% - 48px)); margin: 0 auto; padding: 46px 0 28px; }
+.virtual-film-calibration > [data-virtual-film-row] { display: flow-root; }
+.virtual-film { position: relative; width: 100%; }
+.virtual-film-frame { position: absolute; inset: 0 0 auto; width: 100%; display: flow-root; contain: layout style; }
 .message { margin: 0 0 26px; color: #1d1d1f; font-size: 14px; font-weight: 430; line-height: 21px; }
 .message.user { display: flex; justify-content: flex-end; }
 .user-bubble { max-width: 78%; background: #f1f1ee; padding: 10px 14px; border-radius: 18px; }
