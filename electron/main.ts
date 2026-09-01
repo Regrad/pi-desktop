@@ -2,15 +2,17 @@ import { app, BrowserWindow, dialog, ipcMain, Menu, nativeImage, Notification, s
 import { appendFile, mkdir, rename, stat } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import type { Attachment, ConfiguredModelUpdate, ModelServerDiscoveryInput, ThinkingLevel } from "../shared/types.js";
+import type { Attachment, ConfiguredModelUpdate, ModelServerDiscoveryInput, ThinkingLevel, UpdateComponentId, UpdateResult } from "../shared/types.js";
 import { DataStore } from "./data-store.js";
 import { PiManager } from "./pi-manager.js";
+import { UpdateManager } from "./update-manager.js";
 
 const currentDir = path.dirname(fileURLToPath(import.meta.url));
 const projectRoot = path.resolve(currentDir, "..", "..");
 let mainWindow: BrowserWindow | null = null;
 let store: DataStore;
 let piManager: PiManager;
+let updateManager: UpdateManager;
 let logPath = "";
 
 const hasSingleInstanceLock = app.requestSingleInstanceLock();
@@ -259,6 +261,47 @@ function registerIpc(): void {
     });
     return result.response === 1 ? store.deleteModelServer(providerId) : false;
   });
+  ipcMain.handle("desktop:get-update-status", (_event, force?: boolean) => updateManager.getStatus(Boolean(force)));
+  ipcMain.handle("desktop:update-component", async (_event, id: UpdateComponentId): Promise<UpdateResult> => {
+    const status = await updateManager.getStatus();
+    const component = status.components.find((item) => item.id === id && item.updateable);
+    if (!component) throw new Error("Этот компонент нельзя обновить из Pi Desktop");
+    const result = await dialog.showMessageBox(mainWindow!, {
+      type: "question",
+      title: `Обновить ${component.name}?`,
+      message: component.updateAvailable
+        ? `Установить ${component.name} ${component.latestVersion}?`
+        : `${component.name} уже имеет последнюю доступную версию.`,
+      detail: component.updateAvailable
+        ? "Открытые процессы Pi будут перезапущены при следующем сообщении. Активная генерация не прерывается: во время неё обновление будет отклонено."
+        : "Обновление не требуется.",
+      buttons: component.updateAvailable ? ["Отмена", "Обновить"] : ["Закрыть"],
+      defaultId: 0,
+      cancelId: 0,
+      noLink: true,
+    });
+    if (!component.updateAvailable || result.response !== 1) return { status, updated: [], errors: [] };
+    await piManager.prepareForRuntimeUpdate();
+    return updateManager.updateComponent(id);
+  });
+  ipcMain.handle("desktop:update-all-components", async (): Promise<UpdateResult> => {
+    const status = await updateManager.getStatus();
+    const pending = status.components.filter((item) => item.updateable && item.updateAvailable);
+    if (!pending.length) return { status, updated: [], errors: [] };
+    const result = await dialog.showMessageBox(mainWindow!, {
+      type: "question",
+      title: "Обновить Pi и модули?",
+      message: `Будет обновлено компонентов: ${pending.length}.`,
+      detail: `${pending.map((item) => `${item.name}: ${item.currentVersion ?? "?"} → ${item.latestVersion ?? "?"}`).join("\n")}\n\nЛокальные защищённые модули не изменяются.`,
+      buttons: ["Отмена", "Обновить всё"],
+      defaultId: 0,
+      cancelId: 0,
+      noLink: true,
+    });
+    if (result.response !== 1) return { status, updated: [], errors: [] };
+    await piManager.prepareForRuntimeUpdate();
+    return updateManager.updateAll();
+  });
   ipcMain.handle("desktop:show-item", (_event, itemPath: string) => shell.showItemInFolder(itemPath));
 }
 
@@ -276,6 +319,7 @@ if (hasSingleInstanceLock) void app.whenReady().then(async () => {
       new Notification({ title: "Pi Desktop", body: `Задача завершена: ${conversation.title}` }).show();
     }
   });
+  updateManager = new UpdateManager(store, projectRoot, process.execPath);
   registerIpc();
   await createWindow();
 }).catch(async (error) => {

@@ -82,6 +82,39 @@ export interface ModelServerDiscoveryResult {
   updatedModels: number;
 }
 
+export type UpdateComponentId =
+  | "pi-core"
+  | "pi-web-access"
+  | "pi-tool-repair"
+  | "pi-llama-cpp-stats"
+  | "pi-mcp-adapter"
+  | "pi-lens";
+
+export interface UpdateComponentStatus {
+  id: UpdateComponentId | string;
+  packageName?: string;
+  name: string;
+  description: string;
+  currentVersion?: string;
+  latestVersion?: string;
+  updateAvailable: boolean;
+  updateable: boolean;
+  source: "bundled" | "portable" | "local";
+  error?: string;
+}
+
+export interface UpdateStatus {
+  checkedAt?: string;
+  npmAvailable: boolean;
+  components: UpdateComponentStatus[];
+}
+
+export interface UpdateResult {
+  status: UpdateStatus;
+  updated: string[];
+  errors: string[];
+}
+
 export interface Attachment {
   id: string;
   name: string;
@@ -283,6 +316,9 @@ export interface PiDesktopApi {
   updateConfiguredModel(input: ConfiguredModelUpdate): Promise<ConfiguredModelServer>;
   deleteConfiguredModel(providerId: string, modelId: string): Promise<ConfiguredModelServer | null>;
   deleteModelServer(providerId: string): Promise<boolean>;
+  getUpdateStatus(force?: boolean): Promise<UpdateStatus>;
+  updateComponent(id: UpdateComponentId): Promise<UpdateResult>;
+  updateAllComponents(): Promise<UpdateResult>;
   showItemInFolder(path: string): Promise<void>;
   onPiEvent(listener: (payload: { conversationId: string; event: Record<string, unknown> }) => void): () => void;
   onExtensionUi(listener: (payload: { conversationId: string; request: ExtensionUiRequest }) => void): () => void;

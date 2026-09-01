@@ -40,6 +40,20 @@ const EMPTY_STATE: DesktopState = {
 };
 
 const THINKING_LEVELS: ThinkingLevel[] = ["off", "minimal", "low", "medium", "high", "xhigh", "max"];
+const MANAGED_PACKAGE_NAMES = [
+  "pi-web-access",
+  "pi-tool-repair",
+  "pi-llama-cpp-stats",
+  "pi-mcp-adapter",
+  "pi-lens",
+] as const;
+const RETIRED_PACKAGE_NAMES = ["pi-token-speed", "pi-loop-police"];
+const MANAGED_RESOURCE_NAMES = [
+  "pi-lens-all-tools",
+  "pi-single-slot-guard",
+  "pi-llama-generation-speed",
+  "pi-loop-police",
+];
 
 export class DataStore {
   readonly dataDir: string;
@@ -106,6 +120,25 @@ export class DataStore {
     await this.refreshAllProjectSessions();
   }
 
+  get runtimePackagesDir(): string {
+    return path.join(this.dataDir, "runtime");
+  }
+
+  getEffectivePackagePath(packageName: string): string {
+    const portablePath = path.join(this.runtimePackagesDir, "node_modules", packageName);
+    return existsSync(path.join(portablePath, "package.json"))
+      ? portablePath
+      : path.join(this.appRoot, "node_modules", packageName);
+  }
+
+  getPiCliPath(): string {
+    return path.join(this.getEffectivePackagePath("@earendil-works/pi-coding-agent"), "dist", "cli.js");
+  }
+
+  async refreshManagedPackageConfiguration(): Promise<void> {
+    await this.writeManagedPackageConfiguration();
+  }
+
   private async initializeAgentDirectory(): Promise<void> {
     const templateDir = path.join(this.appRoot, "resources", "agent-template");
     for (const fileName of ["models.json", "mcp.json", "auth.json", "APPEND_SYSTEM.md", "web-search.json"]) {
@@ -129,32 +162,7 @@ export class DataStore {
       settings = JSON.parse(await readFile(path.join(templateDir, "settings.json"), "utf8")) as Record<string, unknown>;
     }
 
-    const packageNames = [
-      "pi-web-access",
-      "pi-tool-repair",
-      "pi-llama-cpp-stats",
-      "pi-mcp-adapter",
-      "pi-lens",
-    ];
-    const retiredPackageNames = ["pi-token-speed", "pi-loop-police"];
-    const managedResourceNames = [
-      "pi-lens-all-tools",
-      "pi-single-slot-guard",
-      "pi-llama-generation-speed",
-      "pi-loop-police",
-    ];
-    const managedPackages = [
-      ...packageNames.map((name) => path.join(this.appRoot, "node_modules", name)),
-      ...managedResourceNames.map((name) => path.join(this.appRoot, "resources", name)),
-    ];
-    const configuredPackages = Array.isArray(settings.packages)
-      ? settings.packages.filter((item): item is string => typeof item === "string")
-      : [];
-    const customPackages = configuredPackages.filter((item) =>
-      !isManagedPackage(item, [...packageNames, ...retiredPackageNames], managedResourceNames)
-    );
-    settings.packages = [...managedPackages, ...customPackages];
-    await writeFile(settingsPath, `${JSON.stringify(settings, null, 2)}\n`, "utf8");
+    await this.writeManagedPackageConfiguration(settings);
 
     const extensionsDir = path.join(this.agentDir, "extensions");
     await mkdir(extensionsDir, { recursive: true });
@@ -163,6 +171,26 @@ export class DataStore {
       await copyFile(path.join(templateDir, "pi-tool-repair.json"), repairConfig);
     }
     await this.migrateLegacyToolRepairConfig(repairConfig);
+  }
+
+  private async writeManagedPackageConfiguration(existingSettings?: Record<string, unknown>): Promise<void> {
+    const settingsPath = path.join(this.agentDir, "settings.json");
+    let settings = existingSettings;
+    if (!settings) {
+      settings = JSON.parse(await readFile(settingsPath, "utf8")) as Record<string, unknown>;
+    }
+    const managedPackages = [
+      ...MANAGED_PACKAGE_NAMES.map((name) => this.getEffectivePackagePath(name)),
+      ...MANAGED_RESOURCE_NAMES.map((name) => path.join(this.appRoot, "resources", name)),
+    ];
+    const configuredPackages = Array.isArray(settings.packages)
+      ? settings.packages.filter((item): item is string => typeof item === "string")
+      : [];
+    const customPackages = configuredPackages.filter((item) =>
+      !isManagedPackage(item, [...MANAGED_PACKAGE_NAMES, ...RETIRED_PACKAGE_NAMES], MANAGED_RESOURCE_NAMES)
+    );
+    settings.packages = [...managedPackages, ...customPackages];
+    await writeFile(settingsPath, `${JSON.stringify(settings, null, 2)}\n`, "utf8");
   }
 
   private async migrateManagedMcpServers(configPath: string): Promise<void> {

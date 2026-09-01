@@ -298,6 +298,12 @@ export class PiManager {
     this.runtimes.clear();
   }
 
+  async prepareForRuntimeUpdate(): Promise<void> {
+    const active = [...this.runtimes.values()].some((runtime) => runtime.snapshot?.state.isStreaming);
+    if (active) throw new Error("Дождитесь завершения текущего ответа или остановите его перед обновлением");
+    await this.shutdown();
+  }
+
   private async previewConversation(conversation: ConversationRecord): Promise<ConversationSnapshot> {
     const configuration = await this.store.getAgentConfiguration();
     let messages: unknown[] = [];
@@ -379,14 +385,7 @@ export class PiManager {
       : undefined;
     await this.updateConversation(conversation.id, { status: "starting" });
 
-    const cliPath = path.join(
-      app.getAppPath(),
-      "node_modules",
-      "@earendil-works",
-      "pi-coding-agent",
-      "dist",
-      "cli.js",
-    );
+    const cliPath = this.store.getPiCliPath();
     let record!: RuntimeRecord;
     const rpc = new PiRpcProcess({
       executablePath: process.execPath,

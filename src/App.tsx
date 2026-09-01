@@ -24,6 +24,7 @@ import {
   Search,
   Send,
   Settings,
+  RefreshCw,
   SquareTerminal,
   Pencil,
   Trash2,
@@ -52,6 +53,8 @@ import type {
   QueuedPrompt,
   RunDiff,
   ThinkingLevel,
+  UpdateComponentId,
+  UpdateStatus,
 } from "../shared/types";
 
 type JsonObject = Record<string, any>;
@@ -853,6 +856,11 @@ function SettingsPage({
   const [serverDiscoveryError, setServerDiscoveryError] = useState(false);
   const [editingServerId, setEditingServerId] = useState<string>();
   const [editingModel, setEditingModel] = useState<{ providerId: string; model: ConfiguredModelInfo }>();
+  const [updateStatus, setUpdateStatus] = useState<UpdateStatus>();
+  const [updatesLoading, setUpdatesLoading] = useState(false);
+  const [updatingComponent, setUpdatingComponent] = useState<string>();
+  const [updateMessage, setUpdateMessage] = useState("");
+  const [updateError, setUpdateError] = useState(false);
   const sections: Array<{ id: SettingsSection; label: string; icon: typeof Settings }> = [
     { id: "general", label: "Общее", icon: Settings },
     { id: "models", label: "Модели", icon: Cpu },
@@ -888,6 +896,48 @@ function SettingsPage({
     });
     return () => { cancelled = true; };
   }, [section, globalPromptLoaded]);
+
+  const loadUpdateStatus = useCallback(async (force = false) => {
+    setUpdatesLoading(true);
+    setUpdateError(false);
+    if (force) setUpdateMessage("");
+    try {
+      setUpdateStatus(await window.piDesktop.getUpdateStatus(force));
+    } catch (error) {
+      setUpdateError(true);
+      setUpdateMessage(error instanceof Error ? error.message : String(error));
+    } finally {
+      setUpdatesLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    if (section !== "modules" || updateStatus || updatesLoading) return;
+    void loadUpdateStatus();
+  }, [section, updateStatus, updatesLoading, loadUpdateStatus]);
+
+  const installUpdate = async (id?: UpdateComponentId) => {
+    setUpdatingComponent(id ?? "all");
+    setUpdateMessage("");
+    setUpdateError(false);
+    try {
+      const result = id
+        ? await window.piDesktop.updateComponent(id)
+        : await window.piDesktop.updateAllComponents();
+      setUpdateStatus(result.status);
+      if (result.errors.length) {
+        setUpdateError(true);
+        setUpdateMessage(result.errors.join(" · "));
+      } else if (result.updated.length) {
+        setUpdateMessage(`Обновлено: ${result.updated.join(", ")}. Новые процессы Pi используют новые версии.`);
+      }
+    } catch (error) {
+      setUpdateError(true);
+      setUpdateMessage(error instanceof Error ? error.message : String(error));
+    } finally {
+      setUpdatingComponent(undefined);
+    }
+  };
 
   const saveGlobalPrompt = async () => {
     setGlobalPromptSaving(true);
@@ -1033,7 +1083,7 @@ function SettingsPage({
               <div className="settings-card">
                 <SettingRow title="Папка данных приложения" description="Здесь находятся список проектов, настройки интерфейса и портативная конфигурация Pi." value={dataDir} action={{ label: "Показать", onClick: showDataFolder }} />
                 <SettingRow title="История сессий Pi" description="Общее штатное хранилище, используемое обычным Pi и Pi Desktop без копирования сессий." value={sessionsDir} action={{ label: "Показать", onClick: showSessionsFolder }} />
-                <SettingRow title="Обновления модулей" description="Версии расширений зафиксированы внутри переносимой сборки." value="Отключены" />
+                <SettingRow title="Обновления Pi и модулей" description="Обновления запускаются вручную во вкладке «Модули» и хранятся в переносимой папке data." value="Только вручную" />
                 <SettingRow title="Таймаут запроса" description="Максимальное ожидание ответа модели и RPC-команд." value="24 часа" />
               </div>
               <h2>Доступ</h2>
@@ -1105,7 +1155,35 @@ function SettingsPage({
           {section === "modules" && (
             <>
               <h1>Модули</h1>
-              <p className="settings-lead">Фактическое состояние модулей, инструментов и ошибок из работающего процесса Pi.</p>
+              <p className="settings-lead">Обновления запускаются только вручную. Защищённые локальные модули не заменяются пакетами из npm.</p>
+              <div className="module-update-toolbar">
+                <div>
+                  <strong>Pi и установленные дополнения</strong>
+                  <span>{updateStatus?.checkedAt ? `Проверено ${new Date(updateStatus.checkedAt).toLocaleString("ru-RU")}` : "Обновления ещё не проверялись"}</span>
+                </div>
+                <button disabled={updatesLoading || Boolean(updatingComponent)} onClick={() => void loadUpdateStatus(true)}><RefreshCw size={13} className={updatesLoading ? "spinning" : ""} />{updatesLoading ? "Проверка…" : "Проверить"}</button>
+                <button className="primary" disabled={updatesLoading || Boolean(updatingComponent) || !updateStatus?.components.some((item) => item.updateable && item.updateAvailable)} onClick={() => void installUpdate()}>{updatingComponent === "all" ? "Обновление…" : "Обновить всё"}</button>
+              </div>
+              <div className="settings-card module-update-list">
+                {updateStatus?.components.length ? updateStatus.components.map((component) => (
+                  <div className="module-update-row" key={component.id}>
+                    <div>
+                      <strong>{component.name}</strong>
+                      <p>{component.description}</p>
+                      {component.error && <small className="error">Не удалось проверить: {component.error}</small>}
+                    </div>
+                    <div className="module-update-control">
+                      <span>{component.source === "local" ? "Локальный" : component.latestVersion && component.currentVersion !== component.latestVersion ? `${component.currentVersion ?? "?"} → ${component.latestVersion}` : component.currentVersion ?? "Версия неизвестна"}</span>
+                      {component.updateAvailable && component.updateable
+                        ? <button disabled={Boolean(updatingComponent)} onClick={() => void installUpdate(component.id as UpdateComponentId)}>{updatingComponent === component.id ? "Обновление…" : "Обновить"}</button>
+                        : <em>{component.source === "local" ? "Защищён" : component.error ? "Нет данных" : "Актуально"}</em>}
+                    </div>
+                  </div>
+                )) : <div className="settings-empty">{updatesLoading ? "Проверка npm…" : "Нет данных об обновлениях."}</div>}
+              </div>
+              {!updateStatus?.npmAvailable && updateStatus && <div className="module-update-notice error">npm не найден. Проверка версий работает, но установка обновлений требует Node.js/npm в PATH.</div>}
+              {updateMessage && <div className={`module-update-notice ${updateError ? "error" : "success"}`}>{updateMessage}</div>}
+              <h2>Загруженные расширения</h2>
               <div className="settings-card module-list">
                 {extensionState?.extensionPaths.length ? extensionState.extensionPaths.map((extensionPath) => {
                   const name = extensionName(extensionPath);
