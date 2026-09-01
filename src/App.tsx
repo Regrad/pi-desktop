@@ -2116,7 +2116,7 @@ export default function App() {
           </div>
 
           {activeConversationId && (
-            <div className="composer-wrap">
+            <div className={`composer-wrap${modelMenuOpen || thinkingMenuOpen ? " dropdown-open" : ""}`}>
               {slashCommands.length > 0 && <div className="slash-menu">
                 {slashCommands.map((command) => <button key={`${command.source}-${command.name}`} onClick={() => setInput(`/${command.name} `)}>
                   <span><strong>/{command.name}</strong><small>{command.description ?? command.source}</small></span>
