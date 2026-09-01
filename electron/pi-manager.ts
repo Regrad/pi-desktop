@@ -265,6 +265,26 @@ export class PiManager {
   private syncQueuedPrompts(conversationId: string, queued: QueuedPrompt[]): void {
     const runtime = this.runtimes.get(conversationId);
     if (runtime?.snapshot) runtime.snapshot.queuedPrompts = structuredClone(queued);
+    this.getWindow()?.webContents.send("pi:event", {
+      conversationId,
+      event: { type: "desktop_queue_update", queued: structuredClone(queued) },
+    });
+  }
+
+  private async sendNextQueuedPrompt(conversationId: string): Promise<void> {
+    const next = this.store.getQueuedPrompts(conversationId)[0];
+    if (!next) return;
+    try {
+      await this.sendQueuedPrompt(conversationId, next.id);
+    } catch (error) {
+      this.getWindow()?.webContents.send("pi:event", {
+        conversationId,
+        event: {
+          type: "desktop_queue_error",
+          error: error instanceof Error ? error.message : String(error),
+        },
+      });
+    }
   }
 
   async shutdown(): Promise<void> {
@@ -510,6 +530,7 @@ export class PiManager {
         }
       }
       this.onConversationSettled?.(this.store.getConversation(conversationId));
+      await this.sendNextQueuedPrompt(conversationId);
       return;
     } else if (event.type === "message_end" && runtime.snapshot && event.message) {
       runtime.snapshot.messages.push(event.message);

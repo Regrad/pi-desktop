@@ -1559,6 +1559,10 @@ export default function App() {
       setWorkingMessage(String(event.message ?? "Подготовка…"));
     } else if (event.type === "desktop_diff_error") {
       addNotice(`Не удалось построить diff: ${String(event.error ?? "неизвестная ошибка")}`, "warning");
+    } else if (event.type === "desktop_queue_update") {
+      setQueuedPrompts(Array.isArray(event.queued) ? event.queued as QueuedPrompt[] : []);
+    } else if (event.type === "desktop_queue_error") {
+      addNotice(`Не удалось автоматически отправить сообщение из очереди: ${String(event.error ?? "неизвестная ошибка")}`, "error");
     }
   };
 
