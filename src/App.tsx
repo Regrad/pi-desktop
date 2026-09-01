@@ -34,6 +34,7 @@ import {
 import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
+import type { Plugin } from "unified";
 import type {
   Attachment,
   BootstrapPayload,
@@ -159,27 +160,67 @@ function ContentParts({ content }: { content: JsonObject[] }) {
   })}</>;
 }
 
-function SmoothStreamingText({ text }: { text: string }) {
-  const outputRef = useRef<HTMLDivElement>(null);
-  const renderedRef = useRef("");
+interface MarkdownTreeNode {
+  type: string;
+  value?: string;
+  tagName?: string;
+  properties?: Record<string, unknown>;
+  children?: MarkdownTreeNode[];
+  position?: {
+    start?: { offset?: number };
+    end?: { offset?: number };
+  };
+}
+
+function createRevealTailPlugin(revealFrom: number): Plugin {
+  return () => (tree) => {
+    const visit = (parent: MarkdownTreeNode) => {
+      if (!parent.children) return;
+      const nextChildren: MarkdownTreeNode[] = [];
+      for (const child of parent.children) {
+        const end = child.position?.end?.offset;
+        if (child.type === "text" && child.value && typeof end === "number" && end > revealFrom) {
+          const freshLength = Math.min(child.value.length, end - revealFrom);
+          const splitAt = child.value.length - freshLength;
+          if (splitAt > 0) nextChildren.push({ ...child, value: child.value.slice(0, splitAt) });
+          nextChildren.push({
+            type: "element",
+            tagName: "span",
+            properties: { className: ["stream-reveal-fragment"] },
+            children: [{ ...child, value: child.value.slice(splitAt) }],
+          });
+          continue;
+        }
+        visit(child);
+        nextChildren.push(child);
+      }
+      parent.children = nextChildren;
+    };
+    visit(tree as MarkdownTreeNode);
+  };
+}
+
+function StreamingMarkdown({ text }: { text: string }) {
+  const previousTextRef = useRef("");
+  const revealFrom = text.startsWith(previousTextRef.current) ? previousTextRef.current.length : 0;
+  const revealTailPlugin = useMemo(() => createRevealTailPlugin(revealFrom), [revealFrom]);
 
   useEffect(() => {
-    const output = outputRef.current;
-    if (!output) return;
-    if (!text.startsWith(renderedRef.current)) {
-      renderedRef.current = "";
-      output.replaceChildren();
-    }
-    const freshText = text.slice(renderedRef.current.length);
-    if (!freshText) return;
-    const fragment = document.createElement("span");
-    fragment.className = "stream-reveal-fragment";
-    fragment.textContent = freshText;
-    output.append(fragment);
-    renderedRef.current = text;
+    previousTextRef.current = text;
   }, [text]);
 
-  return <div className="stream-reveal-output" ref={outputRef} />;
+  return (
+    <ReactMarkdown
+      remarkPlugins={[remarkGfm]}
+      rehypePlugins={[revealTailPlugin]}
+      components={{
+        a: ({ href, children }) => <a href={href} target="_blank" rel="noreferrer">{children}</a>,
+        code: ({ children, className }) => <code className={className}>{children}</code>,
+      }}
+    >
+      {text}
+    </ReactMarkdown>
+  );
 }
 
 function MessageContent({
@@ -196,7 +237,7 @@ function MessageContent({
     return (
       <>
         {assistant
-          ? <div className="assistant-final">{streaming ? <SmoothStreamingText text={content} /> : <Markdown text={content} />}</div>
+          ? <div className="assistant-final">{streaming ? <StreamingMarkdown text={content} /> : <Markdown text={content} />}</div>
           : <Markdown text={content} />}
         {Array.isArray(message.attachments) && (
           <div className="message-attachments">
@@ -213,7 +254,7 @@ function MessageContent({
         if (["text", "image", "audio", "resource", "resource_link"].includes(String(part.type))) {
           const rendered = <ContentParts content={[part]} />;
           return assistant && part.type === "text"
-            ? <div className="assistant-final" key={index}>{streaming ? <SmoothStreamingText text={String(part.text ?? "")} /> : rendered}</div>
+            ? <div className="assistant-final" key={index}>{streaming ? <StreamingMarkdown text={String(part.text ?? "")} /> : rendered}</div>
             : <Fragment key={index}>{rendered}</Fragment>;
         }
         if (part.type === "thinking") {
@@ -228,7 +269,7 @@ function MessageContent({
           if (!text) return null;
           return (
             <div className={`thinking-block ${streaming ? "streaming" : ""}`} key={index}>
-              {streaming ? <SmoothStreamingText text={text} /> : <Markdown text={text} />}
+              {streaming ? <StreamingMarkdown text={text} /> : <Markdown text={text} />}
             </div>
           );
         }

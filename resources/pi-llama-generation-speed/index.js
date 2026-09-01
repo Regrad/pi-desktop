@@ -1,5 +1,6 @@
 const STATUS_KEY = "tokenSpeed";
 const UPDATE_INTERVAL_MS = 250;
+const CURRENT_SPEED_WINDOW_MS = 3_000;
 
 function isRecord(value) {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -51,21 +52,36 @@ export default function piLlamaGenerationSpeed(pi) {
   const acceptChunk = (chunk, responseState) => {
     if (!isRecord(chunk) || !isRecord(chunk.timings)) return;
     const timings = chunk.timings;
-    const tps = finitePositive(timings.predicted_per_second);
-    if (!tps) return;
+    const predictedTokens = finitePositive(timings.predicted_n);
+    const predictedMs = finitePositive(timings.predicted_ms);
 
     const choices = Array.isArray(chunk.choices) ? chunk.choices : [];
     const isFinal = isRecord(chunk.usage)
       || choices.some((choice) => isRecord(choice) && choice.finish_reason != null);
+    let currentTps;
+    if (predictedTokens && predictedMs) {
+      const samples = responseState.samples;
+      const previous = samples[samples.length - 1];
+      if (previous.tokens !== predictedTokens || previous.ms !== predictedMs) {
+        samples.push({ tokens: predictedTokens, ms: predictedMs });
+      }
+      const cutoff = predictedMs - CURRENT_SPEED_WINDOW_MS;
+      while (samples.length > 1 && samples[1].ms <= cutoff) samples.shift();
+      const baseline = samples[0];
+      const windowTokens = predictedTokens - baseline.tokens;
+      const windowMs = predictedMs - baseline.ms;
+      if (windowTokens > 0 && windowMs > 0) currentTps = 1_000 * windowTokens / windowMs;
+    }
+    currentTps ??= finitePositive(timings.predicted_per_second);
+    if (!currentTps) return;
+
     const now = Date.now();
     if (isFinal || now - lastUiUpdate >= UPDATE_INTERVAL_MS) {
       lastUiUpdate = now;
-      showSpeed(tps);
+      showSpeed(currentTps);
     }
 
     if (!isFinal || responseState.finalRecorded) return;
-    const predictedTokens = finitePositive(timings.predicted_n);
-    const predictedMs = finitePositive(timings.predicted_ms);
     if (predictedTokens && predictedMs) {
       generatedTokens += predictedTokens;
       generationMs += predictedMs;
@@ -76,7 +92,7 @@ export default function piLlamaGenerationSpeed(pi) {
   const captureTimings = (body) => {
     const reader = body.getReader();
     const decoder = new TextDecoder();
-    const responseState = { finalRecorded: false };
+    const responseState = { finalRecorded: false, samples: [{ tokens: 0, ms: 0 }] };
     let buffer = "";
 
     const consumeLine = (line) => {
