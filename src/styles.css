@@ -106,7 +106,13 @@ button:not(:disabled) { cursor: pointer; }
 .assistant-message a { color: #2667a9; }
 .assistant-final { color: #1d1d1f; font-size: 14px; font-weight: 430; line-height: 21px; }
 .assistant-final + .assistant-final { margin-top: 12px; }
-.stream-reveal-fragment { animation: stream-reveal 240ms ease-out both; }
+.stream-reveal-fragment { animation: stream-reveal 180ms ease-out both; }
+.stream-reveal-delay-1 { animation-delay: 12ms; }
+.stream-reveal-delay-2 { animation-delay: 24ms; }
+.stream-reveal-delay-3 { animation-delay: 36ms; }
+.stream-reveal-delay-4 { animation-delay: 48ms; }
+.stream-reveal-delay-5 { animation-delay: 60ms; }
+.stream-reveal-delay-6 { animation-delay: 72ms; }
 @keyframes stream-reveal {
   from { filter: blur(1px); opacity: 0; }
   to { filter: blur(0); opacity: 1; }

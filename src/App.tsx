@@ -174,6 +174,7 @@ interface MarkdownTreeNode {
 
 function createRevealTailPlugin(revealFrom: number): Plugin {
   return () => (tree) => {
+    let freshWordIndex = 0;
     const visit = (parent: MarkdownTreeNode) => {
       if (!parent.children) return;
       const nextChildren: MarkdownTreeNode[] = [];
@@ -183,12 +184,21 @@ function createRevealTailPlugin(revealFrom: number): Plugin {
           const freshLength = Math.min(child.value.length, end - revealFrom);
           const splitAt = child.value.length - freshLength;
           if (splitAt > 0) nextChildren.push({ ...child, value: child.value.slice(0, splitAt) });
-          nextChildren.push({
-            type: "element",
-            tagName: "span",
-            properties: { className: ["stream-reveal-fragment"] },
-            children: [{ ...child, value: child.value.slice(splitAt) }],
-          });
+          const freshText = child.value.slice(splitAt);
+          for (const segment of freshText.match(/\s+|[^\s]+/g) ?? []) {
+            if (!segment.trim()) {
+              nextChildren.push({ type: "text", value: segment });
+              continue;
+            }
+            const delayStep = Math.min(freshWordIndex, 6);
+            freshWordIndex += 1;
+            nextChildren.push({
+              type: "element",
+              tagName: "span",
+              properties: { className: ["stream-reveal-fragment", `stream-reveal-delay-${delayStep}`] },
+              children: [{ type: "text", value: segment }],
+            });
+          }
           continue;
         }
         visit(child);
@@ -1557,6 +1567,11 @@ export default function App() {
       } else if (event.message.role === "toolResult" || event.message.role === "tool") {
         setMessages((current) => [...current, event.message]);
       }
+      if (event.state) {
+        setSnapshot((current) => current ? { ...current, state: event.state } : current);
+      }
+    } else if (event.type === "desktop_state" && event.state) {
+      setSnapshot((current) => current ? { ...current, state: event.state } : current);
     } else if (event.type === "tool_execution_start") {
       setTools((current) => ({
         ...current,

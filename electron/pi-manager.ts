@@ -115,6 +115,12 @@ export class PiManager {
     behavior?: "steer" | "followUp",
   ): Promise<void> {
     const runtime = await this.ensureRuntime(conversationId);
+    if (runtime.snapshot) {
+      this.getWindow()?.webContents.send("pi:event", {
+        conversationId,
+        event: { type: "desktop_state", state: structuredClone(runtime.snapshot.state) },
+      });
+    }
     const conversation = this.store.getConversation(conversationId);
     if (!runtime.snapshot?.state.isStreaming && (!runtime.activeRun || runtime.activeRun.completedAt)) {
       runtime.activeRun = { startedAt: new Date().toISOString() };
@@ -534,6 +540,9 @@ export class PiManager {
       return;
     } else if (event.type === "message_end" && runtime.snapshot && event.message) {
       runtime.snapshot.messages.push(event.message);
+      if ((event.message as JsonObject).role === "assistant") {
+        event.state = await this.refreshState(conversationId, runtime);
+      }
     } else if (event.type === "queue_update" && runtime.snapshot) {
       const steeringMessages = Array.isArray(event.steering) ? event.steering.map(String) : [];
       const followUpMessages = Array.isArray(event.followUp) ? event.followUp.map(String) : [];
