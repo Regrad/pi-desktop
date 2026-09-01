@@ -3,6 +3,7 @@ import { app, BrowserWindow, shell } from "electron";
 import { existsSync } from "node:fs";
 import type {
   Attachment,
+  CompactionRecord,
   ConversationRun,
   ConversationRecord,
   ConversationSnapshot,
@@ -30,6 +31,7 @@ interface RuntimeRecord {
   extensionErrors: ExtensionState["errors"];
   eventQueue: Promise<void>;
   activeRun?: ConversationRun;
+  compactionStartedAt?: number;
 }
 
 function createExtensionUiState(): ExtensionUiState {
@@ -273,8 +275,24 @@ export class PiManager {
     const state = await this.refreshState(conversationId, runtime);
     if (state.isStreaming || state.isCompacting) throw new Error("Дождитесь завершения текущей операции перед сжатием");
     const normalized = customInstructions?.trim();
-    await runtime.rpc.request("compact", normalized ? { customInstructions: normalized } : {});
+    const startedAt = Date.now();
+    const result = await runtime.rpc.request<{
+      tokensBefore: number;
+      estimatedTokensAfter: number;
+    }>("compact", normalized ? { customInstructions: normalized } : {});
     await this.refreshRuntimeSnapshot(runtime);
+    const entry = [...runtime.snapshot!.entries].reverse().find((item) => item.type === "compaction");
+    if (entry && typeof entry.id === "string") {
+      const record: CompactionRecord = {
+        entryId: entry.id,
+        timestamp: typeof entry.timestamp === "string" ? entry.timestamp : new Date().toISOString(),
+        tokensBefore: result.tokensBefore,
+        tokensAfter: result.estimatedTokensAfter,
+        durationMs: Date.now() - startedAt,
+      };
+      await this.store.saveCompaction(conversationId, record);
+      runtime.snapshot!.compactions = this.store.getCompactions(conversationId);
+    }
     return structuredClone(runtime.snapshot!);
   }
 
@@ -382,6 +400,7 @@ export class PiManager {
       thinkingLevels,
       commands: structuredClone(this.cachedCommands),
       entries,
+      compactions: this.store.getCompactions(conversation.id),
       extensionState: structuredClone(this.cachedExtensionState),
       extensionUi: createExtensionUiState(),
       run: await this.store.getConversationRun(conversation.id),
@@ -485,6 +504,7 @@ export class PiManager {
         thinkingLevels: levelsData.levels ?? ["off"],
         commands: commandsData.commands ?? [],
         entries: entriesData.entries ?? [],
+        compactions: this.store.getCompactions(conversation.id),
         extensionState: { ...extensionData, errors: [...record.extensionErrors] },
         extensionUi: structuredClone(record.extensionUi),
         run: record.activeRun ? structuredClone(record.activeRun) : undefined,
@@ -574,10 +594,30 @@ export class PiManager {
       runtime.snapshot.state.pendingMessageCount = steeringMessages.length + followUpMessages.length;
     } else if (event.type === "compaction_start" && runtime.snapshot) {
       runtime.snapshot.state.isCompacting = true;
+      runtime.compactionStartedAt = Date.now();
     } else if (event.type === "compaction_end" && runtime.snapshot) {
       runtime.snapshot.state.isCompacting = false;
-      await this.refreshState(conversationId, runtime);
+      await this.refreshRuntimeSnapshot(runtime);
+      const result = event.result && typeof event.result === "object" ? event.result as JsonObject : undefined;
+      const entry = [...runtime.snapshot.entries].reverse().find((item) => item.type === "compaction");
+      if (entry && typeof entry.id === "string" && result) {
+        const tokensBefore = Number(result.tokensBefore);
+        const tokensAfter = Number(result.estimatedTokensAfter);
+        if (Number.isFinite(tokensBefore) && Number.isFinite(tokensAfter)) {
+          await this.store.saveCompaction(conversationId, {
+            entryId: entry.id,
+            timestamp: typeof entry.timestamp === "string" ? entry.timestamp : new Date().toISOString(),
+            tokensBefore,
+            tokensAfter,
+            durationMs: runtime.compactionStartedAt === undefined ? undefined : Date.now() - runtime.compactionStartedAt,
+          });
+          runtime.snapshot.compactions = this.store.getCompactions(conversationId);
+        }
+      }
+      runtime.compactionStartedAt = undefined;
       event.state = runtime.snapshot.state;
+      event.entries = runtime.snapshot.entries;
+      event.compactions = runtime.snapshot.compactions;
     } else if (event.type === "extension_error") {
       const extensionError = {
         extensionPath: typeof event.extensionPath === "string" ? event.extensionPath : undefined,
@@ -671,6 +711,7 @@ export class PiManager {
     runtime.snapshot.state = this.normalizeState(stateData);
     runtime.snapshot.messages = messagesData.messages ?? [];
     runtime.snapshot.entries = entriesData.entries ?? [];
+    runtime.snapshot.compactions = this.store.getCompactions(runtime.snapshot.conversation.id);
     runtime.snapshot.extensionState = { ...extensionData, errors: [...runtime.extensionErrors] };
     this.cachedExtensionState = structuredClone(runtime.snapshot.extensionState);
     runtime.snapshot.extensionUi = structuredClone(runtime.extensionUi);

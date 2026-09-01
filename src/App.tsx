@@ -42,6 +42,7 @@ import type {
   ConfiguredModelInfo,
   ConfiguredModelServer,
   ConfiguredModelUpdate,
+  CompactionRecord,
   ConversationRecord,
   ConversationSnapshot,
   ExtensionState,
@@ -92,7 +93,8 @@ interface ProjectMenuState {
 
 type TranscriptTimelineItem =
   | { kind: "message"; message: JsonObject; sourceIndex: number; timestamp: number; order: number }
-  | { kind: "extension"; entry: ConversationSnapshot["entries"][number]; sourceIndex: number; timestamp: number; order: number };
+  | { kind: "extension"; entry: ConversationSnapshot["entries"][number]; sourceIndex: number; timestamp: number; order: number }
+  | { kind: "compaction"; entry: ConversationSnapshot["entries"][number]; record?: CompactionRecord; sourceIndex: number; timestamp: number; order: number };
 
 const THINKING_LABELS: Record<ThinkingLevel, string> = {
   off: "Без рассуждений",
@@ -1780,10 +1782,26 @@ export default function App() {
         state: { ...current.state, steeringMessages: steering, followUpMessages: followUp, pendingMessageCount: steering.length + followUp.length },
       } : current);
     } else if (event.type === "compaction_start") {
+      const alreadyWorking = startedAtRef.current !== undefined;
+      const now = startedAtRef.current ?? Date.now();
+      setWorking(true);
+      setStartedAt(now);
+      startedAtRef.current = now;
+      if (!alreadyWorking) {
+        setElapsed(0);
+        setLastDuration(undefined);
+      }
+      autoScrollRef.current = true;
       setSnapshot((current) => current ? { ...current, state: { ...current.state, isCompacting: true } } : current);
       setWorkingMessage("Сжатие контекста…");
     } else if (event.type === "compaction_end") {
-      setSnapshot((current) => current ? { ...current, state: event.state ?? { ...current.state, isCompacting: false } } : current);
+      setSnapshot((current) => current ? {
+        ...current,
+        state: event.state ?? { ...current.state, isCompacting: false },
+        entries: Array.isArray(event.entries) ? event.entries : current.entries,
+        compactions: Array.isArray(event.compactions) ? event.compactions : current.compactions,
+      } : current);
+      setWorking(Boolean(event.state?.isStreaming));
       setWorkingMessage("");
       if (event.errorMessage) addNotice(`Сжатие контекста: ${String(event.errorMessage)}`, "warning");
     } else if (event.type === "auto_retry_start") {
@@ -2351,6 +2369,7 @@ export default function App() {
   };
   const renderedMessages = streamingMessage ? [...messages, streamingMessage] : messages;
   const visibleExtensionEntries = (snapshot?.entries ?? []).filter((entry) => entry.renderedLines?.length);
+  const compactionEntries = (snapshot?.entries ?? []).filter((entry) => entry.type === "compaction");
   const transcriptItems: TranscriptTimelineItem[] = [
     ...renderedMessages.map((message, sourceIndex): TranscriptTimelineItem => ({
       kind: "message",
@@ -2365,6 +2384,14 @@ export default function App() {
       sourceIndex,
       timestamp: transcriptTimestamp(entry.timestamp, Number.MAX_SAFE_INTEGER - 50_000 + sourceIndex),
       order: sourceIndex * 2 + 1,
+    })),
+    ...compactionEntries.map((entry, sourceIndex): TranscriptTimelineItem => ({
+      kind: "compaction",
+      entry,
+      record: snapshot?.compactions.find((record) => record.entryId === entry.id),
+      sourceIndex,
+      timestamp: transcriptTimestamp(entry.timestamp, Number.MAX_SAFE_INTEGER - 25_000 + sourceIndex),
+      order: sourceIndex * 2 + 2,
     })),
   ].sort((left, right) => left.timestamp - right.timestamp || left.order - right.order);
   const slashQuery = input.startsWith("/") && !input.includes(" ") ? input.slice(1).toLocaleLowerCase() : undefined;
@@ -2524,6 +2551,16 @@ export default function App() {
               <div className="thread" ref={conversationThreadRef}>
                 {headerLines.length > 0 && <div className="extension-frame header-frame">{headerLines.map((line, index) => <div key={`${index}-${line}`}>{line}</div>)}</div>}
                 {transcriptItems.map((item) => {
+                  if (item.kind === "compaction") {
+                    const tokensBefore = item.record?.tokensBefore ?? Number(item.entry.tokensBefore);
+                    const tokensAfter = item.record?.tokensAfter ?? Number(item.entry.estimatedTokensAfter);
+                    return (
+                      <div className="compaction-entry" key={item.entry.id ?? `compaction-${item.sourceIndex}`}>
+                        <Check size={14} />
+                        <span>Контекст сжат: <strong>{formatCompactTokens(tokensBefore)}</strong> → <strong>{formatCompactTokens(tokensAfter)}</strong>{item.record?.durationMs !== undefined ? ` за ${formatElapsed(item.record.durationMs)}` : ""}</span>
+                      </div>
+                    );
+                  }
                   if (item.kind === "extension") {
                     const { entry, sourceIndex } = item;
                     return (
@@ -2761,6 +2798,12 @@ function formatElapsed(milliseconds: number): string {
 function formatTokens(tokens: number): string {
   if (tokens < 1_000) return String(tokens);
   return `${(tokens / 1_000).toFixed(tokens < 10_000 ? 1 : 0)}k`;
+}
+
+function formatCompactTokens(tokens: number): string {
+  if (!Number.isFinite(tokens) || tokens < 0) return "—";
+  if (tokens < 1_000) return String(Math.round(tokens));
+  return `${(tokens / 1_000).toFixed(1).replace(/\.0$/, "")}k`;
 }
 
 function sanitizeStatusText(value?: string): string {

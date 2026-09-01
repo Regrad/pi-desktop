@@ -8,6 +8,7 @@ import type {
   Attachment,
   ConfiguredModelServer,
   ConfiguredModelUpdate,
+  CompactionRecord,
   ConversationRecord,
   ConversationRun,
   ModelInfo,
@@ -24,6 +25,7 @@ interface DesktopState {
   projects: ProjectRecord[];
   conversations: ConversationRecord[];
   queuedPrompts: Record<string, QueuedPrompt[]>;
+  compactions: Record<string, CompactionRecord[]>;
   activeProjectId?: string;
   activeConversationId?: string;
 }
@@ -37,6 +39,7 @@ const EMPTY_STATE: DesktopState = {
   projects: [],
   conversations: [],
   queuedPrompts: {},
+  compactions: {},
 };
 
 const THINKING_LEVELS: ThinkingLevel[] = ["off", "minimal", "low", "medium", "high", "xhigh", "max"];
@@ -112,6 +115,7 @@ export class DataStore {
             })
           : [],
         queuedPrompts: normalizeQueuedPrompts(parsed.queuedPrompts),
+        compactions: normalizeCompactions(parsed.compactions),
       };
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
@@ -382,7 +386,7 @@ export class DataStore {
     await writeFile(configPath, `${JSON.stringify(config, null, 2)}\n`, "utf8");
   }
 
-  snapshot(): Omit<DesktopState, "queuedPrompts"> {
+  snapshot(): Omit<DesktopState, "queuedPrompts" | "compactions"> {
     return structuredClone({
       version: this.state.version,
       projects: this.state.projects,
@@ -635,6 +639,21 @@ export class DataStore {
     return structuredClone(this.state.queuedPrompts[conversationId] ?? []);
   }
 
+  getCompactions(conversationId: string): CompactionRecord[] {
+    this.getConversation(conversationId);
+    return structuredClone(this.state.compactions[conversationId] ?? []);
+  }
+
+  async saveCompaction(conversationId: string, record: CompactionRecord): Promise<void> {
+    this.getConversation(conversationId);
+    const current = this.state.compactions[conversationId] ?? [];
+    this.state.compactions[conversationId] = [
+      ...current.filter((item) => item.entryId !== record.entryId),
+      structuredClone(record),
+    ].sort((left, right) => left.timestamp.localeCompare(right.timestamp));
+    await this.save();
+  }
+
   async queuePrompt(conversationId: string, message: string, attachments: Attachment[]): Promise<QueuedPrompt[]> {
     this.getConversation(conversationId);
     const normalizedMessage = message.trim();
@@ -666,6 +685,7 @@ export class DataStore {
     this.getConversation(conversationId);
     this.state.conversations = this.state.conversations.filter((item) => item.id !== conversationId);
     delete this.state.queuedPrompts[conversationId];
+    delete this.state.compactions[conversationId];
     if (this.state.activeConversationId === conversationId) {
       this.state.activeConversationId = undefined;
     }
@@ -790,6 +810,27 @@ function normalizeQueuedPrompts(value: unknown): Record<string, QueuedPrompt[]> 
         && candidate.message.trim().length > 0
         && typeof candidate.createdAt === "string"
         && Array.isArray(candidate.attachments);
+    });
+    if (valid.length) normalized[conversationId] = structuredClone(valid);
+  }
+  return normalized;
+}
+
+function normalizeCompactions(value: unknown): Record<string, CompactionRecord[]> {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return {};
+  const normalized: Record<string, CompactionRecord[]> = {};
+  for (const [conversationId, records] of Object.entries(value)) {
+    if (!Array.isArray(records)) continue;
+    const valid = records.filter((record): record is CompactionRecord => {
+      if (!record || typeof record !== "object") return false;
+      const candidate = record as Partial<CompactionRecord>;
+      return typeof candidate.entryId === "string"
+        && typeof candidate.timestamp === "string"
+        && typeof candidate.tokensBefore === "number"
+        && Number.isFinite(candidate.tokensBefore)
+        && typeof candidate.tokensAfter === "number"
+        && Number.isFinite(candidate.tokensAfter)
+        && (candidate.durationMs === undefined || (typeof candidate.durationMs === "number" && Number.isFinite(candidate.durationMs)));
     });
     if (valid.length) normalized[conversationId] = structuredClone(valid);
   }

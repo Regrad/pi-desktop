@@ -241,9 +241,18 @@ export interface ConversationSnapshot {
   thinkingLevels: ThinkingLevel[];
   commands: Array<{ name: string; description?: string; source: string }>;
   entries: SessionEntryView[];
+  compactions: CompactionRecord[];
   extensionState: ExtensionState;
   extensionUi: ExtensionUiState;
   run?: ConversationRun;
+}
+
+export interface CompactionRecord {
+  entryId: string;
+  timestamp: string;
+  tokensBefore: number;
+  tokensAfter: number;
+  durationMs?: number;
 }
 
 export interface ExtensionUiRequest {

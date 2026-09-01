@@ -12,6 +12,7 @@
  */
 import * as crypto from "node:crypto";
 import { KeybindingsManager } from "../../core/keybindings.js";
+import { estimateTokens } from "../../core/compaction/compaction.js";
 import { flushRawStdout, takeOverStdout, waitForRawStdoutBackpressure, writeRawStdout, } from "../../core/output-guard.js";
 import { killTrackedDetachedChildren } from "../../utils/shell.js";
 import { theme } from "../interactive/theme/theme.js";
@@ -560,7 +561,12 @@ export async function runRpcMode(runtimeHost) {
             case "get_session_entries": {
                 const entries = session.sessionManager.getEntries().map((entry) => {
                     let renderedLines;
+                    let estimatedTokensAfter;
                     try {
+                        if (entry.type === "compaction") {
+                            const context = session.sessionManager.buildSessionContext(entry.id);
+                            estimatedTokensAfter = context.messages.reduce((total, message) => total + estimateTokens(message), 0);
+                        }
                         if (entry.type === "custom") {
                             const renderer = session.extensionRunner.getEntryRenderer(entry.customType);
                             renderedLines = renderComponent(renderer?.(entry, { expanded: false }, theme));
@@ -581,7 +587,7 @@ export async function runRpcMode(runtimeHost) {
                     catch (renderError) {
                         renderedLines = [`Extension entry render error: ${renderError instanceof Error ? renderError.message : String(renderError)}`];
                     }
-                    return { ...entry, renderedLines };
+                    return { ...entry, renderedLines, estimatedTokensAfter };
                 });
                 return success(id, "get_session_entries", { entries });
             }

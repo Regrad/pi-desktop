@@ -233,6 +233,9 @@ button:not(:disabled) { cursor: pointer; }
 .queued-actions .queued-send { color: #777; }
 .queued-actions .queued-send:hover { color: var(--orange); }
 .extension-frame, .extension-entry { margin: 0 0 18px; padding: 9px 11px; border: 1px solid #e2e2dc; border-radius: 9px; background: #fafaf8; color: #62625e; font: 12.5px/1.5 "Cascadia Code", Consolas, monospace; white-space: pre-wrap; overflow-wrap: anywhere; }
+.compaction-entry { display: flex; align-items: center; justify-content: center; gap: 7px; margin: 8px 0 18px; color: #777771; font-size: 12px; font-variant-numeric: tabular-nums; }
+.compaction-entry svg { color: #3d915c; }
+.compaction-entry strong { color: #555550; font-weight: 620; }
 .footer-frame { margin-top: 18px; }
 .content-image { display: block; max-width: 100%; max-height: 520px; margin: 8px 0 14px; border-radius: 10px; border: 1px solid #e1e1dc; object-fit: contain; }
 .content-audio { width: min(100%, 520px); margin: 8px 0 14px; }
