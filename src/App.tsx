@@ -161,48 +161,23 @@ function ContentParts({ content }: { content: JsonObject[] }) {
 
 function SmoothStreamingText({ text }: { text: string }) {
   const outputRef = useRef<HTMLDivElement>(null);
-  const targetRef = useRef("");
   const renderedRef = useRef("");
-  const timerRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
-  const pumpRef = useRef<() => void>(() => undefined);
-
-  pumpRef.current = () => {
-    const output = outputRef.current;
-    if (!output?.isConnected) {
-      timerRef.current = undefined;
-      return;
-    }
-    const remaining = targetRef.current.slice(renderedRef.current.length);
-    if (!remaining) {
-      timerRef.current = undefined;
-      return;
-    }
-    const batchSize = remaining.length > 1800 ? 12 : remaining.length > 700 ? 7 : remaining.length > 180 ? 4 : 2;
-    const chunk = remaining.slice(0, batchSize);
-    const fragment = document.createElement("span");
-    fragment.className = "stream-reveal-fragment";
-    fragment.textContent = chunk;
-    output.append(fragment);
-    renderedRef.current += chunk;
-    timerRef.current = setTimeout(() => pumpRef.current(), 18);
-  };
 
   useEffect(() => {
     const output = outputRef.current;
     if (!output) return;
     if (!text.startsWith(renderedRef.current)) {
-      if (timerRef.current) clearTimeout(timerRef.current);
-      timerRef.current = undefined;
       renderedRef.current = "";
       output.replaceChildren();
     }
-    targetRef.current = text;
-    if (!timerRef.current) pumpRef.current();
+    const freshText = text.slice(renderedRef.current.length);
+    if (!freshText) return;
+    const fragment = document.createElement("span");
+    fragment.className = "stream-reveal-fragment";
+    fragment.textContent = freshText;
+    output.append(fragment);
+    renderedRef.current = text;
   }, [text]);
-
-  useEffect(() => () => {
-    if (timerRef.current) clearTimeout(timerRef.current);
-  }, []);
 
   return <div className="stream-reveal-output" ref={outputRef} />;
 }
