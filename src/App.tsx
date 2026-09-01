@@ -1731,11 +1731,14 @@ export default function App() {
                 {snapshot?.entries.filter((entry) => entry.renderedLines?.length).map((entry, index) => (
                   <div className="extension-entry" key={entry.id ?? `${entry.type}-${index}`}>{entry.renderedLines!.map((line, lineIndex) => <div key={`${lineIndex}-${line}`}>{line}</div>)}</div>
                 ))}
+                {footerLines.length > 0 && <div className="extension-frame footer-frame">{footerLines.map((line, index) => <div key={`${index}-${line}`}>{line}</div>)}</div>}
                 {working && (
                   <div className="run-activity" role="status" aria-live="polite">
-                    <WorkingIndicator indicator={workingIndicator} />
-                    <span className="working-message">{activityLabel}</span>
-                    <span className="working-elapsed">{formatElapsed(elapsed)}</span>
+                    <div className="run-activity-phase">
+                      <WorkingIndicator indicator={workingIndicator} />
+                      <span className="working-message">{activityLabel}</span>
+                    </div>
+                    <div className="run-activity-total"><Clock3 size={13} /> Работаю… <strong>{formatElapsed(elapsed)}</strong></div>
                   </div>
                 )}
                 {!working && lastDuration !== undefined && (
@@ -1748,7 +1751,6 @@ export default function App() {
                     )}
                   </div>
                 )}
-                {footerLines.length > 0 && <div className="extension-frame footer-frame">{footerLines.map((line, index) => <div key={`${index}-${line}`}>{line}</div>)}</div>}
                 <div ref={endRef} />
               </div>
             )}
