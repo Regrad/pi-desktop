@@ -24,6 +24,7 @@ import {
   Search,
   Send,
   Settings,
+  SquareTerminal,
   Sparkles,
   Pencil,
   Trash2,
@@ -155,12 +156,22 @@ function ContentParts({ content }: { content: JsonObject[] }) {
   })}</>;
 }
 
-function MessageContent({ message, thinkingLabel }: { message: JsonObject; thinkingLabel?: string }) {
+function MessageContent({
+  message,
+  thinkingLabel,
+  assistant = false,
+  streaming = false,
+}: {
+  message: JsonObject;
+  thinkingLabel?: string;
+  assistant?: boolean;
+  streaming?: boolean;
+}) {
   const content = message.content;
   if (typeof content === "string") {
     return (
       <>
-        <Markdown text={content} />
+        {assistant ? <div className="assistant-final"><Markdown text={content} /></div> : <Markdown text={content} />}
         {Array.isArray(message.attachments) && (
           <div className="message-attachments">
             {message.attachments.map((name: string) => <span key={name}><Paperclip size={12} />{name}</span>)}
@@ -174,56 +185,23 @@ function MessageContent({ message, thinkingLabel }: { message: JsonObject; think
     <>
       {content.map((part: JsonObject, index: number) => {
         if (["text", "image", "audio", "resource", "resource_link"].includes(String(part.type))) {
-          return <ContentParts key={index} content={[part]} />;
+          const rendered = <ContentParts content={[part]} />;
+          return assistant && part.type === "text"
+            ? <div className="assistant-final" key={index}>{rendered}</div>
+            : <Fragment key={index}>{rendered}</Fragment>;
         }
         if (part.type === "thinking") {
           return (
-            <details className="thinking-block" key={index}>
-              <summary><Sparkles size={14} /> {thinkingLabel || "Рассуждения"}</summary>
-              <div>{String(part.thinking ?? part.text ?? "")}</div>
+            <details className={`thinking-block ${streaming ? "streaming" : ""}`} open={streaming || undefined} key={index}>
+              <summary><Sparkles size={14} /> {thinkingLabel || (streaming ? "Модель размышляет" : "Ход рассуждений")}</summary>
+              <div className="thinking-content">{String(part.thinking ?? part.text ?? "")}</div>
             </details>
-          );
-        }
-        if (part.type === "toolCall" || part.type === "tool_call") {
-          return (
-            <div className="inline-tool" key={index}>
-              <Wrench size={14} />
-              <span>{String(part.name ?? "Инструмент")}</span>
-              {part.arguments && <code>{typeof part.arguments === "string" ? part.arguments : JSON.stringify(part.arguments)}</code>}
-            </div>
           );
         }
         return null;
       })}
     </>
   );
-}
-
-function PersistedToolResult({ message }: { message: JsonObject }) {
-  const [expanded, setExpanded] = useState(Boolean(message.isError));
-  const content = Array.isArray(message.content)
-    ? message.content as JsonObject[]
-    : typeof message.content === "string"
-      ? [{ type: "text", text: message.content }]
-      : [];
-  return (
-    <div className={`tool-card persisted ${message.isError ? "error" : ""}`}>
-      <button className="tool-card-head" onClick={() => setExpanded((value) => !value)}>
-        {expanded ? <ChevronDown size={15} /> : <ChevronRight size={15} />}
-        <Wrench size={15} />
-        <span>{String(message.toolName ?? message.name ?? "Инструмент")}</span>
-        <span className="tool-state">{message.isError ? "Ошибка" : "Результат"}</span>
-      </button>
-      {expanded && <div className="tool-card-body"><ContentParts content={content} /></div>}
-    </div>
-  );
-}
-
-function ToolResultContent({ result }: { result: unknown }) {
-  if (result && typeof result === "object" && Array.isArray((result as JsonObject).content)) {
-    return <ContentParts content={(result as JsonObject).content as JsonObject[]} />;
-  }
-  return <pre>{textFromResult(result)}</pre>;
 }
 
 function Markdown({ text }: { text: string }) {
@@ -237,23 +215,154 @@ function Markdown({ text }: { text: string }) {
   );
 }
 
+function parsedToolArguments(value: unknown): JsonObject {
+  if (value && typeof value === "object" && !Array.isArray(value)) return value as JsonObject;
+  if (typeof value !== "string" || !value.trim()) return {};
+  try {
+    const parsed = JSON.parse(value);
+    return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed as JsonObject : {};
+  } catch {
+    return { input: value };
+  }
+}
+
+function toolCallParts(message: JsonObject): JsonObject[] {
+  if (!Array.isArray(message.content)) return [];
+  return message.content.filter((part: JsonObject) => part?.type === "toolCall" || part?.type === "tool_call");
+}
+
+function toolCallIdentifier(call: JsonObject, fallback: string): string {
+  return String(call.id ?? call.toolCallId ?? call.tool_call_id ?? fallback);
+}
+
+function toolResultIdentifier(message: JsonObject): string | undefined {
+  const id = message.toolCallId ?? message.tool_call_id ?? message.id;
+  return id === undefined ? undefined : String(id);
+}
+
+function messageWithoutToolCalls(message: JsonObject): JsonObject | undefined {
+  if (!Array.isArray(message.content)) return message;
+  const content = message.content.filter((part: JsonObject) => part?.type !== "toolCall" && part?.type !== "tool_call");
+  return content.length ? { ...message, content } : undefined;
+}
+
+function resultMessagePayload(message: JsonObject): JsonObject {
+  return {
+    content: Array.isArray(message.content)
+      ? message.content
+      : typeof message.content === "string"
+        ? [{ type: "text", text: message.content }]
+        : [],
+    details: message.details,
+    isError: Boolean(message.isError),
+  };
+}
+
+function toolOutputText(result: unknown): string {
+  return textFromResult(result).replace(/\r\n/g, "\n").trimEnd();
+}
+
+function compactLine(value: unknown, limit = 110): string {
+  const text = String(value ?? "").replace(/\s+/g, " ").trim();
+  return text.length > limit ? `${text.slice(0, limit - 1)}…` : text;
+}
+
+function toolPresentation(name: string, args: JsonObject): {
+  icon: "terminal" | "file" | "search" | "folder" | "mcp" | "tool";
+  label: string;
+  summary?: string;
+  command?: string;
+  showRawArgs?: boolean;
+} {
+  const normalized = name.toLocaleLowerCase();
+  const path = args.path ?? args.file ?? args.filePath;
+  if (normalized === "bash" || normalized === "shell" || normalized === "exec") {
+    const command = String(args.command ?? args.cmd ?? args.input ?? "");
+    return { icon: "terminal", label: "Команда", summary: compactLine(command), command };
+  }
+  if (normalized === "read") {
+    const offset = Number(args.offset ?? 0);
+    const limit = Number(args.limit ?? 0);
+    const range = offset > 0 ? `:${offset}${limit > 0 ? `–${offset + limit - 1}` : ""}` : "";
+    return { icon: "file", label: "Чтение", summary: `${String(path ?? "файл")}${range}` };
+  }
+  if (normalized === "edit") return { icon: "file", label: "Изменение", summary: String(path ?? "файл") };
+  if (normalized === "write") return { icon: "file", label: "Запись", summary: String(path ?? "файл") };
+  if (normalized === "grep") return { icon: "search", label: "Поиск", summary: `${compactLine(args.pattern ?? "")} · ${String(path ?? ".")}` };
+  if (normalized === "find") return { icon: "search", label: "Поиск файлов", summary: `${compactLine(args.pattern ?? "")} · ${String(path ?? ".")}` };
+  if (normalized === "ls") return { icon: "folder", label: "Список файлов", summary: String(path ?? ".") };
+  if (normalized.startsWith("mcp__") || normalized.startsWith("mcp_")) {
+    const parts = name.split("__");
+    return { icon: "mcp", label: parts.at(-1)?.replace(/[-_]/g, " ") || name, summary: parts.length > 2 ? parts[1] : "MCP", showRawArgs: true };
+  }
+  return { icon: "tool", label: name, showRawArgs: true };
+}
+
+function ToolIcon({ kind }: { kind: ReturnType<typeof toolPresentation>["icon"] }) {
+  if (kind === "terminal") return <SquareTerminal size={15} />;
+  if (kind === "file") return <FileText size={15} />;
+  if (kind === "search") return <Search size={15} />;
+  if (kind === "folder") return <Folder size={15} />;
+  if (kind === "mcp") return <Boxes size={15} />;
+  return <Wrench size={15} />;
+}
+
+function ToolDiffPreview({ diff, expanded }: { diff: string; expanded: boolean }) {
+  const lines = diff.replace(/\r\n/g, "\n").split("\n");
+  const visible = expanded ? lines : lines.slice(0, 10);
+  return (
+    <pre className="tool-diff-output">
+      {visible.map((line, index) => <span className={line.startsWith("+") && !line.startsWith("+++") ? "added" : line.startsWith("-") && !line.startsWith("---") ? "removed" : ""} key={`${index}-${line}`}>{line || " "}</span>)}
+      {!expanded && lines.length > visible.length && <em>… ещё {lines.length - visible.length} строк</em>}
+    </pre>
+  );
+}
+
+function ToolTextOutput({ text, expanded }: { text: string; expanded: boolean }) {
+  const lines = text.split("\n");
+  const visible = expanded ? lines : lines.slice(0, 8);
+  return (
+    <pre className="tool-text-output">
+      {visible.join("\n")}
+      {!expanded && lines.length > visible.length ? `\n… ещё ${lines.length - visible.length} строк` : ""}
+    </pre>
+  );
+}
+
+function ToolResultContent({ result, expanded }: { result: unknown; expanded: boolean }) {
+  const object = result && typeof result === "object" ? result as JsonObject : undefined;
+  const diff = typeof object?.details?.diff === "string" ? object.details.diff : undefined;
+  if (diff) return <ToolDiffPreview diff={diff} expanded={expanded} />;
+  const text = toolOutputText(result);
+  const media = Array.isArray(object?.content)
+    ? object.content.filter((part: JsonObject) => part?.type !== "text") as JsonObject[]
+    : [];
+  return <>{text && <ToolTextOutput text={text} expanded={expanded} />}{media.length > 0 && <ContentParts content={media} />}</>;
+}
+
 function ToolCard({ tool }: { tool: ToolActivity }) {
-  const [expanded, setExpanded] = useState(tool.running);
+  const args = parsedToolArguments(tool.args);
+  const presentation = toolPresentation(tool.name, args);
+  const [expanded, setExpanded] = useState(Boolean(tool.error));
   useEffect(() => {
     if (tool.error) setExpanded(true);
   }, [tool.error]);
+  const output = tool.result === undefined ? "" : toolOutputText(tool.result);
+  const hasDetails = Boolean(presentation.command || presentation.showRawArgs && Object.keys(args).length || output || (tool.result as JsonObject | undefined)?.details?.diff);
   return (
-    <div className={`tool-card ${tool.error ? "error" : ""}`}>
-      <button className="tool-card-head" onClick={() => setExpanded((value) => !value)}>
-        {expanded ? <ChevronDown size={15} /> : <ChevronRight size={15} />}
-        <Wrench size={15} />
-        <span>{tool.name}</span>
+    <div className={`tool-card ${tool.running ? "running" : "complete"} ${tool.error ? "error" : ""}`}>
+      <button className="tool-card-head" disabled={!hasDetails} onClick={() => setExpanded((value) => !value)}>
+        {hasDetails ? expanded ? <ChevronDown size={15} /> : <ChevronRight size={15} /> : <span className="tool-chevron-space" />}
+        <ToolIcon kind={presentation.icon} />
+        <span className="tool-heading"><strong>{presentation.label}</strong>{presentation.summary && <small>{presentation.summary}</small>}</span>
         <span className="tool-state">{tool.running ? "Выполняется…" : tool.error ? "Ошибка" : "Готово"}</span>
       </button>
-      {expanded && (
+      {!expanded && tool.result !== undefined && <div className="tool-card-preview"><ToolResultContent result={tool.result} expanded={false} /></div>}
+      {expanded && hasDetails && (
         <div className="tool-card-body">
-          {tool.args !== undefined && <pre>{JSON.stringify(tool.args, null, 2)}</pre>}
-          {tool.result !== undefined && <ToolResultContent result={tool.result} />}
+          {presentation.command && <pre className="tool-command">{presentation.command}</pre>}
+          {presentation.showRawArgs && Object.keys(args).length > 0 && <details className="tool-arguments"><summary>Параметры</summary><pre>{JSON.stringify(args, null, 2)}</pre></details>}
+          {tool.result !== undefined && <ToolResultContent result={tool.result} expanded />}
         </div>
       )}
     </div>
@@ -922,7 +1031,7 @@ export default function App() {
 
   useEffect(() => {
     endRef.current?.scrollIntoView({ behavior: "smooth", block: "end" });
-  }, [messages, streamingMessage, tools]);
+  }, [messages, streamingMessage, tools, working, workingMessage]);
 
   const handlePiEvent = (event: JsonObject) => {
     if (event.type === "desktop_run_started" || event.type === "agent_start") {
@@ -1443,10 +1552,45 @@ export default function App() {
   const slashCommands = slashQuery === undefined ? [] : (snapshot?.commands ?? [])
     .filter((command) => command.name.toLocaleLowerCase().includes(slashQuery))
     .slice(0, 10);
-  let lastUserMessageIndex = -1;
-  renderedMessages.forEach((message, index) => {
-    if (message.role === "user") lastUserMessageIndex = index;
+  const toolResultsById = new Map<string, JsonObject>();
+  const transcriptToolIds = new Set<string>();
+  renderedMessages.forEach((message, messageIndex) => {
+    if (message.role === "toolResult" || message.role === "tool") {
+      const id = toolResultIdentifier(message);
+      if (id) toolResultsById.set(id, message);
+    }
+    toolCallParts(message).forEach((call, callIndex) => {
+      transcriptToolIds.add(toolCallIdentifier(call, `message-${messageIndex}-tool-${callIndex}`));
+    });
   });
+  const buildToolActivity = (call: JsonObject, fallbackId: string): ToolActivity => {
+    const id = toolCallIdentifier(call, fallbackId);
+    const live = tools[id];
+    const persisted = toolResultsById.get(id);
+    return {
+      id,
+      name: String(call.name ?? live?.name ?? persisted?.toolName ?? "Инструмент"),
+      args: call.arguments ?? call.args ?? live?.args,
+      result: persisted ? resultMessagePayload(persisted) : live?.result,
+      running: live?.running ?? (!persisted && working),
+      error: persisted ? Boolean(persisted.isError) : live?.error,
+      startedAt: live?.startedAt ?? 0,
+    };
+  };
+  const orphanTools = Object.values(tools).filter((tool) => !transcriptToolIds.has(tool.id));
+  const runningTool = Object.values(tools).find((tool) => tool.running);
+  const streamingParts = Array.isArray(streamingMessage?.content) ? streamingMessage.content as JsonObject[] : [];
+  const hasStreamingAnswer = streamingParts.some((part) => part.type === "text" && String(part.text ?? "").trim());
+  const hasStreamingThinking = streamingParts.some((part) => part.type === "thinking" && String(part.thinking ?? part.text ?? "").trim());
+  const activityLabel = runningTool
+    ? `Выполняется: ${toolPresentation(runningTool.name, parsedToolArguments(runningTool.args)).label}`
+    : workingMessage
+      ? workingMessage
+      : hasStreamingAnswer
+        ? "Модель формирует ответ…"
+        : hasStreamingThinking
+          ? hiddenThinkingLabel || "Модель размышляет…"
+          : "Модель работает…";
 
   return (
     <div className="app-shell">
@@ -1553,29 +1697,46 @@ export default function App() {
                 {headerLines.length > 0 && <div className="extension-frame header-frame">{headerLines.map((line, index) => <div key={`${index}-${line}`}>{line}</div>)}</div>}
                 {renderedMessages.map((message, index) => {
                   if (message.role === "toolResult" || message.role === "tool") {
-                    return <PersistedToolResult key={messageKey(message, index)} message={message} />;
+                    const id = toolResultIdentifier(message);
+                    if (id && transcriptToolIds.has(id)) return null;
+                    return <ToolCard key={messageKey(message, index)} tool={{
+                      id: id ?? messageKey(message, index),
+                      name: String(message.toolName ?? message.name ?? "Инструмент"),
+                      result: resultMessagePayload(message),
+                      running: false,
+                      error: Boolean(message.isError),
+                      startedAt: 0,
+                    }} />;
                   }
+                  const visibleMessage = messageWithoutToolCalls(message);
+                  const calls = toolCallParts(message);
+                  const isStreamingMessage = message === streamingMessage;
                   return (
                     <Fragment key={messageKey(message, index)}>
-                      <article className={`message ${message.role ?? "assistant"}`}>
+                      {visibleMessage && <article className={`message ${message.role ?? "assistant"}`}>
                         {message.role === "user" ? (
-                          <div className="user-bubble"><MessageContent message={message} thinkingLabel={hiddenThinkingLabel} /></div>
+                          <div className="user-bubble"><MessageContent message={visibleMessage} thinkingLabel={hiddenThinkingLabel} /></div>
                         ) : (
-                          <div className="assistant-message"><MessageContent message={message} thinkingLabel={hiddenThinkingLabel} /></div>
+                          <div className="assistant-message"><MessageContent message={visibleMessage} thinkingLabel={hiddenThinkingLabel} assistant streaming={isStreamingMessage} /></div>
                         )}
-                      </article>
-                      {working && workingVisible && index === lastUserMessageIndex && (
-                        <div className="run-timer working"><WorkingIndicator indicator={workingIndicator} />{workingMessage ? <><span className="working-message">{workingMessage}</span><span className="working-elapsed">· {formatElapsed(elapsed)}</span></> : <>Работает уже {formatElapsed(elapsed)}</>}</div>
-                      )}
+                      </article>}
+                      {calls.map((call, callIndex) => <ToolCard
+                        key={toolCallIdentifier(call, `${messageKey(message, index)}-${callIndex}`)}
+                        tool={buildToolActivity(call, `${messageKey(message, index)}-${callIndex}`)}
+                      />)}
                     </Fragment>
                   );
                 })}
-                {Object.values(tools).map((tool) => <ToolCard key={tool.id} tool={tool} />)}
+                {orphanTools.map((tool) => <ToolCard key={tool.id} tool={tool} />)}
                 {snapshot?.entries.filter((entry) => entry.renderedLines?.length).map((entry, index) => (
                   <div className="extension-entry" key={entry.id ?? `${entry.type}-${index}`}>{entry.renderedLines!.map((line, lineIndex) => <div key={`${lineIndex}-${line}`}>{line}</div>)}</div>
                 ))}
-                {working && workingVisible && lastUserMessageIndex < 0 && (
-                  <div className="run-timer working"><WorkingIndicator indicator={workingIndicator} />{workingMessage ? <><span className="working-message">{workingMessage}</span><span className="working-elapsed">· {formatElapsed(elapsed)}</span></> : <>Работает уже {formatElapsed(elapsed)}</>}</div>
+                {working && (
+                  <div className="run-activity" role="status" aria-live="polite">
+                    <WorkingIndicator indicator={workingIndicator} />
+                    <span className="working-message">{activityLabel}</span>
+                    <span className="working-elapsed">{formatElapsed(elapsed)}</span>
+                  </div>
                 )}
                 {!working && lastDuration !== undefined && (
                   <div className="run-complete">
