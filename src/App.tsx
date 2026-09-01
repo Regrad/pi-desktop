@@ -1197,7 +1197,9 @@ export default function App() {
   const [renameConversation, setRenameConversation] = useState<ConversationRecord>();
   const [renameProject, setRenameProject] = useState<ProjectRecord>();
   const conversationScrollRef = useRef<HTMLDivElement>(null);
+  const conversationThreadRef = useRef<HTMLDivElement>(null);
   const autoScrollRef = useRef(true);
+  const userScrollInteractionRef = useRef(false);
   const activeIdRef = useRef<string | undefined>(undefined);
   const conversationsRef = useRef<ConversationRecord[]>([]);
   const startedAtRef = useRef<number | undefined>(undefined);
@@ -1376,6 +1378,16 @@ export default function App() {
   }, [messages, streamingMessage, tools, working, workingMessage, scrollConversationToBottom]);
 
   useEffect(() => {
+    const thread = conversationThreadRef.current;
+    if (!thread) return;
+    const observer = new ResizeObserver(() => {
+      if (autoScrollRef.current) scrollConversationToBottom();
+    });
+    observer.observe(thread);
+    return () => observer.disconnect();
+  }, [activeConversationId, scrollConversationToBottom]);
+
+  useEffect(() => {
     autoScrollRef.current = true;
     const frame = requestAnimationFrame(scrollConversationToBottom);
     return () => cancelAnimationFrame(frame);
@@ -1385,11 +1397,25 @@ export default function App() {
     const element = conversationScrollRef.current;
     if (!element) return;
     const distanceFromBottom = element.scrollHeight - element.scrollTop - element.clientHeight;
-    autoScrollRef.current = distanceFromBottom <= 24;
+    if (distanceFromBottom <= 24) autoScrollRef.current = true;
+    else if (userScrollInteractionRef.current) autoScrollRef.current = false;
   }, []);
 
   const handleConversationWheel = useCallback((event: React.WheelEvent<HTMLDivElement>) => {
     if (event.deltaY < 0) autoScrollRef.current = false;
+  }, []);
+
+  const handleConversationPointerDown = useCallback((event: React.PointerEvent<HTMLDivElement>) => {
+    const element = event.currentTarget;
+    const rect = element.getBoundingClientRect();
+    const scrollbarArea = Math.max(16, element.offsetWidth - element.clientWidth + 4);
+    if (event.pointerType === "touch" || event.clientX >= rect.right - scrollbarArea) {
+      userScrollInteractionRef.current = true;
+    }
+  }, []);
+
+  const handleConversationPointerEnd = useCallback(() => {
+    userScrollInteractionRef.current = false;
   }, []);
 
   const handlePiEvent = (event: JsonObject) => {
@@ -2041,7 +2067,15 @@ export default function App() {
             {activeProject && <button className="path-button" title={`Показать в проводнике: ${activeProject.path}`} onClick={() => void window.piDesktop.showItemInFolder(activeProject.path)}>{activeProject.name}</button>}
           </header>
 
-          <div className="conversation-scroll" ref={conversationScrollRef} onScroll={handleConversationScroll} onWheel={handleConversationWheel}>
+          <div
+            className="conversation-scroll"
+            ref={conversationScrollRef}
+            onScroll={handleConversationScroll}
+            onWheel={handleConversationWheel}
+            onPointerDown={handleConversationPointerDown}
+            onPointerUp={handleConversationPointerEnd}
+            onPointerCancel={handleConversationPointerEnd}
+          >
             {!activeConversationId ? (
               <div className="welcome">
                 <div className="welcome-logo"><Bot size={34} /></div>
@@ -2053,7 +2087,7 @@ export default function App() {
                 </div>
               </div>
             ) : (
-              <div className="thread">
+              <div className="thread" ref={conversationThreadRef}>
                 {headerLines.length > 0 && <div className="extension-frame header-frame">{headerLines.map((line, index) => <div key={`${index}-${line}`}>{line}</div>)}</div>}
                 {renderedMessages.map((message, index) => {
                   if (message.role === "toolResult" || message.role === "tool") {
