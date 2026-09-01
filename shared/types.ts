@@ -307,6 +307,8 @@ export interface PiDesktopApi {
   setThinkingLevel(conversationId: string, level: ThinkingLevel): Promise<RuntimeState>;
   setHostEditorText(conversationId: string, text: string): Promise<void>;
   clearQueue(conversationId: string): Promise<{ steering: string[]; followUp: string[] }>;
+  compactConversation(conversationId: string, customInstructions?: string): Promise<ConversationSnapshot>;
+  reloadRuntime(conversationId: string): Promise<ConversationSnapshot>;
   renameConversation(conversationId: string, title: string): Promise<void>;
   respondToExtensionUi(conversationId: string, response: Record<string, unknown>): Promise<void>;
   getGlobalPrompt(): Promise<string>;

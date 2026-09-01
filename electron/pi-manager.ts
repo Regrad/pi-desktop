@@ -268,6 +268,30 @@ export class PiManager {
     return result;
   }
 
+  async compactConversation(conversationId: string, customInstructions?: string): Promise<ConversationSnapshot> {
+    const runtime = await this.ensureRuntime(conversationId);
+    const state = await this.refreshState(conversationId, runtime);
+    if (state.isStreaming || state.isCompacting) throw new Error("Дождитесь завершения текущей операции перед сжатием");
+    const normalized = customInstructions?.trim();
+    await runtime.rpc.request("compact", normalized ? { customInstructions: normalized } : {});
+    await this.refreshRuntimeSnapshot(runtime);
+    return structuredClone(runtime.snapshot!);
+  }
+
+  async reloadRuntime(conversationId: string): Promise<ConversationSnapshot> {
+    const runtime = await this.ensureRuntime(conversationId);
+    const state = await this.refreshState(conversationId, runtime);
+    if (state.isStreaming || state.isCompacting) throw new Error("Дождитесь завершения текущей операции перед перезагрузкой");
+    runtime.extensionUi = createExtensionUiState();
+    runtime.extensionErrors = [];
+    await runtime.rpc.request("reload");
+    const commandsData = await runtime.rpc.request<{ commands: ConversationSnapshot["commands"] }>("get_commands");
+    this.cachedCommands = commandsData.commands ?? [];
+    await this.refreshRuntimeSnapshot(runtime);
+    runtime.snapshot!.commands = structuredClone(this.cachedCommands);
+    return structuredClone(runtime.snapshot!);
+  }
+
   private syncQueuedPrompts(conversationId: string, queued: QueuedPrompt[]): void {
     const runtime = this.runtimes.get(conversationId);
     if (runtime?.snapshot) runtime.snapshot.queuedPrompts = structuredClone(queued);

@@ -710,6 +710,62 @@ function RenameConversationDialog({
   );
 }
 
+function CommandPalette({
+  commands,
+  busy,
+  onClose,
+  onCompact,
+  onReload,
+  onInsert,
+}: {
+  commands: ConversationSnapshot["commands"];
+  busy: boolean;
+  onClose: () => void;
+  onCompact: () => void;
+  onReload: () => void;
+  onInsert: (command: string) => void;
+}) {
+  const [query, setQuery] = useState("");
+  const normalized = query.trim().toLocaleLowerCase();
+  const textCommands = commands.filter((command) =>
+    !["compact", "reload"].includes(command.name)
+    && (!normalized || command.name.toLocaleLowerCase().includes(normalized) || command.description?.toLocaleLowerCase().includes(normalized))
+  );
+  return (
+    <div className="modal-backdrop">
+      <div className="modal-card command-palette">
+        <div className="modal-head"><strong>Команды Pi</strong><button className="icon-button" onClick={onClose}><X size={17} /></button></div>
+        <div className="command-search"><Search size={15} /><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Найти команду…" autoFocus /></div>
+        <div className="command-section-title">Действия приложения</div>
+        <div className="command-list">
+          <button disabled={busy} onClick={onCompact}><span><strong>Сжать контекст</strong><small>Штатная команда Pi `/compact`; можно добавить инструкции для сводки.</small></span><code>/compact</code></button>
+          <button disabled={busy} onClick={onReload}><span><strong>Перезагрузить ресурсы Pi</strong><small>Расширения, навыки, промпты, настройки и файлы контекста.</small></span><code>/reload</code></button>
+        </div>
+        <div className="command-section-title">Команды расширений, шаблоны и навыки</div>
+        <div className="command-list command-dynamic-list">
+          {textCommands.map((command) => <button key={`${command.source}-${command.name}`} onClick={() => onInsert(command.name)}><span><strong>/{command.name}</strong><small>{command.description || "Описание не предоставлено"}</small></span><em>{command.source === "extension" ? "Модуль" : command.source === "skill" ? "Навык" : "Шаблон"}</em></button>)}
+          {!textCommands.length && <div className="command-empty">Подходящих команд нет.</div>}
+        </div>
+        <div className="command-palette-note">Выбор команды расширения помещает её в поле ввода — аргументы можно дописать перед отправкой.</div>
+      </div>
+    </div>
+  );
+}
+
+function CompactDialog({ onClose, onCompact }: { onClose: () => void; onCompact: (instructions?: string) => void }) {
+  const [instructions, setInstructions] = useState("");
+  return (
+    <div className="modal-backdrop">
+      <div className="modal-card compact-dialog">
+        <div className="modal-head"><strong>Сжать контекст</strong><button className="icon-button" onClick={onClose}><X size={17} /></button></div>
+        <p>Pi создаст сводку предыдущего контекста и сохранит последние сообщения без изменений.</p>
+        <label><span>Дополнительные инструкции для сводки</span><textarea value={instructions} onChange={(event) => setInstructions(event.target.value)} placeholder="Необязательно" autoFocus /></label>
+        <div className="modal-actions"><button onClick={onClose}>Отмена</button><button className="primary" onClick={() => onCompact(instructions.trim() || undefined)}>Сжать</button></div>
+      </div>
+    </div>
+  );
+}
+
 function ModelSettingsDialog({
   providerId,
   model,
@@ -1287,6 +1343,7 @@ function SettingsPage({
               <div className="settings-card">
                 <SettingRow title="Новый самостоятельный чат" description="Создать чат без привязки к проекту." value="Ctrl+N" />
                 <SettingRow title="Настройки" description="Открыть настройки Pi Desktop." value="Ctrl+," />
+                <SettingRow title="Команды Pi" description="Открыть палитру встроенных действий и команд расширений." value="Ctrl+Shift+P" />
                 <SettingRow title="Боковая панель" description="Показать или скрыть проекты и чаты." value="Ctrl+B" />
                 <SettingRow title="Отправить сообщение" description="Обычная отправка; во время работы сообщение встанет в очередь." value="Enter" />
                 <SettingRow title="Отправить в текущую работу" description="Во время работы немедленно передать корректировку модели." value="Ctrl+Enter" />
@@ -1363,6 +1420,8 @@ export default function App() {
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [settingsSection, setSettingsSection] = useState<SettingsSection>("general");
   const [projectDialogOpen, setProjectDialogOpen] = useState(false);
+  const [commandPaletteOpen, setCommandPaletteOpen] = useState(false);
+  const [compactDialogOpen, setCompactDialogOpen] = useState(false);
   const [conversationMenu, setConversationMenu] = useState<ConversationMenuState>();
   const [projectMenu, setProjectMenu] = useState<ProjectMenuState>();
   const [renameConversation, setRenameConversation] = useState<ConversationRecord>();
@@ -2004,6 +2063,16 @@ export default function App() {
   const submit = async () => {
     const text = input.trim() || (attachments.length ? "Посмотри вложения." : "");
     if (!text || !activeConversationId) return;
+    if (!working && (text === "/compact" || text.startsWith("/compact "))) {
+      setInput("");
+      await executeCompact(text.startsWith("/compact ") ? text.slice(9).trim() : undefined);
+      return;
+    }
+    if (!working && text === "/reload") {
+      setInput("");
+      await executeReload();
+      return;
+    }
     const conversationId = activeConversationId;
     const submittedAttachments = attachments;
     autoScrollRef.current = true;
@@ -2155,6 +2224,74 @@ export default function App() {
     }
   };
 
+  const applyRuntimeSnapshot = (next: ConversationSnapshot) => {
+    setSnapshot(next);
+    setMessages(next.messages as JsonObject[]);
+    setStreamingMessage(null);
+    setSteeringMessages(next.state.steeringMessages ?? []);
+    setFollowUpMessages(next.state.followUpMessages ?? []);
+    setQueuedPrompts(next.queuedPrompts ?? []);
+    setStatuses(next.extensionUi.statuses);
+    setWorkingMessage(next.extensionUi.workingMessage ?? "");
+    setWorkingVisible(next.extensionUi.workingVisible);
+    setWorkingIndicator(next.extensionUi.workingIndicator);
+    setHiddenThinkingLabel(next.extensionUi.hiddenThinkingLabel ?? "");
+    setWidgets(next.extensionUi.widgets);
+    setHeaderLines(next.extensionUi.headerLines);
+    setFooterLines(next.extensionUi.footerLines);
+  };
+
+  const executeCompact = async (instructions?: string) => {
+    if (!activeConversationId || working) return;
+    const started = Date.now();
+    setCommandPaletteOpen(false);
+    setCompactDialogOpen(false);
+    setWorking(true);
+    setWorkingMessage("Сжатие контекста…");
+    setStartedAt(started);
+    startedAtRef.current = started;
+    setElapsed(0);
+    autoScrollRef.current = true;
+    try {
+      const next = await window.piDesktop.compactConversation(activeConversationId, instructions);
+      applyRuntimeSnapshot(next);
+      addNotice("Контекст сжат штатным механизмом Pi.", "info");
+    } catch (error) {
+      addNotice(error instanceof Error ? error.message : String(error), "error");
+    } finally {
+      const duration = Date.now() - started;
+      setWorking(false);
+      setWorkingMessage("");
+      setElapsed(duration);
+      setLastDuration(duration);
+      setStartedAt(undefined);
+      startedAtRef.current = undefined;
+    }
+  };
+
+  const executeReload = async () => {
+    if (!activeConversationId || working) return;
+    if (!window.confirm("Перезагрузить расширения, навыки, промпты и настройки Pi? Текущий процесс перечитает конфигурацию, поэтому KV-кэш может быть пересчитан.")) return;
+    setCommandPaletteOpen(false);
+    setWorking(true);
+    setWorkingMessage("Перезагрузка ресурсов Pi…");
+    try {
+      const next = await window.piDesktop.reloadRuntime(activeConversationId);
+      applyRuntimeSnapshot(next);
+      addNotice("Ресурсы Pi перезагружены.", "info");
+    } catch (error) {
+      addNotice(error instanceof Error ? error.message : String(error), "error");
+    } finally {
+      setWorking(false);
+      setWorkingMessage("");
+    }
+  };
+
+  const insertCommand = (command: string) => {
+    setCommandPaletteOpen(false);
+    setInput(`/${command} `);
+  };
+
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
       if (!(event.ctrlKey || event.metaKey)) {
@@ -2163,6 +2300,8 @@ export default function App() {
           setThinkingMenuOpen(false);
           setConversationMenu(undefined);
           setProjectMenu(undefined);
+          setCommandPaletteOpen(false);
+          setCompactDialogOpen(false);
           if (diffOpen) setDiffOpen(false);
         }
         return;
@@ -2170,6 +2309,9 @@ export default function App() {
       if (event.key.toLocaleLowerCase() === "n") {
         event.preventDefault();
         void newChat();
+      } else if (event.shiftKey && event.key.toLocaleLowerCase() === "p") {
+        event.preventDefault();
+        if (activeConversationId) setCommandPaletteOpen(true);
       } else if (event.key === ",") {
         event.preventDefault();
         setSettingsOpen(true);
@@ -2180,7 +2322,7 @@ export default function App() {
     };
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [diffOpen, extensionDialog]);
+  }, [diffOpen, extensionDialog, activeConversationId]);
 
   const activeProject = projects.find((item) => item.id === activeProjectId);
   const activeConversation = conversations.find((item) => item.id === activeConversationId) ?? snapshot?.conversation;
@@ -2511,6 +2653,7 @@ export default function App() {
                 />
                 <div className="composer-toolbar">
                   <button className="icon-button" title="Добавить вложение" onClick={() => void addAttachments()}><Paperclip size={18} /></button>
+                  <button className="icon-button" title="Команды Pi (Ctrl+Shift+P)" onClick={() => setCommandPaletteOpen(true)}><SquareTerminal size={17} /></button>
                   <span className="access-chip"><Check size={13} /> Полный доступ</span>
                   <div className="composer-spacer" />
                   <div className="dropdown-wrap model-dropdown-wrap">
@@ -2593,6 +2736,15 @@ export default function App() {
       })()}
       {renameConversation && <RenameConversationDialog title={renameConversation.title} onClose={() => setRenameConversation(undefined)} onSave={(title) => void saveConversationTitle(title)} />}
       {renameProject && <RenameConversationDialog heading="Переименовать проект" title={renameProject.name} onClose={() => setRenameProject(undefined)} onSave={(title) => void saveProjectTitle(title)} />}
+      {commandPaletteOpen && snapshot && <CommandPalette
+        commands={snapshot.commands}
+        busy={working}
+        onClose={() => setCommandPaletteOpen(false)}
+        onCompact={() => { setCommandPaletteOpen(false); setCompactDialogOpen(true); }}
+        onReload={() => void executeReload()}
+        onInsert={insertCommand}
+      />}
+      {compactDialogOpen && <CompactDialog onClose={() => setCompactDialogOpen(false)} onCompact={(instructions) => void executeCompact(instructions)} />}
     </div>
   );
 }

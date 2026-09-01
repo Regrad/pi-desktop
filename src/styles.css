@@ -274,6 +274,25 @@ button.secondary.large { display: flex; align-items: center; gap: 8px; padding: 
 .add-folders-button { align-self: flex-start; display: flex; align-items: center; gap: 6px; padding: 7px 8px; border: 0; border-radius: 7px; background: transparent; color: #666; font-size: 11.5px; }
 .add-folders-button:hover { background: var(--hover); }
 .modal-actions button:disabled { opacity: .5; cursor: default; }
+.command-palette { width: min(650px, calc(100% - 40px)); max-height: min(760px, calc(100vh - 48px)); display: flex; flex-direction: column; }
+.command-search { height: 38px; margin: 14px 0 12px; display: flex; align-items: center; gap: 8px; padding: 0 11px; border: 1px solid #deded9; border-radius: 9px; background: #fafaf8; color: #777; }
+.command-search input { min-width: 0; flex: 1; border: 0; outline: 0; background: transparent; font-size: 13px; }
+.command-section-title { margin: 8px 3px 6px; color: #92928c; font-size: 10.5px; font-weight: 650; text-transform: uppercase; letter-spacing: .045em; }
+.command-list { display: flex; flex-direction: column; gap: 5px; }
+.command-list button { width: 100%; min-height: 54px; display: flex; align-items: center; justify-content: space-between; gap: 18px; padding: 9px 11px; border: 1px solid #e3e3de; border-radius: 9px; background: #fff; color: #333; text-align: left; }
+.command-list button:hover:not(:disabled) { border-color: #cecec8; background: #f5f5f2; }
+.command-list button:disabled { opacity: .45; cursor: default; }
+.command-list button > span { min-width: 0; display: flex; flex-direction: column; gap: 3px; }
+.command-list button strong { font-size: 12.5px; font-weight: 620; }
+.command-list button small { overflow: hidden; color: #85857f; font-size: 11px; line-height: 1.35; white-space: nowrap; text-overflow: ellipsis; }
+.command-list button code, .command-list button em { flex: 0 0 auto; color: #888; font: 10.5px "Cascadia Code", Consolas, monospace; font-style: normal; }
+.command-dynamic-list { min-height: 70px; max-height: 350px; overflow-y: auto; padding-right: 3px; }
+.command-empty { padding: 18px 10px; color: #888; font-size: 12px; text-align: center; }
+.command-palette-note { margin-top: 10px; color: #8b8b85; font-size: 10.5px; line-height: 1.45; }
+.compact-dialog { width: min(560px, calc(100% - 40px)); }
+.compact-dialog label { display: flex; flex-direction: column; gap: 6px; color: #666; font-size: 11.5px; }
+.compact-dialog textarea { min-height: 110px; resize: vertical; padding: 10px; border: 1px solid #d9d9d4; border-radius: 9px; outline: 0; font: 12.5px/1.5 "Cascadia Code", Consolas, monospace; }
+.compact-dialog textarea:focus { border-color: #aaa9a3; box-shadow: 0 0 0 2px rgba(100,100,96,.08); }
 .muted { color: var(--muted); }
 
 .settings-page { width: 100%; min-width: 0; min-height: 0; display: flex; background: #fff; }

@@ -217,6 +217,12 @@ function registerIpc(): void {
   ipcMain.handle("pi:clear-queue", (_event, conversationId: string) =>
     piManager.clearQueue(conversationId),
   );
+  ipcMain.handle("pi:compact", (_event, conversationId: string, customInstructions?: string) =>
+    piManager.compactConversation(conversationId, customInstructions),
+  );
+  ipcMain.handle("pi:reload", (_event, conversationId: string) =>
+    piManager.reloadRuntime(conversationId),
+  );
   ipcMain.handle("desktop:rename-conversation", (_event, conversationId: string, title: string) =>
     piManager.renameConversation(conversationId, title),
   );

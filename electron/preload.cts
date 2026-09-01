@@ -37,6 +37,8 @@ const api: PiDesktopApi = {
   setHostEditorText: (conversationId, text) =>
     ipcRenderer.invoke("pi:set-editor-text", conversationId, text),
   clearQueue: (conversationId) => ipcRenderer.invoke("pi:clear-queue", conversationId),
+  compactConversation: (conversationId, customInstructions) => ipcRenderer.invoke("pi:compact", conversationId, customInstructions),
+  reloadRuntime: (conversationId) => ipcRenderer.invoke("pi:reload", conversationId),
   renameConversation: (conversationId, title) =>
     ipcRenderer.invoke("desktop:rename-conversation", conversationId, title),
   respondToExtensionUi: (conversationId, response) =>

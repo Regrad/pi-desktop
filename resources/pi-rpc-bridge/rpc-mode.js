@@ -655,6 +655,13 @@ export async function runRpcMode(runtimeHost) {
                 session.setAutoCompactionEnabled(command.enabled);
                 return success(id, "set_auto_compaction");
             }
+            case "reload": {
+                if (session.isStreaming || session.isCompacting) {
+                    return error(id, "reload", "Wait for the current operation to finish before reloading");
+                }
+                await session.reload();
+                return success(id, "reload");
+            }
             // =================================================================
             // Retry
             // =================================================================
@@ -771,7 +778,10 @@ export async function runRpcMode(runtimeHost) {
             // Commands (available for invocation via prompt)
             // =================================================================
             case "get_commands": {
-                const commands = [];
+                const commands = [
+                    { name: "compact", description: "Сжать контекст текущей сессии", source: "builtin" },
+                    { name: "reload", description: "Перезагрузить расширения, навыки, промпты и настройки Pi", source: "builtin" },
+                ];
                 for (const command of session.extensionRunner.getRegisteredCommands()) {
                     commands.push({
                         name: command.invocationName,
