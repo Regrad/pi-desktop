@@ -29,7 +29,7 @@
 
 ## Модули
 
-В сборку входят `pi-web-access`, `pi-tool-repair`, `pi-llama-cpp-stats`, `pi-token-speed`, `pi-mcp-adapter`, `pi-lens`, `pi-loop-police` и локальные `pi-lens-all-tools` и `pi-single-slot-guard`. Последний запрещает скрытые обращения `pi-web-access` к текущей модели: `fetch_content` в режиме `answer` выполняется как `readable`, а `web_search` всегда запускается с `workflow: "none"`. Это сохраняет KV-кэш основного чата на серверах с одним слотом.
+В сборку входят `pi-web-access`, `pi-tool-repair`, `pi-llama-cpp-stats`, `pi-token-speed`, `pi-mcp-adapter`, `pi-lens` и локальные `pi-loop-police`, `pi-lens-all-tools` и `pi-single-slot-guard`. Копия `pi-loop-police` закреплена как локальный приватный модуль и не участвует в npm-обновлениях. `pi-single-slot-guard` запрещает скрытые обращения `pi-web-access` к текущей модели: `fetch_content` в режиме `answer` выполняется как `readable`, а `web_search` всегда запускается с `workflow: "none"`. Это сохраняет KV-кэш основного чата на серверах с одним слотом.
 
 При каждом запуске пути к ним вычисляются относительно текущей папки приложения. Поэтому папку можно переносить, а модули остаются подключёнными. Автообновление и уведомления об обновлениях отключены; версии зафиксированы в сборке.
 

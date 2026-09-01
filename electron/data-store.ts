@@ -135,13 +135,13 @@ export class DataStore {
       "pi-llama-cpp-stats",
       "pi-mcp-adapter",
       "pi-lens",
-      "pi-loop-police",
     ];
-    const retiredPackageNames = ["pi-token-speed"];
+    const retiredPackageNames = ["pi-token-speed", "pi-loop-police"];
     const managedResourceNames = [
       "pi-lens-all-tools",
       "pi-single-slot-guard",
       "pi-llama-generation-speed",
+      "pi-loop-police",
     ];
     const managedPackages = [
       ...packageNames.map((name) => path.join(this.appRoot, "node_modules", name)),
