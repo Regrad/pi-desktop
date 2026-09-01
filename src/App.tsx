@@ -2165,9 +2165,9 @@ export default function App() {
                   <button className="icon-button" title="Добавить вложение" onClick={() => void addAttachments()}><Paperclip size={18} /></button>
                   <span className="access-chip"><Check size={13} /> Полный доступ</span>
                   <div className="composer-spacer" />
-                  <div className="dropdown-wrap">
-                    <button className="selector-button" onClick={() => { setThinkingMenuOpen(false); setModelMenuOpen((value) => !value); }}>
-                      {snapshot?.state.model?.name ?? snapshot?.state.model?.id ?? "Модель"}<ChevronDown size={13} />
+                  <div className="dropdown-wrap model-dropdown-wrap">
+                    <button className="selector-button model-selector-button" title={snapshot?.state.model?.name ?? snapshot?.state.model?.id ?? "Модель"} onClick={() => { setThinkingMenuOpen(false); setModelMenuOpen((value) => !value); }}>
+                      <span className="selector-label">{snapshot?.state.model?.name ?? snapshot?.state.model?.id ?? "Модель"}</span><ChevronDown size={13} />
                     </button>
                     {modelMenuOpen && <div className="dropdown-menu model-menu">
                       {snapshot?.models.map((model) => <button key={`${model.provider}/${model.id}`} className="dropdown-item" onClick={() => void changeModel(model)}>
@@ -2176,9 +2176,9 @@ export default function App() {
                       </button>)}
                     </div>}
                   </div>
-                  <div className="dropdown-wrap">
-                    <button className="selector-button" onClick={() => { setModelMenuOpen(false); setThinkingMenuOpen((value) => !value); }}>
-                      {THINKING_LABELS[snapshot?.state.thinkingLevel ?? "off"]}<ChevronDown size={13} />
+                  <div className="dropdown-wrap thinking-dropdown-wrap">
+                    <button className="selector-button thinking-selector-button" title="Уровень рассуждений" onClick={() => { setModelMenuOpen(false); setThinkingMenuOpen((value) => !value); }}>
+                      <span className="selector-label">{THINKING_LABELS[snapshot?.state.thinkingLevel ?? "off"]}</span><ChevronDown size={13} />
                     </button>
                     {thinkingMenuOpen && <div className="dropdown-menu thinking-menu">
                       {snapshot?.thinkingLevels.map((level) => <button key={level} className="dropdown-item" onClick={() => void changeThinking(level)}>

@@ -176,8 +176,15 @@ button:not(:disabled) { cursor: pointer; }
 .composer-toolbar { height: 30px; display: flex; align-items: center; gap: 4px; }
 .composer-spacer { flex: 1; }
 .access-chip { border: 0; background: transparent; color: var(--orange); display: flex; align-items: center; gap: 4px; font-size: 12px; padding: 5px 6px; }
-.selector-button { max-width: 210px; border: 0; background: transparent; color: #555; padding: 5px 4px; display: flex; align-items: center; gap: 3px; font-size: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.selector-button { min-width: 0; max-width: 210px; border: 0; border-radius: 7px; background: transparent; color: #555; padding: 5px 6px; display: flex; align-items: center; gap: 4px; font-size: 12px; white-space: nowrap; }
+.selector-button:hover { background: #f3f3f0; }
+.selector-button > svg { flex: 0 0 auto; }
+.selector-label { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.model-selector-button { max-width: 280px; }
+.thinking-selector-button { max-width: 100px; margin-left: 2px; border-left: 1px solid #e2e2dd; border-radius: 0 7px 7px 0; padding-left: 10px; color: #74746f; }
 .dropdown-wrap { position: relative; }
+.model-dropdown-wrap { min-width: 0; }
+.thinking-dropdown-wrap { flex: 0 0 auto; }
 .dropdown-menu { position: absolute; right: 0; bottom: 34px; min-width: 210px; max-height: 330px; overflow: auto; padding: 6px; border: 1px solid #deded8; border-radius: 11px; background: white; box-shadow: 0 14px 40px rgba(0,0,0,.14); }
 .model-menu { min-width: 310px; }
 .dropdown-item { width: 100%; border: 0; background: transparent; border-radius: 7px; padding: 8px 9px; display: flex; justify-content: space-between; align-items: center; text-align: left; }

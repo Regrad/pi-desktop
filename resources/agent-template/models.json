@@ -13,7 +13,7 @@
       "models": [
         {
           "id": "laguna-s21-chadrock-rocmfp4-v4",
-          "name": "Laguna S 2.1 Chadrock ROCmFP4 V4 (llama.cpp LAN)",
+          "name": "Laguna S 2.1 Chadrock ROCmFP4 V4",
           "reasoning": true,
           "input": ["text"],
           "contextWindow": 262144,
@@ -27,7 +27,7 @@
         },
         {
           "id": "qwen3.8-27b-q8_0-xhigh",
-          "name": "Qwen3.8 27B Q8_0 (llama.cpp LAN)",
+          "name": "Qwen3.8 27B Q8_0",
           "reasoning": true,
           "thinkingLevelMap": {
             "off": "none",
@@ -52,7 +52,7 @@
         },
         {
           "id": "qwen3.8-flash-next-ud-q4-k-xl",
-          "name": "Qwen3.8 Flash Next UD-Q4_K_XL (llama.cpp LAN)",
+          "name": "Qwen3.8 Flash Next UD-Q4_K_XL",
           "reasoning": true,
           "thinkingLevelMap": {
             "off": "none",
