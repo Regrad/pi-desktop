@@ -398,6 +398,11 @@ export async function runRpcMode(runtimeHost) {
                 output({ type: "extension_error", extensionPath: err.extensionPath, event: err.event, error: err.error });
             },
         });
+        const activeTools = session.extensionRunner.getActiveTools();
+        const uniqueActiveTools = [...new Set(activeTools)];
+        if (uniqueActiveTools.length !== activeTools.length) {
+            session.setActiveToolsByName(uniqueActiveTools);
+        }
         unsubscribe?.();
         unsubscribeBackpressure?.();
         unsubscribe = session.subscribe((event) => {

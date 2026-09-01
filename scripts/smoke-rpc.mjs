@@ -126,6 +126,9 @@ try {
   const entries = await request("get_session_entries");
   const clearedQueue = await request("clear_queue");
 
+  const activeTools = Array.isArray(extensionState?.activeTools) ? extensionState.activeTools : [];
+  const duplicateActiveTools = activeTools.filter((name, index) => activeTools.indexOf(name) !== index);
+
   const result = {
     model: state?.model ?? null,
     thinkingLevel: state?.thinkingLevel ?? null,
@@ -139,8 +142,9 @@ try {
       ? commands.commands.map((command) => command.name).filter(Boolean)
       : [],
     extensionCount: Array.isArray(extensionState?.extensionPaths) ? extensionState.extensionPaths.length : 0,
-    activeToolCount: Array.isArray(extensionState?.activeTools) ? extensionState.activeTools.length : 0,
-    activeTools: Array.isArray(extensionState?.activeTools) ? extensionState.activeTools : [],
+    activeToolCount: activeTools.length,
+    activeToolUniqueCount: new Set(activeTools).size,
+    duplicateActiveTools: [...new Set(duplicateActiveTools)],
     entryCount: Array.isArray(entries?.entries) ? entries.entries.length : 0,
     queueClearShape: Boolean(Array.isArray(clearedQueue?.steering) && Array.isArray(clearedQueue?.followUp)),
   };
