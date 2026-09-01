@@ -11,6 +11,11 @@
   --selected: #e4e4e0;
   --accent: #171717;
   --orange: #e85d24;
+  --tool-pending-bg: #e8e8f0;
+  --tool-success-bg: #e8f0e8;
+  --tool-error-bg: #f0e8e8;
+  --tool-success: #28753b;
+  --tool-error: #b2443e;
 }
 
 * { box-sizing: border-box; }
@@ -96,22 +101,24 @@ button:not(:disabled) { cursor: pointer; }
 .thinking-block > :first-child { margin-top: 0; }
 .thinking-block > :last-child { margin-bottom: 0; }
 .thinking-block + .assistant-final { margin-top: 15px; padding-top: 15px; border-top: 1px solid #ecece8; }
-.tool-card { margin: 7px 0 18px; overflow: hidden; border: 1px solid #e4e4de; border-radius: 10px; background: #fafaf8; }
-.tool-card.running { border-color: #d9d9d3; box-shadow: inset 2px 0 0 #aaa9a2; }
-.tool-card.error { border-color: #e7c4c2; background: #fffafa; box-shadow: inset 2px 0 0 #d45b54; }
+.tool-card { margin: 7px 0 18px; overflow: hidden; border: 1px solid #d9e2d9; border-radius: 10px; background: var(--tool-success-bg); transition: background-color .14s ease, border-color .14s ease; }
+.tool-card.running { border-color: #d7d7e1; background: var(--tool-pending-bg); box-shadow: inset 2px 0 0 #8888a0; }
+.tool-card.error { border-color: #e3cccc; background: var(--tool-error-bg); box-shadow: inset 2px 0 0 #c75a54; }
 .tool-card-head { width: 100%; min-height: 41px; border: 0; background: transparent; display: flex; align-items: center; gap: 8px; padding: 7px 10px; font-size: 12.5px; text-align: left; }
 .tool-card-head:disabled { cursor: default; }
-.tool-card-head > svg { flex: 0 0 auto; color: #686864; }
+.tool-card-head > svg { flex: 0 0 auto; color: var(--tool-success); }
+.tool-card.running .tool-card-head > svg { color: #66667b; }
+.tool-card.error .tool-card-head > svg { color: var(--tool-error); }
 .tool-chevron-space { width: 15px; flex: 0 0 15px; }
 .tool-heading { min-width: 0; flex: 1; display: flex; align-items: baseline; gap: 8px; }
 .tool-heading strong { flex: 0 0 auto; color: #383835; font-weight: 620; }
 .tool-heading small { min-width: 0; overflow: hidden; color: #777773; font: 11.5px "Cascadia Code", Consolas, monospace; white-space: nowrap; text-overflow: ellipsis; }
-.tool-state { flex: 0 0 auto; margin-left: auto; color: #8a8a84; font-size: 11.5px; }
+.tool-state { flex: 0 0 auto; margin-left: auto; color: var(--tool-success); font-size: 11.5px; font-weight: 550; }
 .tool-card.running .tool-state { color: #666661; }
-.tool-card.error .tool-state { color: #b2443e; }
+.tool-card.error .tool-state { color: var(--tool-error); }
 .tool-card-preview, .tool-card-body { border-top: 1px solid #e8e8e2; padding: 8px 10px; }
 .tool-card-body { display: flex; flex-direction: column; gap: 8px; }
-.tool-card-preview pre, .tool-card-body pre { margin: 0; max-height: 360px; border: 0; border-radius: 6px; background: #f3f3f0; box-shadow: none; }
+.tool-card-preview pre, .tool-card-body pre { margin: 0; max-height: 360px; border: 0; border-radius: 6px; background: rgba(255, 255, 255, .42); box-shadow: none; }
 .tool-command { color: #343431; }
 .tool-arguments { color: #777; font-size: 11.5px; }
 .tool-arguments summary { cursor: pointer; }
