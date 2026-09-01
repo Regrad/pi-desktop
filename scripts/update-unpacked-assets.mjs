@@ -1,10 +1,15 @@
-import { cp, rename, rm, stat } from "node:fs/promises";
+import { cp, mkdir, rename, rm, stat } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 const projectRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const appRoot = path.join(projectRoot, "release", "win-unpacked", "resources", "app");
 const assetNames = ["dist", "dist-electron"];
+const bridgeSource = path.join(projectRoot, "resources", "pi-rpc-bridge", "rpc-mode.js");
+const bridgeTargets = [
+  path.join(appRoot, "resources", "pi-rpc-bridge", "rpc-mode.js"),
+  path.join(appRoot, "node_modules", "@earendil-works", "pi-coding-agent", "dist", "modes", "rpc", "rpc-mode.js"),
+];
 
 async function isDirectory(target) {
   try {
@@ -50,6 +55,15 @@ for (const name of assetNames) {
     await rm(next, { recursive: true, force: true });
     await rm(previous, { recursive: true, force: true });
   }
+}
+
+for (const target of bridgeTargets) {
+  const resolvedTarget = path.resolve(target);
+  if (!resolvedTarget.startsWith(`${appRoot}${path.sep}`)) {
+    throw new Error(`Refusing to update bridge outside packaged app: ${resolvedTarget}`);
+  }
+  await mkdir(path.dirname(resolvedTarget), { recursive: true });
+  await cp(bridgeSource, resolvedTarget, { force: true });
 }
 
 process.stdout.write(`Packaged application code updated: ${appRoot}\n`);

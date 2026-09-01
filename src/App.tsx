@@ -62,6 +62,7 @@ interface ToolActivity {
   args?: unknown;
   result?: unknown;
   running: boolean;
+  preparing?: boolean;
   error?: boolean;
   startedAt: number;
 }
@@ -432,12 +433,12 @@ function ToolCard({ tool }: { tool: ToolActivity }) {
   const output = tool.result === undefined ? "" : toolOutputText(tool.result);
   const hasDetails = Boolean(presentation.command || presentation.showRawArgs && Object.keys(args).length || output || (tool.result as JsonObject | undefined)?.details?.diff);
   return (
-    <div className={`tool-card ${tool.running ? "running" : "complete"} ${tool.error ? "error" : ""}`}>
+    <div className={`tool-card ${tool.preparing || tool.running ? "running" : "complete"} ${tool.error ? "error" : ""}`}>
       <button className="tool-card-head" disabled={!hasDetails} onClick={() => setExpanded((value) => !value)}>
         {hasDetails ? expanded ? <ChevronDown size={15} /> : <ChevronRight size={15} /> : <span className="tool-chevron-space" />}
         <ToolIcon kind={presentation.icon} />
         <span className="tool-heading"><strong>{presentation.label}</strong>{presentation.summary && <small>{presentation.summary}</small>}</span>
-        <span className="tool-state">{tool.running ? "Выполняется…" : tool.error ? "Ошибка" : "Готово"}</span>
+        <span className="tool-state">{tool.preparing ? "Формируется…" : tool.running ? "Выполняется…" : tool.error ? "Ошибка" : "Готово"}</span>
       </button>
       {expanded && hasDetails && (
         <div className="tool-card-body">
@@ -1553,10 +1554,23 @@ export default function App() {
         while (next.content.length <= index) next.content.push({ type: "text", text: "" });
         if (delta.type === "text_start") next.content[index] = { type: "text", text: "" };
         if (delta.type === "thinking_start") next.content[index] = { type: "thinking", thinking: "" };
-        if (delta.type === "toolcall_start") next.content[index] = { type: "toolCall", name: delta.toolCall?.name ?? "Инструмент", arguments: "" };
+        if (delta.type === "toolcall_start") next.content[index] = {
+          type: "toolCall",
+          id: delta.toolCall?.id,
+          name: delta.toolCall?.name ?? "Инструмент",
+          arguments: delta.toolCall?.arguments ?? {},
+          partialArguments: "",
+        };
         if (delta.type === "text_delta") next.content[index].text = `${next.content[index].text ?? ""}${delta.delta ?? ""}`;
         if (delta.type === "thinking_delta") next.content[index].thinking = `${next.content[index].thinking ?? ""}${delta.delta ?? ""}`;
-        if (delta.type === "toolcall_delta") next.content[index].arguments = `${next.content[index].arguments ?? ""}${delta.delta ?? ""}`;
+        if (delta.type === "toolcall_delta") {
+          next.content[index].partialArguments = `${next.content[index].partialArguments ?? ""}${delta.delta ?? ""}`;
+          if (delta.toolCall?.id) next.content[index].id = delta.toolCall.id;
+          if (delta.toolCall?.name) next.content[index].name = delta.toolCall.name;
+          if (delta.toolCall?.arguments && typeof delta.toolCall.arguments === "object") {
+            next.content[index].arguments = delta.toolCall.arguments;
+          }
+        }
         if (delta.type === "toolcall_end" && delta.toolCall) next.content[index] = delta.toolCall;
         return next;
       });
@@ -2118,10 +2132,11 @@ export default function App() {
     const persisted = toolResultsById.get(id);
     return {
       id,
-      name: String(call.name ?? live?.name ?? persisted?.toolName ?? "Инструмент"),
+      name: String(call.name && call.name !== "Инструмент" ? call.name : live?.name ?? persisted?.toolName ?? "Инструмент"),
       args: call.arguments ?? call.args ?? live?.args,
       result: persisted ? resultMessagePayload(persisted) : live?.result,
-      running: live?.running ?? (!persisted && working),
+      running: live?.running ?? false,
+      preparing: !live && !persisted && working,
       error: persisted ? Boolean(persisted.isError) : live?.error,
       startedAt: live?.startedAt ?? 0,
     };

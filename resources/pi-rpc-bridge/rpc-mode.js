@@ -17,6 +17,34 @@ import { killTrackedDetachedChildren } from "../../utils/shell.js";
 import { theme } from "../interactive/theme/theme.js";
 import { toJsonEvent } from "../json-event.js";
 import { attachJsonlLineReader, serializeJsonLine } from "./jsonl.js";
+
+function toDesktopJsonEvent(event) {
+    const jsonEvent = toJsonEvent(event);
+    if (event.type !== "message_update" || event.message?.role !== "assistant") {
+        return jsonEvent;
+    }
+    const delta = event.assistantMessageEvent;
+    if (!delta || !["toolcall_start", "toolcall_delta", "toolcall_end"].includes(delta.type)) {
+        return jsonEvent;
+    }
+    const contentIndex = Number(delta.contentIndex);
+    const content = Array.isArray(event.message.content) ? event.message.content[contentIndex] : undefined;
+    if (content?.type !== "toolCall") {
+        return jsonEvent;
+    }
+    return {
+        ...jsonEvent,
+        assistantMessageEvent: {
+            ...jsonEvent.assistantMessageEvent,
+            toolCall: {
+                type: "toolCall",
+                id: content.id,
+                name: content.name,
+                arguments: content.arguments,
+            },
+        },
+    };
+}
 /**
  * Run in RPC mode.
  * Listens for JSON commands on stdin, outputs events and responses on stdout.
@@ -406,7 +434,7 @@ export async function runRpcMode(runtimeHost) {
         unsubscribe?.();
         unsubscribeBackpressure?.();
         unsubscribe = session.subscribe((event) => {
-            output(toJsonEvent(event));
+            output(toDesktopJsonEvent(event));
             if (event.type === "agent_settled") {
                 void checkShutdownRequested();
             }
