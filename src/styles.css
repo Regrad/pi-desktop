@@ -1,5 +1,8 @@
 :root {
-  font-family: "Segoe UI Variable", "Segoe UI", system-ui, sans-serif;
+  font-family: -apple-system, system-ui, "Segoe UI", sans-serif;
+  font-size: 14px;
+  font-weight: 430;
+  line-height: 1.5;
   color: #242424;
   background: #f7f7f5;
   font-synthesis: none;
@@ -82,7 +85,7 @@ button:not(:disabled) { cursor: pointer; }
 .icon-button:hover { background: var(--hover); }
 .conversation-scroll { flex: 1; min-height: 0; overflow-y: auto; overscroll-behavior: contain; }
 .thread { width: min(760px, calc(100% - 48px)); margin: 0 auto; padding: 46px 0 28px; }
-.message { margin: 0 0 26px; line-height: 1.58; font-size: 14.5px; }
+.message { margin: 0 0 26px; color: #1d1d1f; font-size: 14px; font-weight: 430; line-height: 21px; }
 .message.user { display: flex; justify-content: flex-end; }
 .user-bubble { max-width: 78%; background: #f1f1ee; padding: 10px 14px; border-radius: 18px; }
 .user-bubble p { margin: 0; }
@@ -90,13 +93,20 @@ button:not(:disabled) { cursor: pointer; }
 .message-attachments span { display: flex; align-items: center; gap: 4px; color: #686864; font-size: 11px; }
 .assistant-message > :first-child { margin-top: 0; }
 .assistant-message > :last-child { margin-bottom: 0; }
-.assistant-message p { margin: 0 0 14px; }
+.assistant-message p { margin: 0 0 12px; }
+.assistant-message ul, .assistant-message ol { margin: 6px 0 14px; padding-left: 22px; }
+.assistant-message li { margin: 2px 0; }
+.assistant-message h1, .assistant-message h2, .assistant-message h3,
+.assistant-message h4, .assistant-message h5, .assistant-message h6 { margin: 20px 0 8px; line-height: 1.3; }
+.assistant-message h1 { font-size: 20px; font-weight: 600; }
+.assistant-message h2 { font-size: 18px; font-weight: 600; }
+.assistant-message h3, .assistant-message h4, .assistant-message h5, .assistant-message h6 { font-size: 16px; font-weight: 600; }
 .assistant-message pre, .tool-card pre { background: #f6f6f3; border: 1px solid #e7e7e1; border-radius: 9px; padding: 12px; overflow: auto; font: 12.5px/1.5 "Cascadia Code", Consolas, monospace; white-space: pre-wrap; overflow-wrap: anywhere; }
 .assistant-message code:not(pre code) { background: #efefec; border-radius: 4px; padding: 1px 4px; font: 12.5px "Cascadia Code", Consolas, monospace; }
 .assistant-message a { color: #2667a9; }
-.assistant-final { color: #282826; font-size: 14.5px; line-height: 1.62; }
+.assistant-final { color: #1d1d1f; font-size: 14px; font-weight: 430; line-height: 21px; }
 .assistant-final + .assistant-final { margin-top: 12px; }
-.thinking-block { margin: 3px 0 14px; color: #777773; font-size: 13.5px; font-style: italic; line-height: 1.58; }
+.thinking-block { margin: 3px 0 14px; color: #737373; font-size: 14px; font-style: italic; font-weight: 430; line-height: 21px; }
 .thinking-block.streaming { color: #666661; }
 .thinking-block > :first-child { margin-top: 0; }
 .thinking-block > :last-child { margin-bottom: 0; }
