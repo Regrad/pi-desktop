@@ -159,6 +159,54 @@ function ContentParts({ content }: { content: JsonObject[] }) {
   })}</>;
 }
 
+function SmoothStreamingText({ text }: { text: string }) {
+  const outputRef = useRef<HTMLDivElement>(null);
+  const targetRef = useRef("");
+  const renderedRef = useRef("");
+  const timerRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+  const pumpRef = useRef<() => void>(() => undefined);
+
+  pumpRef.current = () => {
+    const output = outputRef.current;
+    if (!output?.isConnected) {
+      timerRef.current = undefined;
+      return;
+    }
+    const remaining = targetRef.current.slice(renderedRef.current.length);
+    if (!remaining) {
+      timerRef.current = undefined;
+      return;
+    }
+    const batchSize = remaining.length > 1800 ? 12 : remaining.length > 700 ? 7 : remaining.length > 180 ? 4 : 2;
+    const chunk = remaining.slice(0, batchSize);
+    const fragment = document.createElement("span");
+    fragment.className = "stream-reveal-fragment";
+    fragment.textContent = chunk;
+    output.append(fragment);
+    renderedRef.current += chunk;
+    timerRef.current = setTimeout(() => pumpRef.current(), 18);
+  };
+
+  useEffect(() => {
+    const output = outputRef.current;
+    if (!output) return;
+    if (!text.startsWith(renderedRef.current)) {
+      if (timerRef.current) clearTimeout(timerRef.current);
+      timerRef.current = undefined;
+      renderedRef.current = "";
+      output.replaceChildren();
+    }
+    targetRef.current = text;
+    if (!timerRef.current) pumpRef.current();
+  }, [text]);
+
+  useEffect(() => () => {
+    if (timerRef.current) clearTimeout(timerRef.current);
+  }, []);
+
+  return <div className="stream-reveal-output" ref={outputRef} />;
+}
+
 function MessageContent({
   message,
   assistant = false,
@@ -172,7 +220,9 @@ function MessageContent({
   if (typeof content === "string") {
     return (
       <>
-        {assistant ? <div className="assistant-final"><Markdown text={content} /></div> : <Markdown text={content} />}
+        {assistant
+          ? <div className="assistant-final">{streaming ? <SmoothStreamingText text={content} /> : <Markdown text={content} />}</div>
+          : <Markdown text={content} />}
         {Array.isArray(message.attachments) && (
           <div className="message-attachments">
             {message.attachments.map((name: string) => <span key={name}><Paperclip size={12} />{name}</span>)}
@@ -188,7 +238,7 @@ function MessageContent({
         if (["text", "image", "audio", "resource", "resource_link"].includes(String(part.type))) {
           const rendered = <ContentParts content={[part]} />;
           return assistant && part.type === "text"
-            ? <div className="assistant-final" key={index}>{rendered}</div>
+            ? <div className="assistant-final" key={index}>{streaming ? <SmoothStreamingText text={String(part.text ?? "")} /> : rendered}</div>
             : <Fragment key={index}>{rendered}</Fragment>;
         }
         if (part.type === "thinking") {
@@ -203,7 +253,7 @@ function MessageContent({
           if (!text) return null;
           return (
             <div className={`thinking-block ${streaming ? "streaming" : ""}`} key={index}>
-              <Markdown text={text} />
+              {streaming ? <SmoothStreamingText text={text} /> : <Markdown text={text} />}
             </div>
           );
         }

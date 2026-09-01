@@ -106,6 +106,15 @@ button:not(:disabled) { cursor: pointer; }
 .assistant-message a { color: #2667a9; }
 .assistant-final { color: #1d1d1f; font-size: 14px; font-weight: 430; line-height: 21px; }
 .assistant-final + .assistant-final { margin-top: 12px; }
+.stream-reveal-output { line-height: inherit; overflow-wrap: anywhere; white-space: pre-wrap; }
+.stream-reveal-fragment { animation: stream-reveal 240ms ease-out both; }
+@keyframes stream-reveal {
+  from { filter: blur(1px); opacity: 0; }
+  to { filter: blur(0); opacity: 1; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .stream-reveal-fragment { animation: none; }
+}
 .thinking-block { margin: 3px 0 14px; color: #737373; font-size: 14px; font-style: italic; font-weight: 430; line-height: 21px; }
 .thinking-block.streaming { color: #666661; }
 .thinking-block > :first-child { margin-top: 0; }
