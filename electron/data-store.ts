@@ -133,6 +133,7 @@ export class DataStore {
     if (!existsSync(repairConfig)) {
       await copyFile(path.join(templateDir, "pi-tool-repair.json"), repairConfig);
     }
+    await this.migrateLegacyToolRepairConfig(repairConfig);
   }
 
   private async migrateManagedMcpServers(configPath: string): Promise<void> {
@@ -148,12 +149,13 @@ export class DataStore {
     const isManagedDirectEntry = args.some((item) => typeof item === "string"
       && item.replace(/\\/g, "/").includes("/@zavora-ai/computer-use-mcp/dist/server.js"));
     const isTemplateEntry = computerUse?.command === "${PI_DESKTOP_EXECUTABLE}";
+    const directToolsEnabled = computerUse?.directTools !== false;
     if (isManagedNpxEntry || isManagedDirectEntry || isTemplateEntry) {
       config.mcpServers!["computer-use"] = {
         command: this.runtimeExecutable,
         args: [path.join(this.appRoot, "node_modules", "@zavora-ai", "computer-use-mcp", "dist", "server.js")],
         env: { ELECTRON_RUN_AS_NODE: "1" },
-        directTools: computerUse.directTools !== false,
+        directTools: directToolsEnabled,
       };
     }
     await writeFile(configPath, `${JSON.stringify(config, null, 2)}\n`, "utf8");
@@ -163,6 +165,22 @@ export class DataStore {
     const current = (await readFile(promptPath, "utf8")).trim();
     if (current !== "Перед любыми правками файлов ты спрашиваешь у пользователя разрешение.") return;
     await writeFile(promptPath, "Before modifying any files, ask the user for permission.\n", "utf8");
+  }
+
+  private async migrateLegacyToolRepairConfig(configPath: string): Promise<void> {
+    const config = JSON.parse(await readFile(configPath, "utf8")) as {
+      grammarRepair?: { enabled?: boolean; grammars?: unknown; leakModels?: unknown };
+    };
+    const repair = config.grammarRepair;
+    const isLegacyQwenGlobal = repair?.enabled === true
+      && Array.isArray(repair.grammars)
+      && repair.grammars.length === 1
+      && repair.grammars[0] === "qwen"
+      && repair.leakModels === undefined;
+    if (!isLegacyQwenGlobal || !repair) return;
+    repair.enabled = false;
+    repair.leakModels = ["qwen"];
+    await writeFile(configPath, `${JSON.stringify(config, null, 2)}\n`, "utf8");
   }
 
   snapshot(): DesktopState {

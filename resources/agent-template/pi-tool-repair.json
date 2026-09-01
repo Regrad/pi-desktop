@@ -1,8 +1,9 @@
 {
   "grammarRepair": {
-    "enabled": true,
+    "enabled": false,
     "mode": "recover",
     "requireKnownTool": true,
-    "grammars": ["qwen"]
+    "grammars": ["qwen"],
+    "leakModels": ["qwen"]
   }
 }

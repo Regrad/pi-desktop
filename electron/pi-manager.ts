@@ -401,6 +401,12 @@ export class PiManager {
       runtime.snapshot.state.steeringMessages = steeringMessages;
       runtime.snapshot.state.followUpMessages = followUpMessages;
       runtime.snapshot.state.pendingMessageCount = steeringMessages.length + followUpMessages.length;
+    } else if (event.type === "compaction_start" && runtime.snapshot) {
+      runtime.snapshot.state.isCompacting = true;
+    } else if (event.type === "compaction_end" && runtime.snapshot) {
+      runtime.snapshot.state.isCompacting = false;
+      await this.refreshState(conversationId, runtime);
+      event.state = runtime.snapshot.state;
     } else if (event.type === "extension_error") {
       const extensionError = {
         extensionPath: typeof event.extensionPath === "string" ? event.extensionPath : undefined,

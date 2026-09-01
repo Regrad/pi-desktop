@@ -14,6 +14,7 @@ import {
   Folder,
   FolderOpen,
   Gauge,
+  Keyboard,
   Menu,
   MessageSquarePlus,
   MoreHorizontal,
@@ -66,7 +67,7 @@ interface Notice {
   type: "info" | "warning" | "error";
 }
 
-type SettingsSection = "general" | "models" | "modules" | "configuration" | "archive" | "about";
+type SettingsSection = "general" | "models" | "modules" | "configuration" | "shortcuts" | "archive" | "about";
 
 interface ConversationMenuState {
   conversationId: string;
@@ -335,6 +336,7 @@ function ExtensionDialog({
   useEffect(() => {
     if (request.method !== "custom") return;
     const onKeyDown = (event: KeyboardEvent) => {
+      if (extensionDialog) return;
       const input = terminalInputFromKeyboard(event);
       if (!input) return;
       event.preventDefault();
@@ -559,6 +561,7 @@ function SettingsPage({
     { id: "models", label: "Модели", icon: Cpu },
     { id: "modules", label: "Модули", icon: Boxes },
     { id: "configuration", label: "Конфигурация Pi", icon: FileText },
+    { id: "shortcuts", label: "Сочетания клавиш", icon: Keyboard },
     { id: "archive", label: "Архивированные чаты", icon: Archive },
     { id: "about", label: "О программе", icon: Bot },
   ];
@@ -666,6 +669,18 @@ function SettingsPage({
                 <SettingRow title="Pi Desktop" description="Портативный настольный интерфейс для Pi." value="0.1.0" />
                 <SettingRow title="Pi Core" description="Встроенное ядро агента." value="0.84.2" />
                 <SettingRow title="Интерфейс расширений" description="Инструменты, статусы, уведомления и диалоги работают через RPC." value="Активен" />
+              </div>
+            </>
+          )}
+          {section === "shortcuts" && (
+            <>
+              <h1>Сочетания клавиш</h1>
+              <div className="settings-card">
+                <SettingRow title="Новый самостоятельный чат" description="Создать чат без привязки к проекту." value="Ctrl+N" />
+                <SettingRow title="Настройки" description="Открыть настройки Pi Desktop." value="Ctrl+," />
+                <SettingRow title="Боковая панель" description="Показать или скрыть проекты и чаты." value="Ctrl+B" />
+                <SettingRow title="Отправить сообщение" description="Обычная отправка; во время работы сообщение встанет в очередь." value="Enter" />
+                <SettingRow title="Отправить в текущую работу" description="Во время работы немедленно передать корректировку модели." value="Ctrl+Enter" />
               </div>
             </>
           )}
@@ -1017,6 +1032,23 @@ export default function App() {
         ...current,
         state: { ...current.state, steeringMessages: steering, followUpMessages: followUp, pendingMessageCount: steering.length + followUp.length },
       } : current);
+    } else if (event.type === "compaction_start") {
+      setSnapshot((current) => current ? { ...current, state: { ...current.state, isCompacting: true } } : current);
+      setWorkingMessage("Сжатие контекста…");
+    } else if (event.type === "compaction_end") {
+      setSnapshot((current) => current ? { ...current, state: event.state ?? { ...current.state, isCompacting: false } } : current);
+      setWorkingMessage("");
+      if (event.errorMessage) addNotice(`Сжатие контекста: ${String(event.errorMessage)}`, "warning");
+    } else if (event.type === "auto_retry_start") {
+      setWorking(true);
+      setWorkingMessage(`Повтор запроса ${Number(event.attempt ?? 0)}/${Number(event.maxAttempts ?? 0)}…`);
+    } else if (event.type === "auto_retry_end") {
+      setWorkingMessage("");
+      if (event.success === false && event.finalError) addNotice(String(event.finalError), "error");
+    } else if (event.type === "summarization_retry_scheduled") {
+      setWorkingMessage(`Повтор сжатия ${Number(event.attempt ?? 0)}/${Number(event.maxAttempts ?? 0)}…`);
+    } else if (event.type === "summarization_retry_finished") {
+      setWorkingMessage("");
     } else if (event.type === "runtime_error" || event.type === "extension_error") {
       addNotice(String(event.error ?? "Ошибка Pi"), "error");
       setWorking(false);
@@ -1346,6 +1378,33 @@ export default function App() {
     }
   };
 
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (!(event.ctrlKey || event.metaKey)) {
+        if (event.key === "Escape") {
+          setModelMenuOpen(false);
+          setThinkingMenuOpen(false);
+          setConversationMenu(undefined);
+          setProjectMenu(undefined);
+          if (diffOpen) setDiffOpen(false);
+        }
+        return;
+      }
+      if (event.key.toLocaleLowerCase() === "n") {
+        event.preventDefault();
+        void newChat();
+      } else if (event.key === ",") {
+        event.preventDefault();
+        setSettingsOpen(true);
+      } else if (event.key.toLocaleLowerCase() === "b") {
+        event.preventDefault();
+        setSidebarOpen((value) => !value);
+      }
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [diffOpen, extensionDialog]);
+
   const activeProject = projects.find((item) => item.id === activeProjectId);
   const activeConversation = conversations.find((item) => item.id === activeConversationId) ?? snapshot?.conversation;
   const grouped = useMemo(() => projects.map((project) => ({
@@ -1555,6 +1614,14 @@ export default function App() {
                 <textarea
                   value={input}
                   onChange={(event) => setInput(event.target.value)}
+                  onPaste={(event) => {
+                    const imageFiles = [...event.clipboardData.files].filter((file) => file.type.startsWith("image/"));
+                    if (!imageFiles.length) return;
+                    event.preventDefault();
+                    void Promise.all(imageFiles.map(pastedImageAttachment))
+                      .then((items) => setAttachments((current) => [...current, ...items]))
+                      .catch((error) => addNotice(error instanceof Error ? error.message : String(error), "error"));
+                  }}
                   onKeyDown={(event) => {
                     if (event.key === "Enter" && !event.shiftKey) {
                       event.preventDefault();
@@ -1569,7 +1636,7 @@ export default function App() {
                   <span className="access-chip"><Check size={13} /> Полный доступ</span>
                   <div className="composer-spacer" />
                   <div className="dropdown-wrap">
-                    <button className="selector-button" onClick={() => setModelMenuOpen((value) => !value)}>
+                    <button className="selector-button" onClick={() => { setThinkingMenuOpen(false); setModelMenuOpen((value) => !value); }}>
                       {snapshot?.state.model?.name ?? snapshot?.state.model?.id ?? "Модель"}<ChevronDown size={13} />
                     </button>
                     {modelMenuOpen && <div className="dropdown-menu model-menu">
@@ -1580,7 +1647,7 @@ export default function App() {
                     </div>}
                   </div>
                   <div className="dropdown-wrap">
-                    <button className="selector-button" onClick={() => setThinkingMenuOpen((value) => !value)}>
+                    <button className="selector-button" onClick={() => { setModelMenuOpen(false); setThinkingMenuOpen((value) => !value); }}>
                       {THINKING_LABELS[snapshot?.state.thinkingLevel ?? "off"]}<ChevronDown size={13} />
                     </button>
                     {thinkingMenuOpen && <div className="dropdown-menu thinking-menu">
@@ -1691,4 +1758,35 @@ function extensionName(extensionPath: string): string {
   const extensionIndex = parts.lastIndexOf("extensions");
   if (extensionIndex >= 0 && parts[extensionIndex + 1]) return parts[extensionIndex + 1];
   return parts.at(-2) ?? parts.at(-1) ?? extensionPath;
+}
+
+async function pastedImageAttachment(file: File): Promise<Attachment> {
+  const bitmap = await createImageBitmap(file);
+  const canvas = document.createElement("canvas");
+  canvas.width = bitmap.width;
+  canvas.height = bitmap.height;
+  const context = canvas.getContext("2d");
+  if (!context) throw new Error("Не удалось подготовить изображение из буфера обмена");
+  context.drawImage(bitmap, 0, 0);
+  bitmap.close();
+  const png = await new Promise<Blob>((resolve, reject) => {
+    canvas.toBlob((blob) => blob ? resolve(blob) : reject(new Error("Не удалось преобразовать изображение в PNG")), "image/png");
+  });
+  const dataUrl = await new Promise<string>((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onerror = () => reject(reader.error ?? new Error("Не удалось прочитать изображение из буфера обмена"));
+    reader.onload = () => resolve(String(reader.result ?? ""));
+    reader.readAsDataURL(png);
+  });
+  const separator = dataUrl.indexOf(",");
+  if (separator < 0) throw new Error("Некорректное изображение в буфере обмена");
+  const sourceName = file.name?.replace(/\.[^.]+$/, "") || `clipboard-${Date.now()}`;
+  const name = `${sourceName}.png`;
+  return {
+    id: crypto.randomUUID(),
+    name,
+    path: `clipboard:${name}`,
+    mimeType: "image/png",
+    data: dataUrl.slice(separator + 1),
+  };
 }
