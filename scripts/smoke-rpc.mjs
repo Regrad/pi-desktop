@@ -1,5 +1,6 @@
 import { spawn } from "node:child_process";
-import { mkdir } from "node:fs/promises";
+import { mkdir, mkdtemp, rm } from "node:fs/promises";
+import os from "node:os";
 import path from "node:path";
 import process from "node:process";
 import { fileURLToPath } from "node:url";
@@ -8,9 +9,10 @@ const sourceRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), ".
 const root = process.env.PI_DESKTOP_SMOKE_ROOT
   ? path.resolve(process.env.PI_DESKTOP_SMOKE_ROOT)
   : sourceRoot;
-const agentDir = path.join(root, "data", "agent");
+const smokeRoot = await mkdtemp(path.join(os.tmpdir(), "pi-desktop-rpc-smoke-"));
+const agentDir = path.join(smokeRoot, "agent");
 const sessionsDir = path.join(agentDir, "sessions");
-const projectDir = path.join(root, "data", "smoke-project");
+const projectDir = path.join(smokeRoot, "project");
 const cliPath = path.join(
   root,
   ...(process.env.PI_DESKTOP_SMOKE_ROOT ? ["resources", "app"] : []),
@@ -152,4 +154,5 @@ try {
   if (stderr.trim()) process.stdout.write(`--- stderr ---\n${stderr.trim()}\n`);
 } finally {
   await stop();
+  await rm(smokeRoot, { recursive: true, force: true });
 }

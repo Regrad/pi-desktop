@@ -11,7 +11,7 @@
     "electron:build": "npm run bridge:apply && tsc -p tsconfig.electron.json",
     "build": "tsc -p tsconfig.json --noEmit && vite build && npm run electron:build",
     "start": "npm run bridge:apply && electron .",
-    "pack": "npm run build && electron-builder --win dir",
+    "pack": "npm run build && node scripts/package-unpacked.mjs",
     "portable": "npm run build && electron-builder --win portable"
   },
   "dependencies": {
