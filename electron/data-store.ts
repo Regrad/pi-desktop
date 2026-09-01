@@ -133,14 +133,18 @@ export class DataStore {
       "pi-lens",
       "pi-loop-police",
     ];
+    const managedResourceNames = [
+      "pi-lens-all-tools",
+      "pi-single-slot-guard",
+    ];
     const managedPackages = [
       ...packageNames.map((name) => path.join(this.appRoot, "node_modules", name)),
-      path.join(this.appRoot, "resources", "pi-lens-all-tools"),
+      ...managedResourceNames.map((name) => path.join(this.appRoot, "resources", name)),
     ];
     const configuredPackages = Array.isArray(settings.packages)
       ? settings.packages.filter((item): item is string => typeof item === "string")
       : [];
-    const customPackages = configuredPackages.filter((item) => !isManagedPackage(item, packageNames));
+    const customPackages = configuredPackages.filter((item) => !isManagedPackage(item, packageNames, managedResourceNames));
     settings.packages = [...managedPackages, ...customPackages];
     await writeFile(settingsPath, `${JSON.stringify(settings, null, 2)}\n`, "utf8");
 
@@ -725,11 +729,11 @@ function pathsEqual(left: string, right: string): boolean {
   return normalizePathKey(left) === normalizePathKey(right);
 }
 
-function isManagedPackage(value: string, packageNames: string[]): boolean {
+function isManagedPackage(value: string, packageNames: string[], managedResourceNames: string[]): boolean {
   const normalized = value.replaceAll("/", "\\").toLocaleLowerCase();
-  if (normalized.endsWith("\\resources\\pi-lens-all-tools") || normalized.endsWith("\\local-packages\\pi-lens-all-tools")) {
-    return true;
-  }
+  if (managedResourceNames.some((name) =>
+    normalized.endsWith(`\\resources\\${name}`) || normalized.endsWith(`\\local-packages\\${name}`),
+  )) return true;
   return packageNames.some((name) =>
     normalized === `npm:${name}` ||
     normalized.endsWith(`\\node_modules\\${name}`),
