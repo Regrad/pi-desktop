@@ -90,6 +90,10 @@ interface ProjectMenuState {
   y: number;
 }
 
+type TranscriptTimelineItem =
+  | { kind: "message"; message: JsonObject; sourceIndex: number; timestamp: number; order: number }
+  | { kind: "extension"; entry: ConversationSnapshot["entries"][number]; sourceIndex: number; timestamp: number; order: number };
+
 const THINKING_LABELS: Record<ThinkingLevel, string> = {
   off: "Без рассуждений",
   minimal: "Минимально",
@@ -102,6 +106,15 @@ const THINKING_LABELS: Record<ThinkingLevel, string> = {
 
 function messageKey(message: JsonObject, index: number): string {
   return String(message.id ?? message.timestamp ?? `${message.role}-${index}`);
+}
+
+function transcriptTimestamp(value: unknown, fallback: number): number {
+  if (typeof value === "number" && Number.isFinite(value)) return value;
+  if (typeof value === "string") {
+    const parsed = Date.parse(value);
+    if (Number.isFinite(parsed)) return parsed;
+  }
+  return fallback;
 }
 
 function messageText(message: JsonObject): string {
@@ -2189,6 +2202,23 @@ export default function App() {
     }
   };
   const renderedMessages = streamingMessage ? [...messages, streamingMessage] : messages;
+  const visibleExtensionEntries = (snapshot?.entries ?? []).filter((entry) => entry.renderedLines?.length);
+  const transcriptItems: TranscriptTimelineItem[] = [
+    ...renderedMessages.map((message, sourceIndex): TranscriptTimelineItem => ({
+      kind: "message",
+      message,
+      sourceIndex,
+      timestamp: transcriptTimestamp(message.timestamp, Number.MAX_SAFE_INTEGER - 100_000 + sourceIndex),
+      order: sourceIndex * 2,
+    })),
+    ...visibleExtensionEntries.map((entry, sourceIndex): TranscriptTimelineItem => ({
+      kind: "extension",
+      entry,
+      sourceIndex,
+      timestamp: transcriptTimestamp(entry.timestamp, Number.MAX_SAFE_INTEGER - 50_000 + sourceIndex),
+      order: sourceIndex * 2 + 1,
+    })),
+  ].sort((left, right) => left.timestamp - right.timestamp || left.order - right.order);
   const slashQuery = input.startsWith("/") && !input.includes(" ") ? input.slice(1).toLocaleLowerCase() : undefined;
   const slashCommands = slashQuery === undefined ? [] : (snapshot?.commands ?? [])
     .filter((command) => command.name.toLocaleLowerCase().includes(slashQuery))
@@ -2345,7 +2375,19 @@ export default function App() {
             ) : (
               <div className="thread" ref={conversationThreadRef}>
                 {headerLines.length > 0 && <div className="extension-frame header-frame">{headerLines.map((line, index) => <div key={`${index}-${line}`}>{line}</div>)}</div>}
-                {renderedMessages.map((message, index) => {
+                {transcriptItems.map((item) => {
+                  if (item.kind === "extension") {
+                    const { entry, sourceIndex } = item;
+                    return (
+                      <div className="extension-entry" key={entry.id ?? `${entry.type}-${sourceIndex}`}>
+                        {entry.renderedLines!.map((line, lineIndex) => {
+                          const cleanLine = stripTerminalCodes(line);
+                          return <div key={`${lineIndex}-${cleanLine}`}>{cleanLine}</div>;
+                        })}
+                      </div>
+                    );
+                  }
+                  const { message, sourceIndex: index } = item;
                   if (message.role === "toolResult" || message.role === "tool") {
                     const id = toolResultIdentifier(message);
                     if (id && transcriptToolIds.has(id)) return null;
@@ -2378,12 +2420,6 @@ export default function App() {
                   );
                 })}
                 {orphanTools.map((tool) => <ToolCard key={tool.id} tool={tool} />)}
-                {snapshot?.entries.filter((entry) => entry.renderedLines?.length).map((entry, index) => (
-                  <div className="extension-entry" key={entry.id ?? `${entry.type}-${index}`}>{entry.renderedLines!.map((line, lineIndex) => {
-                    const cleanLine = stripTerminalCodes(line);
-                    return <div key={`${lineIndex}-${cleanLine}`}>{cleanLine}</div>;
-                  })}</div>
-                ))}
                 {footerLines.length > 0 && <div className="extension-frame footer-frame">{footerLines.map((line, index) => <div key={`${index}-${line}`}>{line}</div>)}</div>}
                 {working && (
                   <div className="run-activity" role="status" aria-live="polite">
