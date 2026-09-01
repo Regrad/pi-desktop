@@ -2,7 +2,7 @@ import { app, BrowserWindow, dialog, ipcMain, Menu, nativeImage, Notification, s
 import { appendFile, mkdir, rename, stat } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import type { Attachment, ModelServerDiscoveryInput, ThinkingLevel } from "../shared/types.js";
+import type { Attachment, ConfiguredModelUpdate, ModelServerDiscoveryInput, ThinkingLevel } from "../shared/types.js";
 import { DataStore } from "./data-store.js";
 import { PiManager } from "./pi-manager.js";
 
@@ -218,6 +218,38 @@ function registerIpc(): void {
   ipcMain.handle("desktop:save-global-prompt", (_event, prompt: string) => store.saveGlobalPrompt(prompt));
   ipcMain.handle("desktop:get-model-servers", () => store.getModelServers());
   ipcMain.handle("desktop:discover-model-server", (_event, input: ModelServerDiscoveryInput) => store.discoverModelServer(input));
+  ipcMain.handle("desktop:update-configured-model", (_event, input: ConfiguredModelUpdate) => store.updateConfiguredModel(input));
+  ipcMain.handle("desktop:delete-configured-model", async (_event, providerId: string, modelId: string) => {
+    const server = (await store.getModelServers()).find((item) => item.id === providerId);
+    const model = server?.models.find((item) => item.id === modelId);
+    if (!server || !model) return null;
+    const result = await dialog.showMessageBox(mainWindow!, {
+      type: "warning",
+      title: "Удалить модель?",
+      message: `Удалить модель «${model.name ?? model.id}»?`,
+      detail: `Она будет удалена из конфигурации сервера «${providerId}». Файлы модели на сервере не затрагиваются.`,
+      buttons: ["Отмена", "Удалить"],
+      defaultId: 0,
+      cancelId: 0,
+      noLink: true,
+    });
+    return result.response === 1 ? store.deleteConfiguredModel(providerId, modelId) : null;
+  });
+  ipcMain.handle("desktop:delete-model-server", async (_event, providerId: string) => {
+    const server = (await store.getModelServers()).find((item) => item.id === providerId);
+    if (!server) return false;
+    const result = await dialog.showMessageBox(mainWindow!, {
+      type: "warning",
+      title: "Удалить сервер?",
+      message: `Удалить сервер «${providerId}» из Pi?`,
+      detail: `Из models.json будут удалены сервер и ${server.models.length} ${server.models.length === 1 ? "модель" : "моделей"}. Сам сервер и файлы моделей не затрагиваются.`,
+      buttons: ["Отмена", "Удалить"],
+      defaultId: 0,
+      cancelId: 0,
+      noLink: true,
+    });
+    return result.response === 1 ? store.deleteModelServer(providerId) : false;
+  });
   ipcMain.handle("desktop:show-item", (_event, itemPath: string) => shell.showItemInFolder(itemPath));
 }
 

@@ -6,6 +6,7 @@ import path from "node:path";
 import { SessionManager, type SessionInfo } from "@earendil-works/pi-coding-agent";
 import type {
   ConfiguredModelServer,
+  ConfiguredModelUpdate,
   ConversationRecord,
   ConversationRun,
   ModelInfo,
@@ -22,6 +23,10 @@ interface DesktopState {
   conversations: ConversationRecord[];
   activeProjectId?: string;
   activeConversationId?: string;
+}
+
+interface ModelsFileConfig {
+  providers?: Record<string, Record<string, unknown>>;
 }
 
 const EMPTY_STATE: DesktopState = {
@@ -193,9 +198,7 @@ export class DataStore {
   }
 
   async getModelServers(): Promise<ConfiguredModelServer[]> {
-    const config = JSON.parse(await readFile(path.join(this.agentDir, "models.json"), "utf8")) as {
-      providers?: Record<string, Record<string, unknown>>;
-    };
+    const config = await this.readModelsConfig();
     return Object.entries(config.providers ?? {})
       .filter(([, provider]) => typeof provider.baseUrl === "string" && Array.isArray(provider.models))
       .map(([id, provider]) => configuredServerView(id, provider));
@@ -203,15 +206,15 @@ export class DataStore {
 
   async discoverModelServer(input: ModelServerDiscoveryInput): Promise<ModelServerDiscoveryResult> {
     const discovered = await discoverProvider(input);
-    const modelsPath = path.join(this.agentDir, "models.json");
-    const config = JSON.parse(await readFile(modelsPath, "utf8")) as {
-      providers?: Record<string, Record<string, unknown>>;
-    };
+    const config = await this.readModelsConfig();
     const providers = config.providers ?? {};
-    const matchingEntry = Object.entries(providers).find(([, provider]) =>
+    const addressEntry = Object.entries(providers).find(([, provider]) =>
       typeof provider.baseUrl === "string"
       && provider.baseUrl.replace(/\/+$/, "").toLocaleLowerCase() === discovered.baseUrl.toLocaleLowerCase(),
     );
+    if (input.providerId && !providers[input.providerId]) throw new Error("Настраиваемый сервер больше не существует");
+    if (input.providerId && addressEntry && addressEntry[0] !== input.providerId) throw new Error(`Этот адрес уже используется сервером «${addressEntry[0]}»`);
+    const matchingEntry = input.providerId ? [input.providerId, providers[input.providerId]] as const : addressEntry;
     let providerId = matchingEntry?.[0] ?? discovered.suggestedId;
     let suffix = 2;
     while (!matchingEntry && providers[providerId]) providerId = `${discovered.suggestedId}-${suffix++}`;
@@ -247,11 +250,7 @@ export class DataStore {
     };
     providers[providerId] = provider;
     config.providers = providers;
-    const tempPath = `${modelsPath}.tmp`;
-    await this.enqueueWrite(async () => {
-      await writeFile(tempPath, `${JSON.stringify(config, null, 2)}\n`, "utf8");
-      await rename(tempPath, modelsPath);
-    });
+    await this.writeModelsConfig(config);
     const addedModels = discoveredModels.filter((model) => !existingById.has(String(model.id ?? ""))).length;
     return {
       ...discovered.publicResult,
@@ -259,6 +258,72 @@ export class DataStore {
       addedModels,
       updatedModels: discoveredModels.length - addedModels,
     };
+  }
+
+  async updateConfiguredModel(input: ConfiguredModelUpdate): Promise<ConfiguredModelServer> {
+    const config = await this.readModelsConfig();
+    const provider = config.providers?.[input.providerId];
+    if (!provider) throw new Error("Сервер модели не найден");
+    const models = Array.isArray(provider.models)
+      ? provider.models.filter((item): item is Record<string, unknown> => Boolean(item) && typeof item === "object" && !Array.isArray(item))
+      : [];
+    const modelIndex = models.findIndex((model) => String(model.id ?? "") === input.originalModelId);
+    if (modelIndex < 0) throw new Error("Модель не найдена");
+    const id = input.id.trim();
+    if (!id) throw new Error("ID модели не может быть пустым");
+    if (models.some((model, index) => index !== modelIndex && String(model.id ?? "") === id)) throw new Error(`Модель «${id}» уже существует на этом сервере`);
+    const contextWindow = input.contextWindow === undefined ? undefined : validatePositiveInteger(input.contextWindow, "Контекст");
+    const maxTokens = input.maxTokens === undefined ? undefined : validatePositiveInteger(input.maxTokens, "Лимит ответа");
+    if (contextWindow && maxTokens && maxTokens > contextWindow) throw new Error("Лимит ответа не может превышать размер контекста");
+    const inputTypes = [...new Set(["text", ...input.input.filter((item) => item === "image")])];
+    const levels = [...new Set(input.thinkingLevels.filter((level) => THINKING_LEVELS.includes(level)))];
+    if (input.reasoning && !levels.length) throw new Error("Выберите хотя бы один уровень рассуждений");
+    const sampling = input.samplingParams && typeof input.samplingParams === "object" && !Array.isArray(input.samplingParams)
+      ? Object.fromEntries(Object.entries(input.samplingParams).filter(([, value]) => ["number", "boolean", "string"].includes(typeof value)))
+      : undefined;
+    const updated: Record<string, unknown> = {
+      ...models[modelIndex],
+      id,
+      reasoning: input.reasoning,
+      input: inputTypes,
+    };
+    if (input.name?.trim()) updated.name = input.name.trim();
+    else delete updated.name;
+    if (contextWindow) updated.contextWindow = contextWindow;
+    else delete updated.contextWindow;
+    if (maxTokens) updated.maxTokens = maxTokens;
+    else delete updated.maxTokens;
+    if (sampling && Object.keys(sampling).length) updated.samplingParams = sampling;
+    else delete updated.samplingParams;
+    if (input.reasoning) {
+      updated.thinkingLevelMap = Object.fromEntries(THINKING_LEVELS.map((level) => [level, levels.includes(level) ? (level === "off" ? "none" : level) : null]));
+    } else {
+      delete updated.thinkingLevelMap;
+    }
+    models[modelIndex] = updated;
+    provider.models = models;
+    await this.writeModelsConfig(config);
+    return configuredServerView(input.providerId, provider);
+  }
+
+  async deleteConfiguredModel(providerId: string, modelId: string): Promise<ConfiguredModelServer | null> {
+    const config = await this.readModelsConfig();
+    const provider = config.providers?.[providerId];
+    if (!provider) return null;
+    const models = Array.isArray(provider.models) ? provider.models : [];
+    const nextModels = models.filter((item) => !item || typeof item !== "object" || Array.isArray(item) || String((item as Record<string, unknown>).id ?? "") !== modelId);
+    if (nextModels.length === models.length) return configuredServerView(providerId, provider);
+    provider.models = nextModels;
+    await this.writeModelsConfig(config);
+    return configuredServerView(providerId, provider);
+  }
+
+  async deleteModelServer(providerId: string): Promise<boolean> {
+    const config = await this.readModelsConfig();
+    if (!config.providers?.[providerId]) return false;
+    delete config.providers[providerId];
+    await this.writeModelsConfig(config);
+    return true;
   }
 
   private async migrateLegacyToolRepairConfig(configPath: string): Promise<void> {
@@ -612,6 +677,19 @@ export class DataStore {
     });
   }
 
+  private async readModelsConfig(): Promise<ModelsFileConfig> {
+    return JSON.parse(await readFile(path.join(this.agentDir, "models.json"), "utf8")) as ModelsFileConfig;
+  }
+
+  private async writeModelsConfig(config: ModelsFileConfig): Promise<void> {
+    const destination = path.join(this.agentDir, "models.json");
+    const tempPath = `${destination}.tmp`;
+    await this.enqueueWrite(async () => {
+      await writeFile(tempPath, `${JSON.stringify(config, null, 2)}\n`, "utf8");
+      await rename(tempPath, destination);
+    });
+  }
+
   private getRunPath(conversationId: string): string {
     return path.join(this.runsDir, `${conversationId}.json`);
   }
@@ -621,6 +699,11 @@ export class DataStore {
     this.writeQueue = next.catch(() => undefined);
     return next;
   }
+}
+
+function validatePositiveInteger(value: number, label: string): number {
+  if (!Number.isInteger(value) || value <= 0) throw new Error(`${label} должен быть положительным целым числом`);
+  return value;
 }
 
 function resolveStandardSessionsDir(): string {

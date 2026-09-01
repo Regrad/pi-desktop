@@ -37,7 +37,9 @@ import remarkGfm from "remark-gfm";
 import type {
   Attachment,
   BootstrapPayload,
+  ConfiguredModelInfo,
   ConfiguredModelServer,
+  ConfiguredModelUpdate,
   ConversationRecord,
   ConversationSnapshot,
   ExtensionState,
@@ -614,6 +616,96 @@ function RenameConversationDialog({
   );
 }
 
+function ModelSettingsDialog({
+  providerId,
+  model,
+  onClose,
+  onSave,
+}: {
+  providerId: string;
+  model: ConfiguredModelInfo;
+  onClose: () => void;
+  onSave: (input: ConfiguredModelUpdate) => Promise<void>;
+}) {
+  const [id, setId] = useState(model.id);
+  const [name, setName] = useState(model.name ?? "");
+  const [contextWindow, setContextWindow] = useState(model.contextWindow?.toString() ?? "");
+  const [maxTokens, setMaxTokens] = useState(model.maxTokens?.toString() ?? "");
+  const [reasoning, setReasoning] = useState(model.reasoning);
+  const [vision, setVision] = useState(model.input.includes("image"));
+  const [levels, setLevels] = useState<ThinkingLevel[]>(model.thinkingLevels);
+  const [samplingParams, setSamplingParams] = useState(model.samplingParams ? JSON.stringify(model.samplingParams, null, 2) : "{}");
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState("");
+  const toggleLevel = (level: ThinkingLevel) => setLevels((current) => current.includes(level) ? current.filter((item) => item !== level) : [...current, level]);
+  const save = async () => {
+    setError("");
+    let parsedSampling: Record<string, number | boolean | string> | undefined;
+    try {
+      const parsed = samplingParams.trim() ? JSON.parse(samplingParams) : {};
+      if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) throw new Error("Параметры семплирования должны быть объектом JSON");
+      const invalid = Object.entries(parsed).find(([, value]) => !["number", "boolean", "string"].includes(typeof value));
+      if (invalid) throw new Error(`Параметр «${invalid[0]}» должен быть числом, строкой или логическим значением`);
+      parsedSampling = parsed as Record<string, number | boolean | string>;
+    } catch (parseError) {
+      setError(parseError instanceof Error ? parseError.message : String(parseError));
+      return;
+    }
+    const parseOptionalInteger = (value: string, label: string): number | undefined => {
+      if (!value.trim()) return undefined;
+      const parsed = Number(value);
+      if (!Number.isInteger(parsed) || parsed <= 0) throw new Error(`${label} должен быть положительным целым числом`);
+      return parsed;
+    };
+    try {
+      setSaving(true);
+      await onSave({
+        providerId,
+        originalModelId: model.id,
+        id: id.trim(),
+        name: name.trim() || undefined,
+        contextWindow: parseOptionalInteger(contextWindow, "Контекст"),
+        maxTokens: parseOptionalInteger(maxTokens, "Лимит ответа"),
+        reasoning,
+        input: vision ? ["text", "image"] : ["text"],
+        thinkingLevels: reasoning ? levels : ["off"],
+        samplingParams: parsedSampling,
+      });
+      onClose();
+    } catch (saveError) {
+      setError(saveError instanceof Error ? saveError.message : String(saveError));
+    } finally {
+      setSaving(false);
+    }
+  };
+  return (
+    <div className="modal-backdrop">
+      <div className="modal-card model-settings-dialog">
+        <div className="modal-head"><strong>Настройки модели</strong><button className="icon-button" onClick={onClose}><X size={17} /></button></div>
+        <div className="model-settings-scroll">
+          <div className="model-field-grid">
+            <label><span>ID модели</span><input value={id} onChange={(event) => setId(event.target.value)} /></label>
+            <label><span>Название в интерфейсе</span><input value={name} onChange={(event) => setName(event.target.value)} placeholder="Необязательно" /></label>
+            <label><span>Размер контекста</span><input value={contextWindow} onChange={(event) => setContextWindow(event.target.value)} inputMode="numeric" placeholder="Автоматически" /></label>
+            <label><span>Максимум токенов ответа</span><input value={maxTokens} onChange={(event) => setMaxTokens(event.target.value)} inputMode="numeric" placeholder="Автоматически" /></label>
+          </div>
+          <div className="model-toggle-row">
+            <label><input type="checkbox" checked={reasoning} onChange={(event) => setReasoning(event.target.checked)} /> Модель поддерживает рассуждения</label>
+            <label><input type="checkbox" checked={vision} onChange={(event) => setVision(event.target.checked)} /> Модель принимает изображения</label>
+          </div>
+          <div className={`thinking-level-editor ${reasoning ? "" : "disabled"}`}>
+            <strong>Доступные уровни рассуждений</strong>
+            <div>{(Object.keys(THINKING_LABELS) as ThinkingLevel[]).map((level) => <label key={level}><input type="checkbox" disabled={!reasoning} checked={levels.includes(level)} onChange={() => toggleLevel(level)} />{THINKING_LABELS[level]}</label>)}</div>
+          </div>
+          <label className="sampling-editor"><span>Параметры семплирования, JSON</span><textarea value={samplingParams} onChange={(event) => setSamplingParams(event.target.value)} spellCheck={false} /></label>
+          {error && <div className="model-settings-error">{error}</div>}
+        </div>
+        <div className="modal-actions"><button onClick={onClose}>Отмена</button><button className="primary" disabled={saving || !id.trim()} onClick={() => void save()}>{saving ? "Сохранение…" : "Сохранить"}</button></div>
+      </div>
+    </div>
+  );
+}
+
 function SettingRow({
   title,
   description,
@@ -681,6 +773,8 @@ function SettingsPage({
   const [serverDiscovering, setServerDiscovering] = useState(false);
   const [serverDiscoveryStatus, setServerDiscoveryStatus] = useState("");
   const [serverDiscoveryError, setServerDiscoveryError] = useState(false);
+  const [editingServerId, setEditingServerId] = useState<string>();
+  const [editingModel, setEditingModel] = useState<{ providerId: string; model: ConfiguredModelInfo }>();
   const sections: Array<{ id: SettingsSection; label: string; icon: typeof Settings }> = [
     { id: "general", label: "Общее", icon: Settings },
     { id: "models", label: "Модели", icon: Cpu },
@@ -770,6 +864,7 @@ function SettingsPage({
         address: serverAddress,
         port: serverPort,
         ...(serverApiKey.trim() ? { apiKey: serverApiKey.trim() } : {}),
+        ...(editingServerId ? { providerId: editingServerId } : {}),
       });
       setModelServers((current) => [result.server, ...current.filter((server) => server.id !== result.server.id)]);
       const changes = [
@@ -777,11 +872,64 @@ function SettingsPage({
         result.updatedModels ? `обновлено: ${result.updatedModels}` : "",
       ].filter(Boolean).join(", ");
       setServerDiscoveryStatus(`${result.serverKind}${result.buildInfo ? ` ${result.buildInfo}` : ""}: ${changes || "конфигурация актуальна"}.`);
+      setEditingServerId(undefined);
+      setServerApiKey("");
     } catch (error) {
       setServerDiscoveryError(true);
       setServerDiscoveryStatus(error instanceof Error ? error.message : String(error));
     } finally {
       setServerDiscovering(false);
+    }
+  };
+
+  const editModelServer = (server: ConfiguredModelServer) => {
+    try {
+      const url = new URL(server.baseUrl);
+      const basePath = url.pathname.replace(/\/v1\/?$/i, "");
+      setServerAddress(`${url.protocol}//${url.hostname}${basePath}`);
+      setServerPort(url.port || (url.protocol === "https:" ? "443" : "80"));
+      setServerApiKey("");
+      setEditingServerId(server.id);
+      setServerDiscoveryError(false);
+      setServerDiscoveryStatus(`Редактируется сервер «${server.id}». Укажите новый адрес и выполните автонастройку.`);
+      requestAnimationFrame(() => document.querySelector(".server-discovery-card")?.scrollIntoView({ behavior: "smooth", block: "center" }));
+    } catch (error) {
+      setServerDiscoveryError(true);
+      setServerDiscoveryStatus(error instanceof Error ? error.message : String(error));
+    }
+  };
+
+  const cancelServerEdit = () => {
+    setEditingServerId(undefined);
+    setServerApiKey("");
+    setServerDiscoveryStatus("");
+    setServerDiscoveryError(false);
+  };
+
+  const deleteModelServer = async (providerId: string) => {
+    try {
+      const deleted = await window.piDesktop.deleteModelServer(providerId);
+      if (!deleted) return;
+      setModelServers((current) => current.filter((server) => server.id !== providerId));
+      if (editingServerId === providerId) cancelServerEdit();
+    } catch (error) {
+      setServerDiscoveryError(true);
+      setServerDiscoveryStatus(error instanceof Error ? error.message : String(error));
+    }
+  };
+
+  const saveConfiguredModel = async (input: ConfiguredModelUpdate) => {
+    const updated = await window.piDesktop.updateConfiguredModel(input);
+    setModelServers((current) => current.map((server) => server.id === updated.id ? updated : server));
+  };
+
+  const deleteConfiguredModel = async (providerId: string, modelId: string) => {
+    try {
+      const updated = await window.piDesktop.deleteConfiguredModel(providerId, modelId);
+      if (updated) setModelServers((current) => current.map((server) => server.id === updated.id ? updated : server));
+    } catch (error) {
+      setServerDiscoveryError(true);
+      setServerDiscoveryStatus(error instanceof Error ? error.message : String(error));
     }
   };
 
@@ -838,7 +986,10 @@ function SettingsPage({
                     <small>Повторное добавление того же адреса обновляет найденные модели, не удаляя остальные.</small>
                     {serverDiscoveryStatus && <strong className={serverDiscoveryError ? "error" : ""}>{serverDiscoveryStatus}</strong>}
                   </div>
-                  <button className="primary" disabled={!serverAddress.trim() || !serverPort.trim() || serverDiscovering} onClick={() => void discoverModelServer()}>{serverDiscovering ? "Подключение…" : "Добавить автоматически"}</button>
+                  <div className="server-discovery-actions">
+                    {editingServerId && <button onClick={cancelServerEdit}>Отмена</button>}
+                    <button className="primary" disabled={!serverAddress.trim() || !serverPort.trim() || serverDiscovering} onClick={() => void discoverModelServer()}>{serverDiscovering ? "Подключение…" : editingServerId ? "Обновить автоматически" : "Добавить автоматически"}</button>
+                  </div>
                 </div>
               </div>
               <h2>Настроенные серверы</h2>
@@ -846,8 +997,8 @@ function SettingsPage({
                 {modelServersLoading ? <div className="settings-card settings-empty">Загрузка конфигурации…</div> : modelServers.length ? modelServers.map((server) => (
                   <div className="settings-card configured-server" key={server.id}>
                     <div className="configured-server-head">
-                      <div><strong>{server.id}</strong><span>{server.baseUrl}</span></div>
-                      <small>{server.api} · {server.models.length} {pluralModels(server.models.length)}</small>
+                      <div><strong>{server.id}</strong><span>{server.baseUrl}</span><small>{server.api} · {server.models.length} {pluralModels(server.models.length)}</small></div>
+                      <div className="configured-server-actions"><button onClick={() => editModelServer(server)}><Pencil size={13} /> Изменить</button><button className="danger" onClick={() => void deleteModelServer(server.id)}><Trash2 size={13} /> Удалить</button></div>
                     </div>
                     <div className="configured-model-list">
                       {server.models.map((model) => (
@@ -860,6 +1011,7 @@ function SettingsPage({
                             {model.input.length > 1 ? ` · вход: ${model.input.join(", ")}` : ""}
                           </p>
                           {model.samplingParams && <small>{Object.entries(model.samplingParams).map(([key, value]) => `${key}=${value}`).join(" · ")}</small>}
+                          <div className="configured-model-actions"><button onClick={() => setEditingModel({ providerId: server.id, model })}><Pencil size={12} /> Изменить</button><button className="danger" onClick={() => void deleteConfiguredModel(server.id, model.id)}><Trash2 size={12} /> Удалить</button></div>
                         </div>
                       ))}
                     </div>
@@ -995,6 +1147,7 @@ function SettingsPage({
           )}
         </div>
       </main>
+      {editingModel && <ModelSettingsDialog providerId={editingModel.providerId} model={editingModel.model} onClose={() => setEditingModel(undefined)} onSave={saveConfiguredModel} />}
     </div>
   );
 }

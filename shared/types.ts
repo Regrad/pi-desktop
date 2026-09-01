@@ -56,6 +56,20 @@ export interface ModelServerDiscoveryInput {
   address: string;
   port: string;
   apiKey?: string;
+  providerId?: string;
+}
+
+export interface ConfiguredModelUpdate {
+  providerId: string;
+  originalModelId: string;
+  id: string;
+  name?: string;
+  contextWindow?: number;
+  maxTokens?: number;
+  reasoning: boolean;
+  input: string[];
+  thinkingLevels: ThinkingLevel[];
+  samplingParams?: Record<string, number | boolean | string>;
 }
 
 export interface ModelServerDiscoveryResult {
@@ -255,6 +269,9 @@ export interface PiDesktopApi {
   saveGlobalPrompt(prompt: string): Promise<string>;
   getModelServers(): Promise<ConfiguredModelServer[]>;
   discoverModelServer(input: ModelServerDiscoveryInput): Promise<ModelServerDiscoveryResult>;
+  updateConfiguredModel(input: ConfiguredModelUpdate): Promise<ConfiguredModelServer>;
+  deleteConfiguredModel(providerId: string, modelId: string): Promise<ConfiguredModelServer | null>;
+  deleteModelServer(providerId: string): Promise<boolean>;
   showItemInFolder(path: string): Promise<void>;
   onPiEvent(listener: (payload: { conversationId: string; event: Record<string, unknown> }) => void): () => void;
   onExtensionUi(listener: (payload: { conversationId: string; request: ExtensionUiRequest }) => void): () => void;
