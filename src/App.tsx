@@ -1631,7 +1631,12 @@ export default function App() {
           if (optimisticIndex < 0) optimisticIndex = current.findIndex((item) => item.optimistic);
           if (optimisticIndex < 0) return [...current, event.message];
           const next = [...current];
-          next[optimisticIndex] = { ...next[optimisticIndex], optimistic: false };
+          next[optimisticIndex] = {
+            ...next[optimisticIndex],
+            ...event.message,
+            attachments: next[optimisticIndex].attachments ?? event.message.attachments,
+            optimistic: false,
+          };
           return next;
         });
       }
@@ -2021,6 +2026,7 @@ export default function App() {
       id: `local-${crypto.randomUUID()}`,
       role: "user",
       content: text,
+      timestamp: Date.now(),
       attachments: submittedAttachments.map((item) => item.name),
       optimistic: true,
     };
