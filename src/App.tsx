@@ -25,7 +25,6 @@ import {
   Send,
   Settings,
   SquareTerminal,
-  Sparkles,
   Pencil,
   Trash2,
   Wrench,
@@ -158,12 +157,10 @@ function ContentParts({ content }: { content: JsonObject[] }) {
 
 function MessageContent({
   message,
-  thinkingLabel,
   assistant = false,
   streaming = false,
 }: {
   message: JsonObject;
-  thinkingLabel?: string;
   assistant?: boolean;
   streaming?: boolean;
 }) {
@@ -191,11 +188,19 @@ function MessageContent({
             : <Fragment key={index}>{rendered}</Fragment>;
         }
         if (part.type === "thinking") {
+          if (index > 0 && content[index - 1]?.type === "thinking") return null;
+          let thinkingEnd = index;
+          while (thinkingEnd < content.length && content[thinkingEnd]?.type === "thinking") thinkingEnd += 1;
+          const text = content
+            .slice(index, thinkingEnd)
+            .map((candidate: JsonObject) => String(candidate.thinking ?? candidate.text ?? "").trim())
+            .filter(Boolean)
+            .join("\n\n");
+          if (!text) return null;
           return (
-            <details className={`thinking-block ${streaming ? "streaming" : ""}`} open={streaming || undefined} key={index}>
-              <summary><Sparkles size={14} /> {thinkingLabel || (streaming ? "Модель размышляет" : "Ход рассуждений")}</summary>
-              <div className="thinking-content">{String(part.thinking ?? part.text ?? "")}</div>
-            </details>
+            <div className={`thinking-block ${streaming ? "streaming" : ""}`} key={index}>
+              <Markdown text={text} />
+            </div>
           );
         }
         return null;
@@ -343,10 +348,7 @@ function ToolResultContent({ result, expanded }: { result: unknown; expanded: bo
 function ToolCard({ tool }: { tool: ToolActivity }) {
   const args = parsedToolArguments(tool.args);
   const presentation = toolPresentation(tool.name, args);
-  const [expanded, setExpanded] = useState(Boolean(tool.error));
-  useEffect(() => {
-    if (tool.error) setExpanded(true);
-  }, [tool.error]);
+  const [expanded, setExpanded] = useState(false);
   const output = tool.result === undefined ? "" : toolOutputText(tool.result);
   const hasDetails = Boolean(presentation.command || presentation.showRawArgs && Object.keys(args).length || output || (tool.result as JsonObject | undefined)?.details?.diff);
   return (
@@ -357,7 +359,6 @@ function ToolCard({ tool }: { tool: ToolActivity }) {
         <span className="tool-heading"><strong>{presentation.label}</strong>{presentation.summary && <small>{presentation.summary}</small>}</span>
         <span className="tool-state">{tool.running ? "Выполняется…" : tool.error ? "Ошибка" : "Готово"}</span>
       </button>
-      {!expanded && tool.result !== undefined && <div className="tool-card-preview"><ToolResultContent result={tool.result} expanded={false} /></div>}
       {expanded && hasDetails && (
         <div className="tool-card-body">
           {presentation.command && <pre className="tool-command">{presentation.command}</pre>}
@@ -1715,9 +1716,9 @@ export default function App() {
                     <Fragment key={messageKey(message, index)}>
                       {visibleMessage && <article className={`message ${message.role ?? "assistant"}`}>
                         {message.role === "user" ? (
-                          <div className="user-bubble"><MessageContent message={visibleMessage} thinkingLabel={hiddenThinkingLabel} /></div>
+                          <div className="user-bubble"><MessageContent message={visibleMessage} /></div>
                         ) : (
-                          <div className="assistant-message"><MessageContent message={visibleMessage} thinkingLabel={hiddenThinkingLabel} assistant streaming={isStreamingMessage} /></div>
+                          <div className="assistant-message"><MessageContent message={visibleMessage} assistant streaming={isStreamingMessage} /></div>
                         )}
                       </article>}
                       {calls.map((call, callIndex) => <ToolCard
