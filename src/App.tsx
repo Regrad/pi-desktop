@@ -336,7 +336,6 @@ function ExtensionDialog({
   useEffect(() => {
     if (request.method !== "custom") return;
     const onKeyDown = (event: KeyboardEvent) => {
-      if (extensionDialog) return;
       const input = terminalInputFromKeyboard(event);
       if (!input) return;
       event.preventDefault();
