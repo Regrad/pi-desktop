@@ -4,7 +4,7 @@ import { copyFile, mkdir, readFile, rename, unlink, writeFile } from "node:fs/pr
 import { homedir } from "node:os";
 import path from "node:path";
 import { SessionManager, type SessionInfo } from "@earendil-works/pi-coding-agent";
-import type { ConversationRecord, ConversationRun, ProjectRecord } from "../shared/types.js";
+import type { ConversationRecord, ConversationRun, ModelInfo, ProjectRecord, ThinkingLevel } from "../shared/types.js";
 
 interface DesktopState {
   version: 3;
@@ -19,6 +19,8 @@ const EMPTY_STATE: DesktopState = {
   projects: [],
   conversations: [],
 };
+
+const THINKING_LEVELS: ThinkingLevel[] = ["off", "minimal", "low", "medium", "high", "xhigh", "max"];
 
 export class DataStore {
   readonly dataDir: string;
@@ -301,6 +303,52 @@ export class DataStore {
     return selectors;
   }
 
+  async getAgentConfiguration(): Promise<{
+    models: ModelInfo[];
+    defaultProvider?: string;
+    defaultModel?: string;
+    defaultThinkingLevel: ThinkingLevel;
+  }> {
+    const [modelsConfig, settings] = await Promise.all([
+      readFile(path.join(this.agentDir, "models.json"), "utf8").then((content) => JSON.parse(content) as {
+        providers?: Record<string, { models?: Array<Record<string, unknown>> }>;
+      }),
+      readFile(path.join(this.agentDir, "settings.json"), "utf8").then((content) => JSON.parse(content) as Record<string, unknown>),
+    ]);
+    const models: ModelInfo[] = [];
+    for (const [provider, definition] of Object.entries(modelsConfig.providers ?? {})) {
+      for (const model of definition.models ?? []) {
+        if (typeof model.id !== "string") continue;
+        const reasoning = model.reasoning === true;
+        const levelMap = model.thinkingLevelMap && typeof model.thinkingLevelMap === "object"
+          ? model.thinkingLevelMap as Record<string, unknown>
+          : undefined;
+        const thinkingLevels = !reasoning
+          ? ["off" as ThinkingLevel]
+          : levelMap
+            ? THINKING_LEVELS.filter((level) => Object.hasOwn(levelMap, level) && levelMap[level] !== null)
+            : [...THINKING_LEVELS];
+        models.push({
+          provider,
+          id: model.id,
+          name: typeof model.name === "string" ? model.name : undefined,
+          contextWindow: typeof model.contextWindow === "number" ? model.contextWindow : undefined,
+          reasoning,
+          thinkingLevels: thinkingLevels.length ? thinkingLevels : ["off"],
+        });
+      }
+    }
+    const configuredThinking = settings.defaultThinkingLevel;
+    return {
+      models,
+      defaultProvider: typeof settings.defaultProvider === "string" ? settings.defaultProvider : undefined,
+      defaultModel: typeof settings.defaultModel === "string" ? settings.defaultModel : undefined,
+      defaultThinkingLevel: typeof configuredThinking === "string" && THINKING_LEVELS.includes(configuredThinking as ThinkingLevel)
+        ? configuredThinking as ThinkingLevel
+        : "off",
+    };
+  }
+
   getSessionDir(cwd: string): string {
     const resolvedCwd = path.resolve(cwd);
     const safePath = `--${resolvedCwd.replace(/^[/\\]/, "").replace(/[/\\:]/g, "-")}--`;
@@ -340,7 +388,7 @@ export class DataStore {
       title: "Новый чат",
       createdAt: now,
       updatedAt: now,
-      status: "starting",
+      status: "idle",
     };
     this.state.conversations.unshift(conversation);
     this.state.activeProjectId = projectId;

@@ -30,6 +30,7 @@ export interface ModelInfo {
   name?: string;
   contextWindow?: number;
   reasoning?: boolean;
+  thinkingLevels?: ThinkingLevel[];
 }
 
 export interface Attachment {

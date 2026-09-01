@@ -10,6 +10,7 @@ import type {
   ExtensionUiRequest,
   ExtensionUiState,
   ModelInfo,
+  ProjectRecord,
   RuntimeState,
   ThinkingLevel,
 } from "../shared/types.js";
@@ -41,8 +42,21 @@ function createExtensionUiState(): ExtensionUiState {
   };
 }
 
+function createEmptyExtensionState(): ExtensionState {
+  return {
+    extensionPaths: [],
+    activeTools: [],
+    tools: [],
+    commandDiagnostics: [],
+    shortcutDiagnostics: [],
+    errors: [],
+  };
+}
+
 export class PiManager {
   private readonly runtimes = new Map<string, RuntimeRecord>();
+  private cachedCommands: ConversationSnapshot["commands"] = [];
+  private cachedExtensionState: ExtensionState = createEmptyExtensionState();
 
   constructor(
     private readonly store: DataStore,
@@ -52,7 +66,7 @@ export class PiManager {
 
   async createConversation(projectId?: string): Promise<ConversationSnapshot> {
     const conversation = await this.store.createConversation(projectId);
-    return this.startConversation(conversation);
+    return this.previewConversation(conversation);
   }
 
   async openConversation(conversationId: string): Promise<ConversationSnapshot> {
@@ -62,7 +76,7 @@ export class PiManager {
       if (running.snapshot.state.isStreaming) await this.refreshRuntimeSnapshot(running);
       return structuredClone(running.snapshot);
     }
-    return this.startConversation(this.store.getConversation(conversationId));
+    return this.previewConversation(this.store.getConversation(conversationId));
   }
 
   async deleteConversation(conversationId: string): Promise<void> {
@@ -157,19 +171,28 @@ export class PiManager {
   }
 
   async abort(conversationId: string): Promise<void> {
-    const runtime = await this.ensureRuntime(conversationId);
+    const runtime = this.runtimes.get(conversationId);
+    if (!runtime) return;
     await runtime.rpc.request("abort");
   }
 
   async setModel(conversationId: string, provider: string, modelId: string): Promise<RuntimeState> {
-    const runtime = await this.ensureRuntime(conversationId);
+    const runtime = this.runtimes.get(conversationId);
+    if (!runtime) {
+      const updated = await this.updateConversation(conversationId, { provider, model: modelId });
+      return (await this.previewConversation(updated)).state;
+    }
     await runtime.rpc.request("set_model", { provider, modelId });
     await this.updateConversation(conversationId, { provider, model: modelId });
     return this.refreshState(conversationId, runtime);
   }
 
   async setThinkingLevel(conversationId: string, level: ThinkingLevel): Promise<RuntimeState> {
-    const runtime = await this.ensureRuntime(conversationId);
+    const runtime = this.runtimes.get(conversationId);
+    if (!runtime) {
+      const updated = await this.updateConversation(conversationId, { thinkingLevel: level });
+      return (await this.previewConversation(updated)).state;
+    }
     await runtime.rpc.request("set_thinking_level", { level });
     await this.updateConversation(conversationId, { thinkingLevel: level });
     return this.refreshState(conversationId, runtime);
@@ -201,12 +224,14 @@ export class PiManager {
   }
 
   async setHostEditorText(conversationId: string, text: string): Promise<void> {
-    const runtime = await this.ensureRuntime(conversationId);
+    const runtime = this.runtimes.get(conversationId);
+    if (!runtime) return;
     await runtime.rpc.request("set_host_editor_text", { text }, 10_000);
   }
 
   async clearQueue(conversationId: string): Promise<{ steering: string[]; followUp: string[] }> {
-    const runtime = await this.ensureRuntime(conversationId);
+    const runtime = this.runtimes.get(conversationId);
+    if (!runtime) return { steering: [], followUp: [] };
     const result = await runtime.rpc.request<{ steering: string[]; followUp: string[] }>("clear_queue");
     await this.refreshState(conversationId, runtime);
     return result;
@@ -215,6 +240,65 @@ export class PiManager {
   async shutdown(): Promise<void> {
     await Promise.all([...this.runtimes.values()].map((runtime) => runtime.rpc.stop()));
     this.runtimes.clear();
+  }
+
+  private async previewConversation(conversation: ConversationRecord): Promise<ConversationSnapshot> {
+    const configuration = await this.store.getAgentConfiguration();
+    let messages: unknown[] = [];
+    let entries: ConversationSnapshot["entries"] = [];
+    let sessionModel: { provider: string; modelId: string } | null = null;
+    let sessionThinkingLevel: ThinkingLevel | undefined;
+    let sessionName: string | undefined;
+
+    if (conversation.sessionFile && existsSync(conversation.sessionFile)) {
+      const cwd = await this.store.getConversationWorkingDirectory(conversation);
+      const manager = SessionManager.open(conversation.sessionFile, this.store.getSessionDir(cwd), cwd);
+      const context = manager.buildSessionContext();
+      messages = context.messages;
+      entries = manager.getEntries().map((entry) => structuredClone(entry)) as unknown as ConversationSnapshot["entries"];
+      sessionModel = context.model;
+      sessionThinkingLevel = isThinkingLevel(context.thinkingLevel) ? context.thinkingLevel : undefined;
+      sessionName = manager.getSessionName();
+    }
+
+    const provider = conversation.provider ?? sessionModel?.provider ?? configuration.defaultProvider;
+    const modelId = conversation.model ?? sessionModel?.modelId ?? configuration.defaultModel;
+    const model: ModelInfo | null = provider && modelId
+      ? configuration.models.find((item) => item.provider === provider && item.id === modelId) ?? { provider, id: modelId }
+      : null;
+    const thinkingLevels: ThinkingLevel[] = model?.thinkingLevels
+      ?? (model?.reasoning ? allThinkingLevels() : ["off"]);
+    const requestedThinkingLevel = conversation.thinkingLevel
+      ?? sessionThinkingLevel
+      ?? configuration.defaultThinkingLevel;
+    const thinkingLevel = thinkingLevels.includes(requestedThinkingLevel)
+      ? requestedThinkingLevel
+      : thinkingLevels[0] ?? "off";
+
+    return {
+      conversation: structuredClone(conversation),
+      state: {
+        model,
+        thinkingLevel,
+        isStreaming: false,
+        sessionFile: conversation.sessionFile,
+        sessionId: conversation.id,
+        sessionName,
+        messageCount: messages.length,
+        pendingMessageCount: 0,
+        steeringMessages: [],
+        followUpMessages: [],
+        workingVisible: true,
+      },
+      messages,
+      models: configuration.models,
+      thinkingLevels,
+      commands: structuredClone(this.cachedCommands),
+      entries,
+      extensionState: structuredClone(this.cachedExtensionState),
+      extensionUi: createExtensionUiState(),
+      run: await this.store.getConversationRun(conversation.id),
+    };
   }
 
   private async ensureRuntime(conversationId: string): Promise<RuntimeRecord> {
@@ -303,6 +387,8 @@ export class PiManager {
         rpc.request<Omit<ExtensionState, "errors">>("get_extension_state"),
       ]);
       const state = this.normalizeState(stateData);
+      this.cachedCommands = commandsData.commands ?? [];
+      this.cachedExtensionState = { ...extensionData, errors: [...record.extensionErrors] };
       const updated = await this.updateConversation(conversation.id, {
         status: state.isStreaming ? "working" : "idle",
         sessionFile: state.sessionFile,
@@ -501,6 +587,7 @@ export class PiManager {
     runtime.snapshot.messages = messagesData.messages ?? [];
     runtime.snapshot.entries = entriesData.entries ?? [];
     runtime.snapshot.extensionState = { ...extensionData, errors: [...runtime.extensionErrors] };
+    this.cachedExtensionState = structuredClone(runtime.snapshot.extensionState);
     runtime.snapshot.extensionUi = structuredClone(runtime.extensionUi);
   }
 
@@ -549,6 +636,14 @@ export class PiManager {
     this.runtimes.delete(conversationId);
     await runtime.rpc.stop();
   }
+}
+
+function allThinkingLevels(): ThinkingLevel[] {
+  return ["off", "minimal", "low", "medium", "high", "xhigh", "max"];
+}
+
+function isThinkingLevel(value: string): value is ThinkingLevel {
+  return allThinkingLevels().includes(value as ThinkingLevel);
 }
 
 function sanitizeStatusText(value?: string): string | undefined {

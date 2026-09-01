@@ -1366,7 +1366,11 @@ export default function App() {
     setModelMenuOpen(false);
     try {
       const state = await window.piDesktop.setModel(activeConversationId, model.provider, model.id);
-      setSnapshot((current) => current ? { ...current, state } : current);
+      setSnapshot((current) => current ? {
+        ...current,
+        state,
+        thinkingLevels: model.thinkingLevels ?? current.thinkingLevels,
+      } : current);
     } catch (error) {
       addNotice(error instanceof Error ? error.message : String(error), "error");
     }
@@ -1679,7 +1683,7 @@ export default function App() {
               </div>
             </div>
           )}
-          {loading && <div className="loading-overlay"><span className="spinner" /> Загрузка Pi…</div>}
+          {loading && <div className="loading-overlay"><span className="spinner" /> Загрузка чата…</div>}
         </main>
         {diffOpen && runDiff && <DiffPanel diff={runDiff} onClose={() => setDiffOpen(false)} />}
         </>
