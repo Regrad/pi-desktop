@@ -1197,7 +1197,6 @@ export default function App() {
   const [renameConversation, setRenameConversation] = useState<ConversationRecord>();
   const [renameProject, setRenameProject] = useState<ProjectRecord>();
   const conversationScrollRef = useRef<HTMLDivElement>(null);
-  const endRef = useRef<HTMLDivElement>(null);
   const autoScrollRef = useRef(true);
   const activeIdRef = useRef<string | undefined>(undefined);
   const conversationsRef = useRef<ConversationRecord[]>([]);
@@ -1364,21 +1363,29 @@ export default function App() {
     return () => clearInterval(timer);
   }, [working, startedAt]);
 
+  const scrollConversationToBottom = useCallback(() => {
+    const element = conversationScrollRef.current;
+    if (!element) return;
+    element.scrollTop = element.scrollHeight;
+  }, []);
+
   useEffect(() => {
     if (!autoScrollRef.current) return;
-    endRef.current?.scrollIntoView({ behavior: "auto", block: "end" });
-  }, [messages, streamingMessage, tools, working, workingMessage]);
+    const frame = requestAnimationFrame(scrollConversationToBottom);
+    return () => cancelAnimationFrame(frame);
+  }, [messages, streamingMessage, tools, working, workingMessage, scrollConversationToBottom]);
 
   useEffect(() => {
     autoScrollRef.current = true;
-    requestAnimationFrame(() => endRef.current?.scrollIntoView({ behavior: "auto", block: "end" }));
-  }, [activeConversationId]);
+    const frame = requestAnimationFrame(scrollConversationToBottom);
+    return () => cancelAnimationFrame(frame);
+  }, [activeConversationId, scrollConversationToBottom]);
 
   const handleConversationScroll = useCallback(() => {
     const element = conversationScrollRef.current;
     if (!element) return;
     const distanceFromBottom = element.scrollHeight - element.scrollTop - element.clientHeight;
-    autoScrollRef.current = distanceFromBottom <= 4;
+    autoScrollRef.current = distanceFromBottom <= 24;
   }, []);
 
   const handleConversationWheel = useCallback((event: React.WheelEvent<HTMLDivElement>) => {
@@ -2104,7 +2111,6 @@ export default function App() {
                     )}
                   </div>
                 )}
-                <div ref={endRef} />
               </div>
             )}
           </div>
