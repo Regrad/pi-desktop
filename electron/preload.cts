@@ -37,6 +37,8 @@ const api: PiDesktopApi = {
     ipcRenderer.invoke("pi:extension-ui-response", conversationId, response),
   getGlobalPrompt: () => ipcRenderer.invoke("desktop:get-global-prompt"),
   saveGlobalPrompt: (prompt) => ipcRenderer.invoke("desktop:save-global-prompt", prompt),
+  getModelServers: () => ipcRenderer.invoke("desktop:get-model-servers"),
+  discoverModelServer: (input) => ipcRenderer.invoke("desktop:discover-model-server", input),
   showItemInFolder: (path) => ipcRenderer.invoke("desktop:show-item", path),
   onPiEvent: (listener) => subscribe("pi:event", listener),
   onExtensionUi: (listener) => subscribe("pi:extension-ui", listener),

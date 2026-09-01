@@ -4,7 +4,17 @@ import { copyFile, mkdir, readFile, rename, unlink, writeFile } from "node:fs/pr
 import { homedir } from "node:os";
 import path from "node:path";
 import { SessionManager, type SessionInfo } from "@earendil-works/pi-coding-agent";
-import type { ConversationRecord, ConversationRun, ModelInfo, ProjectRecord, ThinkingLevel } from "../shared/types.js";
+import type {
+  ConfiguredModelServer,
+  ConversationRecord,
+  ConversationRun,
+  ModelInfo,
+  ModelServerDiscoveryInput,
+  ModelServerDiscoveryResult,
+  ProjectRecord,
+  ThinkingLevel,
+} from "../shared/types.js";
+import { configuredServerView, discoverProvider } from "./model-server-discovery.js";
 
 interface DesktopState {
   version: 3;
@@ -180,6 +190,75 @@ export class DataStore {
     const saved = normalized ? `${normalized}\n` : "";
     await writeFile(path.join(this.agentDir, "APPEND_SYSTEM.md"), saved, "utf8");
     return saved;
+  }
+
+  async getModelServers(): Promise<ConfiguredModelServer[]> {
+    const config = JSON.parse(await readFile(path.join(this.agentDir, "models.json"), "utf8")) as {
+      providers?: Record<string, Record<string, unknown>>;
+    };
+    return Object.entries(config.providers ?? {})
+      .filter(([, provider]) => typeof provider.baseUrl === "string" && Array.isArray(provider.models))
+      .map(([id, provider]) => configuredServerView(id, provider));
+  }
+
+  async discoverModelServer(input: ModelServerDiscoveryInput): Promise<ModelServerDiscoveryResult> {
+    const discovered = await discoverProvider(input);
+    const modelsPath = path.join(this.agentDir, "models.json");
+    const config = JSON.parse(await readFile(modelsPath, "utf8")) as {
+      providers?: Record<string, Record<string, unknown>>;
+    };
+    const providers = config.providers ?? {};
+    const matchingEntry = Object.entries(providers).find(([, provider]) =>
+      typeof provider.baseUrl === "string"
+      && provider.baseUrl.replace(/\/+$/, "").toLocaleLowerCase() === discovered.baseUrl.toLocaleLowerCase(),
+    );
+    let providerId = matchingEntry?.[0] ?? discovered.suggestedId;
+    let suffix = 2;
+    while (!matchingEntry && providers[providerId]) providerId = `${discovered.suggestedId}-${suffix++}`;
+    const existingProvider = matchingEntry?.[1] ?? {};
+    const existingModels = Array.isArray(existingProvider.models)
+      ? existingProvider.models.filter((item): item is Record<string, unknown> => Boolean(item) && typeof item === "object" && !Array.isArray(item))
+      : [];
+    const discoveredModels = Array.isArray(discovered.provider.models)
+      ? discovered.provider.models.filter((item): item is Record<string, unknown> => Boolean(item) && typeof item === "object" && !Array.isArray(item))
+      : [];
+    const existingById = new Map(existingModels.map((model) => [String(model.id ?? ""), model]));
+    const detectedIds = new Set(discoveredModels.map((model) => String(model.id ?? "")));
+    const mergedDetected = discoveredModels.map((model) => {
+      const previous = existingById.get(String(model.id ?? ""));
+      if (!previous) return model;
+      const previousCompat = previous.compat && typeof previous.compat === "object" && !Array.isArray(previous.compat) ? previous.compat as Record<string, unknown> : {};
+      const detectedCompat = model.compat && typeof model.compat === "object" && !Array.isArray(model.compat) ? model.compat as Record<string, unknown> : {};
+      return { ...previous, ...model, compat: { ...previousCompat, ...detectedCompat } };
+    });
+    const previousCompat = existingProvider.compat && typeof existingProvider.compat === "object" && !Array.isArray(existingProvider.compat)
+      ? existingProvider.compat as Record<string, unknown>
+      : {};
+    const detectedCompat = discovered.provider.compat && typeof discovered.provider.compat === "object" && !Array.isArray(discovered.provider.compat)
+      ? discovered.provider.compat as Record<string, unknown>
+      : {};
+    const apiKey = input.apiKey?.trim() || (typeof existingProvider.apiKey === "string" ? existingProvider.apiKey : discovered.provider.apiKey);
+    const provider = {
+      ...existingProvider,
+      ...discovered.provider,
+      apiKey,
+      compat: { ...previousCompat, ...detectedCompat },
+      models: [...existingModels.filter((model) => !detectedIds.has(String(model.id ?? ""))), ...mergedDetected],
+    };
+    providers[providerId] = provider;
+    config.providers = providers;
+    const tempPath = `${modelsPath}.tmp`;
+    await this.enqueueWrite(async () => {
+      await writeFile(tempPath, `${JSON.stringify(config, null, 2)}\n`, "utf8");
+      await rename(tempPath, modelsPath);
+    });
+    const addedModels = discoveredModels.filter((model) => !existingById.has(String(model.id ?? ""))).length;
+    return {
+      ...discovered.publicResult,
+      server: configuredServerView(providerId, provider),
+      addedModels,
+      updatedModels: discoveredModels.length - addedModels,
+    };
   }
 
   private async migrateLegacyToolRepairConfig(configPath: string): Promise<void> {

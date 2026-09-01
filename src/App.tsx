@@ -37,6 +37,7 @@ import remarkGfm from "remark-gfm";
 import type {
   Attachment,
   BootstrapPayload,
+  ConfiguredModelServer,
   ConversationRecord,
   ConversationSnapshot,
   ExtensionState,
@@ -671,6 +672,15 @@ function SettingsPage({
   const [globalPromptLoading, setGlobalPromptLoading] = useState(false);
   const [globalPromptSaving, setGlobalPromptSaving] = useState(false);
   const [globalPromptStatus, setGlobalPromptStatus] = useState("");
+  const [modelServers, setModelServers] = useState<ConfiguredModelServer[]>([]);
+  const [modelServersLoaded, setModelServersLoaded] = useState(false);
+  const [modelServersLoading, setModelServersLoading] = useState(false);
+  const [serverAddress, setServerAddress] = useState("");
+  const [serverPort, setServerPort] = useState("1234");
+  const [serverApiKey, setServerApiKey] = useState("");
+  const [serverDiscovering, setServerDiscovering] = useState(false);
+  const [serverDiscoveryStatus, setServerDiscoveryStatus] = useState("");
+  const [serverDiscoveryError, setServerDiscoveryError] = useState(false);
   const sections: Array<{ id: SettingsSection; label: string; icon: typeof Settings }> = [
     { id: "general", label: "Общее", icon: Settings },
     { id: "models", label: "Модели", icon: Cpu },
@@ -722,6 +732,59 @@ function SettingsPage({
     }
   };
 
+  useEffect(() => {
+    if (section !== "models" || modelServersLoaded) return;
+    let cancelled = false;
+    setModelServersLoading(true);
+    void window.piDesktop.getModelServers().then((servers) => {
+      if (cancelled) return;
+      setModelServers(servers);
+      setModelServersLoaded(true);
+      if (!serverAddress && servers[0]?.baseUrl) {
+        try {
+          const url = new URL(servers[0].baseUrl);
+          const basePath = url.pathname.replace(/\/v1\/?$/i, "");
+          setServerAddress(`${url.protocol}//${url.hostname}${basePath}`);
+          setServerPort(url.port || (url.protocol === "https:" ? "443" : "80"));
+        } catch {
+          // Keep the fields empty when a legacy URL cannot be parsed.
+        }
+      }
+    }).catch((error) => {
+      if (!cancelled) {
+        setServerDiscoveryError(true);
+        setServerDiscoveryStatus(error instanceof Error ? error.message : String(error));
+      }
+    }).finally(() => {
+      if (!cancelled) setModelServersLoading(false);
+    });
+    return () => { cancelled = true; };
+  }, [section, modelServersLoaded]);
+
+  const discoverModelServer = async () => {
+    setServerDiscovering(true);
+    setServerDiscoveryStatus("");
+    setServerDiscoveryError(false);
+    try {
+      const result = await window.piDesktop.discoverModelServer({
+        address: serverAddress,
+        port: serverPort,
+        ...(serverApiKey.trim() ? { apiKey: serverApiKey.trim() } : {}),
+      });
+      setModelServers((current) => [result.server, ...current.filter((server) => server.id !== result.server.id)]);
+      const changes = [
+        result.addedModels ? `добавлено моделей: ${result.addedModels}` : "",
+        result.updatedModels ? `обновлено: ${result.updatedModels}` : "",
+      ].filter(Boolean).join(", ");
+      setServerDiscoveryStatus(`${result.serverKind}${result.buildInfo ? ` ${result.buildInfo}` : ""}: ${changes || "конфигурация актуальна"}.`);
+    } catch (error) {
+      setServerDiscoveryError(true);
+      setServerDiscoveryStatus(error instanceof Error ? error.message : String(error));
+    } finally {
+      setServerDiscovering(false);
+    }
+  };
+
   return (
     <div className="settings-page">
       <aside className="settings-sidebar">
@@ -761,6 +824,47 @@ function SettingsPage({
               <div className="settings-card">
                 <SettingRow title="Активная модель" description="Модель меняется непосредственно в нижней панели чата." value={currentModel?.name ?? currentModel?.id ?? "Чат не открыт"} />
                 <SettingRow title="Доступные уровни рассуждений" description="Набор зависит от выбранной модели." value={thinkingLevels.length ? thinkingLevels.map((level) => THINKING_LABELS[level]).join(", ") : "Чат не открыт"} />
+              </div>
+              <h2>Добавить сервер автоматически</h2>
+              <div className="settings-card server-discovery-card">
+                <div className="server-fields">
+                  <label className="server-address-field"><span>Адрес сервера</span><input value={serverAddress} onChange={(event) => setServerAddress(event.target.value)} placeholder="192.168.31.194 или http://localhost" /></label>
+                  <label className="server-port-field"><span>Порт</span><input value={serverPort} onChange={(event) => setServerPort(event.target.value)} inputMode="numeric" placeholder="1234" /></label>
+                  <label className="server-key-field"><span>API-ключ, если требуется</span><input type="password" value={serverApiKey} onChange={(event) => setServerApiKey(event.target.value)} placeholder="Необязательно" /></label>
+                </div>
+                <div className="server-discovery-footer">
+                  <div>
+                    <span>Проверяются только служебные endpoints `/v1/models`, `/props` и `/health`.</span>
+                    <small>Повторное добавление того же адреса обновляет найденные модели, не удаляя остальные.</small>
+                    {serverDiscoveryStatus && <strong className={serverDiscoveryError ? "error" : ""}>{serverDiscoveryStatus}</strong>}
+                  </div>
+                  <button className="primary" disabled={!serverAddress.trim() || !serverPort.trim() || serverDiscovering} onClick={() => void discoverModelServer()}>{serverDiscovering ? "Подключение…" : "Добавить автоматически"}</button>
+                </div>
+              </div>
+              <h2>Настроенные серверы</h2>
+              <div className="configured-servers">
+                {modelServersLoading ? <div className="settings-card settings-empty">Загрузка конфигурации…</div> : modelServers.length ? modelServers.map((server) => (
+                  <div className="settings-card configured-server" key={server.id}>
+                    <div className="configured-server-head">
+                      <div><strong>{server.id}</strong><span>{server.baseUrl}</span></div>
+                      <small>{server.api} · {server.models.length} {pluralModels(server.models.length)}</small>
+                    </div>
+                    <div className="configured-model-list">
+                      {server.models.map((model) => (
+                        <div className="configured-model" key={model.id}>
+                          <div><strong>{model.name ?? model.id}</strong><span>{model.id}</span></div>
+                          <p>
+                            {model.contextWindow ? `Контекст ${model.contextWindow.toLocaleString("ru-RU")}` : "Контекст не указан"}
+                            {model.maxTokens ? ` · ответ до ${model.maxTokens.toLocaleString("ru-RU")}` : ""}
+                            {model.reasoning ? ` · рассуждения: ${model.thinkingLevels.map((level) => THINKING_LABELS[level]).join(", ")}` : " · без рассуждений"}
+                            {model.input.length > 1 ? ` · вход: ${model.input.join(", ")}` : ""}
+                          </p>
+                          {model.samplingParams && <small>{Object.entries(model.samplingParams).map(([key, value]) => `${key}=${value}`).join(" · ")}</small>}
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )) : <div className="settings-card settings-empty">Настроенных локальных серверов пока нет.</div>}
               </div>
               <h2>Доступные модели</h2>
               <div className="settings-card model-settings-list">
@@ -2018,6 +2122,15 @@ function pluralFiles(count: number): string {
   if (last === 1) return "файл";
   if (last >= 2 && last <= 4) return "файла";
   return "файлов";
+}
+
+function pluralModels(count: number): string {
+  const lastTwo = count % 100;
+  const last = count % 10;
+  if (lastTwo >= 11 && lastTwo <= 14) return "моделей";
+  if (last === 1) return "модель";
+  if (last >= 2 && last <= 4) return "модели";
+  return "моделей";
 }
 
 function extensionName(extensionPath: string): string {

@@ -2,7 +2,7 @@ import { app, BrowserWindow, dialog, ipcMain, Menu, nativeImage, Notification, s
 import { appendFile, mkdir, rename, stat } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import type { Attachment, ThinkingLevel } from "../shared/types.js";
+import type { Attachment, ModelServerDiscoveryInput, ThinkingLevel } from "../shared/types.js";
 import { DataStore } from "./data-store.js";
 import { PiManager } from "./pi-manager.js";
 
@@ -216,6 +216,8 @@ function registerIpc(): void {
   );
   ipcMain.handle("desktop:get-global-prompt", () => store.getGlobalPrompt());
   ipcMain.handle("desktop:save-global-prompt", (_event, prompt: string) => store.saveGlobalPrompt(prompt));
+  ipcMain.handle("desktop:get-model-servers", () => store.getModelServers());
+  ipcMain.handle("desktop:discover-model-server", (_event, input: ModelServerDiscoveryInput) => store.discoverModelServer(input));
   ipcMain.handle("desktop:show-item", (_event, itemPath: string) => shell.showItemInFolder(itemPath));
 }
 

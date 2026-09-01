@@ -33,6 +33,41 @@ export interface ModelInfo {
   thinkingLevels?: ThinkingLevel[];
 }
 
+export interface ConfiguredModelInfo {
+  id: string;
+  name?: string;
+  contextWindow?: number;
+  maxTokens?: number;
+  reasoning: boolean;
+  input: string[];
+  thinkingLevels: ThinkingLevel[];
+  samplingParams?: Record<string, number | boolean | string>;
+}
+
+export interface ConfiguredModelServer {
+  id: string;
+  baseUrl: string;
+  api: string;
+  apiKeyConfigured: boolean;
+  models: ConfiguredModelInfo[];
+}
+
+export interface ModelServerDiscoveryInput {
+  address: string;
+  port: string;
+  apiKey?: string;
+}
+
+export interface ModelServerDiscoveryResult {
+  server: ConfiguredModelServer;
+  serverKind: string;
+  buildInfo?: string;
+  health?: string;
+  capabilities: string[];
+  addedModels: number;
+  updatedModels: number;
+}
+
 export interface Attachment {
   id: string;
   name: string;
@@ -218,6 +253,8 @@ export interface PiDesktopApi {
   respondToExtensionUi(conversationId: string, response: Record<string, unknown>): Promise<void>;
   getGlobalPrompt(): Promise<string>;
   saveGlobalPrompt(prompt: string): Promise<string>;
+  getModelServers(): Promise<ConfiguredModelServer[]>;
+  discoverModelServer(input: ModelServerDiscoveryInput): Promise<ModelServerDiscoveryResult>;
   showItemInFolder(path: string): Promise<void>;
   onPiEvent(listener: (payload: { conversationId: string; event: Record<string, unknown> }) => void): () => void;
   onExtensionUi(listener: (payload: { conversationId: string; request: ExtensionUiRequest }) => void): () => void;
