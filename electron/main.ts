@@ -214,6 +214,8 @@ function registerIpc(): void {
     (_event, conversationId: string, response: Record<string, unknown>) =>
       piManager.respondToExtensionUi(conversationId, response),
   );
+  ipcMain.handle("desktop:get-global-prompt", () => store.getGlobalPrompt());
+  ipcMain.handle("desktop:save-global-prompt", (_event, prompt: string) => store.saveGlobalPrompt(prompt));
   ipcMain.handle("desktop:show-item", (_event, itemPath: string) => shell.showItemInFolder(itemPath));
 }
 

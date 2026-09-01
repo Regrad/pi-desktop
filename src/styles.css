@@ -279,6 +279,16 @@ button.secondary.large { display: flex; align-items: center; gap: 8px; padding: 
 .module-tools-details summary { cursor: pointer; }
 .module-tools-details > div { margin-top: 10px; display: flex; flex-wrap: wrap; gap: 6px; }
 .module-tools-details code { padding: 4px 6px; border-radius: 6px; background: #f1f1ee; color: #555; font: 11.5px "Cascadia Code", Consolas, monospace; }
+.prompt-editor-card { overflow: visible; }
+.prompt-editor-card textarea { display: block; width: 100%; min-height: 360px; resize: vertical; border: 0; border-bottom: 1px solid #ebebe7; border-radius: 16px 16px 0 0; outline: 0; padding: 18px; background: #fff; color: #292927; font: 13px/1.58 "Cascadia Code", Consolas, monospace; }
+.prompt-editor-card textarea:focus { box-shadow: inset 0 0 0 2px #c9c9c4; }
+.prompt-editor-card textarea:disabled { color: #999; background: #fafaf8; }
+.prompt-editor-footer { min-height: 78px; display: flex; align-items: center; justify-content: space-between; gap: 22px; padding: 12px 14px 12px 16px; }
+.prompt-editor-footer > div { min-width: 0; display: flex; flex-direction: column; gap: 3px; color: #777; font-size: 11.5px; }
+.prompt-editor-footer small { color: #92928c; font-size: 11px; }
+.prompt-editor-footer strong { color: #5b755b; font-size: 11px; font-weight: 550; }
+.prompt-editor-footer button { flex: 0 0 auto; }
+.prompt-editor-footer button:disabled { opacity: .45; cursor: default; }
 
 .diff-panel { width: min(52vw, 780px); flex: 0 0 min(52vw, 780px); min-width: 430px; min-height: 0; display: flex; flex-direction: column; border-left: 1px solid var(--line); background: #fff; }
 .diff-panel-title { height: 48px; flex: 0 0 48px; display: flex; align-items: center; justify-content: space-between; padding: 0 12px 0 16px; border-bottom: 1px solid var(--line); font-size: 13px; }

@@ -67,7 +67,7 @@ interface Notice {
   type: "info" | "warning" | "error";
 }
 
-type SettingsSection = "general" | "models" | "modules" | "configuration" | "shortcuts" | "archive" | "about";
+type SettingsSection = "general" | "models" | "modules" | "customization" | "configuration" | "shortcuts" | "archive" | "about";
 
 interface ConversationMenuState {
   conversationId: string;
@@ -665,10 +665,17 @@ function SettingsPage({
   onDeleteConversation: (conversationId: string) => void;
 }) {
   const [query, setQuery] = useState("");
+  const [globalPrompt, setGlobalPrompt] = useState("");
+  const [savedGlobalPrompt, setSavedGlobalPrompt] = useState("");
+  const [globalPromptLoaded, setGlobalPromptLoaded] = useState(false);
+  const [globalPromptLoading, setGlobalPromptLoading] = useState(false);
+  const [globalPromptSaving, setGlobalPromptSaving] = useState(false);
+  const [globalPromptStatus, setGlobalPromptStatus] = useState("");
   const sections: Array<{ id: SettingsSection; label: string; icon: typeof Settings }> = [
     { id: "general", label: "Общее", icon: Settings },
     { id: "models", label: "Модели", icon: Cpu },
     { id: "modules", label: "Модули", icon: Boxes },
+    { id: "customization", label: "Кастомизация", icon: Pencil },
     { id: "configuration", label: "Конфигурация Pi", icon: FileText },
     { id: "shortcuts", label: "Сочетания клавиш", icon: Keyboard },
     { id: "archive", label: "Архивированные чаты", icon: Archive },
@@ -680,6 +687,39 @@ function SettingsPage({
   };
   const showSessionsFolder = () => {
     if (sessionsDir) void window.piDesktop.showItemInFolder(sessionsDir);
+  };
+
+  useEffect(() => {
+    if (section !== "customization" || globalPromptLoaded) return;
+    let cancelled = false;
+    setGlobalPromptLoading(true);
+    setGlobalPromptStatus("");
+    void window.piDesktop.getGlobalPrompt().then((prompt) => {
+      if (cancelled) return;
+      setGlobalPrompt(prompt);
+      setSavedGlobalPrompt(prompt);
+      setGlobalPromptLoaded(true);
+    }).catch((error) => {
+      if (!cancelled) setGlobalPromptStatus(error instanceof Error ? error.message : String(error));
+    }).finally(() => {
+      if (!cancelled) setGlobalPromptLoading(false);
+    });
+    return () => { cancelled = true; };
+  }, [section, globalPromptLoaded]);
+
+  const saveGlobalPrompt = async () => {
+    setGlobalPromptSaving(true);
+    setGlobalPromptStatus("");
+    try {
+      const saved = await window.piDesktop.saveGlobalPrompt(globalPrompt);
+      setGlobalPrompt(saved);
+      setSavedGlobalPrompt(saved);
+      setGlobalPromptStatus("Сохранено. Новые процессы Pi подхватят изменения автоматически.");
+    } catch (error) {
+      setGlobalPromptStatus(error instanceof Error ? error.message : String(error));
+    } finally {
+      setGlobalPromptSaving(false);
+    }
   };
 
   return (
@@ -758,6 +798,41 @@ function SettingsPage({
                   <div>{extensionState.activeTools.map((tool) => <code key={tool}>{tool}</code>)}</div>
                 </details>
               </>}
+            </>
+          )}
+          {section === "customization" && (
+            <>
+              <h1>Кастомизация</h1>
+              <p className="settings-lead">Глобальные пользовательские инструкции, которые Pi добавляет к своему стандартному системному промпту во всех проектах.</p>
+              <h2>Глобальный пользовательский промпт</h2>
+              <div className="settings-card prompt-editor-card">
+                <textarea
+                  value={globalPrompt}
+                  onChange={(event) => {
+                    setGlobalPrompt(event.target.value);
+                    setGlobalPromptStatus("");
+                  }}
+                  onKeyDown={(event) => {
+                    if ((event.ctrlKey || event.metaKey) && event.key.toLocaleLowerCase() === "s") {
+                      event.preventDefault();
+                      if (!globalPromptSaving) void saveGlobalPrompt();
+                    }
+                  }}
+                  disabled={globalPromptLoading}
+                  placeholder={globalPromptLoading ? "Загрузка…" : "Введите общие правила поведения для Pi…"}
+                  spellCheck
+                />
+                <div className="prompt-editor-footer">
+                  <div>
+                    <span>data\agent\APPEND_SYSTEM.md · UTF-8</span>
+                    <small>Активные процессы не перезагружаются, чтобы не сбрасывать кэш.</small>
+                    {globalPromptStatus && <strong>{globalPromptStatus}</strong>}
+                  </div>
+                  <button className="primary" disabled={globalPromptLoading || globalPromptSaving || globalPrompt === savedGlobalPrompt} onClick={() => void saveGlobalPrompt()}>
+                    {globalPromptSaving ? "Сохранение…" : "Сохранить"}
+                  </button>
+                </div>
+              </div>
             </>
           )}
           {section === "configuration" && (

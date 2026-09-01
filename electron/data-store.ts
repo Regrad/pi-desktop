@@ -169,6 +169,19 @@ export class DataStore {
     await writeFile(promptPath, "Before modifying any files, ask the user for permission.\n", "utf8");
   }
 
+  async getGlobalPrompt(): Promise<string> {
+    return readFile(path.join(this.agentDir, "APPEND_SYSTEM.md"), "utf8");
+  }
+
+  async saveGlobalPrompt(prompt: string): Promise<string> {
+    if (typeof prompt !== "string") throw new TypeError("Глобальный промпт должен быть текстом");
+    if (Buffer.byteLength(prompt, "utf8") > 1_048_576) throw new Error("Глобальный промпт не может превышать 1 МБ");
+    const normalized = prompt.replace(/\r\n?/g, "\n").trimEnd();
+    const saved = normalized ? `${normalized}\n` : "";
+    await writeFile(path.join(this.agentDir, "APPEND_SYSTEM.md"), saved, "utf8");
+    return saved;
+  }
+
   private async migrateLegacyToolRepairConfig(configPath: string): Promise<void> {
     const config = JSON.parse(await readFile(configPath, "utf8")) as {
       grammarRepair?: { enabled?: boolean; grammars?: unknown; leakModels?: unknown };

@@ -35,6 +35,8 @@ const api: PiDesktopApi = {
     ipcRenderer.invoke("desktop:rename-conversation", conversationId, title),
   respondToExtensionUi: (conversationId, response) =>
     ipcRenderer.invoke("pi:extension-ui-response", conversationId, response),
+  getGlobalPrompt: () => ipcRenderer.invoke("desktop:get-global-prompt"),
+  saveGlobalPrompt: (prompt) => ipcRenderer.invoke("desktop:save-global-prompt", prompt),
   showItemInFolder: (path) => ipcRenderer.invoke("desktop:show-item", path),
   onPiEvent: (listener) => subscribe("pi:event", listener),
   onExtensionUi: (listener) => subscribe("pi:extension-ui", listener),

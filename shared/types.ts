@@ -216,6 +216,8 @@ export interface PiDesktopApi {
   clearQueue(conversationId: string): Promise<{ steering: string[]; followUp: string[] }>;
   renameConversation(conversationId: string, title: string): Promise<void>;
   respondToExtensionUi(conversationId: string, response: Record<string, unknown>): Promise<void>;
+  getGlobalPrompt(): Promise<string>;
+  saveGlobalPrompt(prompt: string): Promise<string>;
   showItemInFolder(path: string): Promise<void>;
   onPiEvent(listener: (payload: { conversationId: string; event: Record<string, unknown> }) => void): () => void;
   onExtensionUi(listener: (payload: { conversationId: string; request: ExtensionUiRequest }) => void): () => void;
