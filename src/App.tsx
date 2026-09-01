@@ -864,7 +864,9 @@ export default function App() {
   const [projectMenu, setProjectMenu] = useState<ProjectMenuState>();
   const [renameConversation, setRenameConversation] = useState<ConversationRecord>();
   const [renameProject, setRenameProject] = useState<ProjectRecord>();
+  const conversationScrollRef = useRef<HTMLDivElement>(null);
   const endRef = useRef<HTMLDivElement>(null);
+  const autoScrollRef = useRef(true);
   const activeIdRef = useRef<string | undefined>(undefined);
   const conversationsRef = useRef<ConversationRecord[]>([]);
   const startedAtRef = useRef<number | undefined>(undefined);
@@ -1031,8 +1033,25 @@ export default function App() {
   }, [working, startedAt]);
 
   useEffect(() => {
-    endRef.current?.scrollIntoView({ behavior: "smooth", block: "end" });
+    if (!autoScrollRef.current) return;
+    endRef.current?.scrollIntoView({ behavior: "auto", block: "end" });
   }, [messages, streamingMessage, tools, working, workingMessage]);
+
+  useEffect(() => {
+    autoScrollRef.current = true;
+    requestAnimationFrame(() => endRef.current?.scrollIntoView({ behavior: "auto", block: "end" }));
+  }, [activeConversationId]);
+
+  const handleConversationScroll = useCallback(() => {
+    const element = conversationScrollRef.current;
+    if (!element) return;
+    const distanceFromBottom = element.scrollHeight - element.scrollTop - element.clientHeight;
+    autoScrollRef.current = distanceFromBottom <= 4;
+  }, []);
+
+  const handleConversationWheel = useCallback((event: React.WheelEvent<HTMLDivElement>) => {
+    if (event.deltaY < 0) autoScrollRef.current = false;
+  }, []);
 
   const handlePiEvent = (event: JsonObject) => {
     if (event.type === "desktop_run_started" || event.type === "agent_start") {
@@ -1418,6 +1437,7 @@ export default function App() {
     const text = input.trim() || (attachments.length ? "Посмотри вложения." : "");
     if (!text || !activeConversationId) return;
     const submittedAttachments = attachments;
+    autoScrollRef.current = true;
     setInput("");
     setAttachments([]);
     const optimistic = {
@@ -1682,7 +1702,7 @@ export default function App() {
             {activeProject && <button className="path-button" title={`Показать в проводнике: ${activeProject.path}`} onClick={() => void window.piDesktop.showItemInFolder(activeProject.path)}>{activeProject.name}</button>}
           </header>
 
-          <div className="conversation-scroll">
+          <div className="conversation-scroll" ref={conversationScrollRef} onScroll={handleConversationScroll} onWheel={handleConversationWheel}>
             {!activeConversationId ? (
               <div className="welcome">
                 <div className="welcome-logo"><Bot size={34} /></div>
