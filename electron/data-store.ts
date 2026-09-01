@@ -128,14 +128,15 @@ export class DataStore {
       "pi-web-access",
       "pi-tool-repair",
       "pi-llama-cpp-stats",
-      "pi-token-speed",
       "pi-mcp-adapter",
       "pi-lens",
       "pi-loop-police",
     ];
+    const retiredPackageNames = ["pi-token-speed"];
     const managedResourceNames = [
       "pi-lens-all-tools",
       "pi-single-slot-guard",
+      "pi-llama-generation-speed",
     ];
     const managedPackages = [
       ...packageNames.map((name) => path.join(this.appRoot, "node_modules", name)),
@@ -144,7 +145,9 @@ export class DataStore {
     const configuredPackages = Array.isArray(settings.packages)
       ? settings.packages.filter((item): item is string => typeof item === "string")
       : [];
-    const customPackages = configuredPackages.filter((item) => !isManagedPackage(item, packageNames, managedResourceNames));
+    const customPackages = configuredPackages.filter((item) =>
+      !isManagedPackage(item, [...packageNames, ...retiredPackageNames], managedResourceNames)
+    );
     settings.packages = [...managedPackages, ...customPackages];
     await writeFile(settingsPath, `${JSON.stringify(settings, null, 2)}\n`, "utf8");
 

@@ -1,0 +1,9 @@
+{
+  "name": "pi-llama-generation-speed",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "pi": {
+    "extensions": ["./index.js"]
+  }
+}
