@@ -1134,7 +1134,12 @@ export default function App() {
     try {
       const next = await window.piDesktop.createConversation(projectId);
       if (navigationSequenceRef.current !== navigationSequence) return;
-      setConversations((current) => [next.conversation, ...current]);
+      setConversations((current) => {
+        const found = current.some((item) => item.id === next.conversation.id);
+        return found
+          ? current.map((item) => item.id === next.conversation.id ? next.conversation : item)
+          : [next.conversation, ...current];
+      });
       setActiveConversationId(next.conversation.id);
       setSnapshot(next);
       setActiveProjectId(next.conversation.projectId);
