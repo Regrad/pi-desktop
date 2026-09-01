@@ -193,6 +193,15 @@ function registerIpc(): void {
       behavior?: "steer" | "followUp",
     ) => piManager.sendPrompt(conversationId, message, attachments, behavior),
   );
+  ipcMain.handle("desktop:queue-prompt", (_event, conversationId: string, message: string, attachments: Attachment[]) =>
+    piManager.queuePrompt(conversationId, message, attachments),
+  );
+  ipcMain.handle("desktop:send-queued-prompt", (_event, conversationId: string, promptId: string) =>
+    piManager.sendQueuedPrompt(conversationId, promptId),
+  );
+  ipcMain.handle("desktop:remove-queued-prompt", (_event, conversationId: string, promptId: string) =>
+    piManager.removeQueuedPrompt(conversationId, promptId),
+  );
   ipcMain.handle("pi:abort", (_event, conversationId: string) => piManager.abort(conversationId));
   ipcMain.handle("pi:set-model", (_event, conversationId: string, provider: string, modelId: string) =>
     piManager.setModel(conversationId, provider, modelId),

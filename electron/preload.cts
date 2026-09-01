@@ -23,6 +23,12 @@ const api: PiDesktopApi = {
   restoreConversation: (conversationId) => ipcRenderer.invoke("desktop:restore-conversation", conversationId),
   sendPrompt: (conversationId, message, attachments, behavior) =>
     ipcRenderer.invoke("pi:send-prompt", conversationId, message, attachments, behavior),
+  queuePrompt: (conversationId, message, attachments) =>
+    ipcRenderer.invoke("desktop:queue-prompt", conversationId, message, attachments),
+  sendQueuedPrompt: (conversationId, promptId) =>
+    ipcRenderer.invoke("desktop:send-queued-prompt", conversationId, promptId),
+  removeQueuedPrompt: (conversationId, promptId) =>
+    ipcRenderer.invoke("desktop:remove-queued-prompt", conversationId, promptId),
   abort: (conversationId) => ipcRenderer.invoke("pi:abort", conversationId),
   setModel: (conversationId, provider, modelId) =>
     ipcRenderer.invoke("pi:set-model", conversationId, provider, modelId),

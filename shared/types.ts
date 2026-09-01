@@ -90,6 +90,13 @@ export interface Attachment {
   data?: string;
 }
 
+export interface QueuedPrompt {
+  id: string;
+  message: string;
+  attachments: Attachment[];
+  createdAt: string;
+}
+
 export interface RuntimeState {
   model: ModelInfo | null;
   thinkingLevel: ThinkingLevel;
@@ -196,6 +203,7 @@ export interface ConversationSnapshot {
   conversation: ConversationRecord;
   state: RuntimeState;
   messages: unknown[];
+  queuedPrompts: QueuedPrompt[];
   models: ModelInfo[];
   thinkingLevels: ThinkingLevel[];
   commands: Array<{ name: string; description?: string; source: string }>;
@@ -258,6 +266,9 @@ export interface PiDesktopApi {
     attachments: Attachment[],
     behavior?: "steer" | "followUp",
   ): Promise<void>;
+  queuePrompt(conversationId: string, message: string, attachments: Attachment[]): Promise<QueuedPrompt[]>;
+  sendQueuedPrompt(conversationId: string, promptId: string): Promise<QueuedPrompt[]>;
+  removeQueuedPrompt(conversationId: string, promptId: string): Promise<QueuedPrompt[]>;
   abort(conversationId: string): Promise<void>;
   setModel(conversationId: string, provider: string, modelId: string): Promise<RuntimeState>;
   setThinkingLevel(conversationId: string, level: ThinkingLevel): Promise<RuntimeState>;

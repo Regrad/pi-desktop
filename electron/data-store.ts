@@ -5,6 +5,7 @@ import { homedir } from "node:os";
 import path from "node:path";
 import { SessionManager, type SessionInfo } from "@earendil-works/pi-coding-agent";
 import type {
+  Attachment,
   ConfiguredModelServer,
   ConfiguredModelUpdate,
   ConversationRecord,
@@ -13,14 +14,16 @@ import type {
   ModelServerDiscoveryInput,
   ModelServerDiscoveryResult,
   ProjectRecord,
+  QueuedPrompt,
   ThinkingLevel,
 } from "../shared/types.js";
 import { configuredServerView, discoverProvider } from "./model-server-discovery.js";
 
 interface DesktopState {
-  version: 3;
+  version: 4;
   projects: ProjectRecord[];
   conversations: ConversationRecord[];
+  queuedPrompts: Record<string, QueuedPrompt[]>;
   activeProjectId?: string;
   activeConversationId?: string;
 }
@@ -30,9 +33,10 @@ interface ModelsFileConfig {
 }
 
 const EMPTY_STATE: DesktopState = {
-  version: 3,
+  version: 4,
   projects: [],
   conversations: [],
+  queuedPrompts: {},
 };
 
 const THINKING_LEVELS: ThinkingLevel[] = ["off", "minimal", "low", "medium", "high", "xhigh", "max"];
@@ -68,7 +72,7 @@ export class DataStore {
       this.state = {
         ...EMPTY_STATE,
         ...parsed,
-        version: 3,
+        version: 4,
         projects: Array.isArray(parsed.projects)
           ? parsed.projects.map((project) => {
               const legacyPath = typeof project.path === "string" ? project.path : "";
@@ -93,6 +97,7 @@ export class DataStore {
               };
             })
           : [],
+        queuedPrompts: normalizeQueuedPrompts(parsed.queuedPrompts),
       };
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
@@ -349,10 +354,12 @@ export class DataStore {
     await writeFile(configPath, `${JSON.stringify(config, null, 2)}\n`, "utf8");
   }
 
-  snapshot(): DesktopState {
+  snapshot(): Omit<DesktopState, "queuedPrompts"> {
     return structuredClone({
-      ...this.state,
+      version: this.state.version,
+      projects: this.state.projects,
       conversations: this.state.conversations.filter((conversation) => !conversation.archived),
+      activeProjectId: this.state.activeProjectId,
       activeConversationId: this.state.conversations.some(
         (conversation) => conversation.id === this.state.activeConversationId && !conversation.archived,
       ) ? this.state.activeConversationId : undefined,
@@ -525,6 +532,7 @@ export class DataStore {
       .map((item) => item.id);
     this.state.projects = this.state.projects.filter((item) => item.id !== projectId);
     this.state.conversations = this.state.conversations.filter((item) => item.projectId !== projectId);
+    for (const conversationId of conversationIds) delete this.state.queuedPrompts[conversationId];
     if (this.state.activeProjectId === projectId) {
       this.state.activeProjectId = this.state.projects[0]?.id;
       this.state.activeConversationId = undefined;
@@ -594,9 +602,42 @@ export class DataStore {
     return [await this.getConversationWorkingDirectory(conversation)];
   }
 
+  getQueuedPrompts(conversationId: string): QueuedPrompt[] {
+    this.getConversation(conversationId);
+    return structuredClone(this.state.queuedPrompts[conversationId] ?? []);
+  }
+
+  async queuePrompt(conversationId: string, message: string, attachments: Attachment[]): Promise<QueuedPrompt[]> {
+    this.getConversation(conversationId);
+    const normalizedMessage = message.trim();
+    if (!normalizedMessage) throw new Error("Сообщение для очереди не может быть пустым");
+    const prompt: QueuedPrompt = {
+      id: randomUUID(),
+      message: normalizedMessage,
+      attachments: structuredClone(attachments),
+      createdAt: new Date().toISOString(),
+    };
+    const queued = [...(this.state.queuedPrompts[conversationId] ?? []), prompt];
+    this.state.queuedPrompts[conversationId] = queued;
+    await this.save();
+    return structuredClone(queued);
+  }
+
+  async removeQueuedPrompt(conversationId: string, promptId: string): Promise<QueuedPrompt[]> {
+    this.getConversation(conversationId);
+    const current = this.state.queuedPrompts[conversationId] ?? [];
+    if (!current.some((prompt) => prompt.id === promptId)) throw new Error("Сообщение в очереди не найдено");
+    const queued = current.filter((prompt) => prompt.id !== promptId);
+    if (queued.length) this.state.queuedPrompts[conversationId] = queued;
+    else delete this.state.queuedPrompts[conversationId];
+    await this.save();
+    return structuredClone(queued);
+  }
+
   async deleteConversation(conversationId: string): Promise<void> {
     this.getConversation(conversationId);
     this.state.conversations = this.state.conversations.filter((item) => item.id !== conversationId);
+    delete this.state.queuedPrompts[conversationId];
     if (this.state.activeConversationId === conversationId) {
       this.state.activeConversationId = undefined;
     }
@@ -706,6 +747,25 @@ export class DataStore {
     this.writeQueue = next.catch(() => undefined);
     return next;
   }
+}
+
+function normalizeQueuedPrompts(value: unknown): Record<string, QueuedPrompt[]> {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return {};
+  const normalized: Record<string, QueuedPrompt[]> = {};
+  for (const [conversationId, prompts] of Object.entries(value)) {
+    if (!Array.isArray(prompts)) continue;
+    const valid = prompts.filter((prompt): prompt is QueuedPrompt => {
+      if (!prompt || typeof prompt !== "object") return false;
+      const candidate = prompt as Partial<QueuedPrompt>;
+      return typeof candidate.id === "string"
+        && typeof candidate.message === "string"
+        && candidate.message.trim().length > 0
+        && typeof candidate.createdAt === "string"
+        && Array.isArray(candidate.attachments);
+    });
+    if (valid.length) normalized[conversationId] = structuredClone(valid);
+  }
+  return normalized;
 }
 
 function validatePositiveInteger(value: number, label: string): number {

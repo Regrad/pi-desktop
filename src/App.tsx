@@ -48,6 +48,7 @@ import type {
   DiffHunk,
   ModelInfo,
   ProjectRecord,
+  QueuedPrompt,
   RunDiff,
   ThinkingLevel,
 } from "../shared/types";
@@ -1189,6 +1190,8 @@ export default function App() {
   const [footerLines, setFooterLines] = useState<string[]>([]);
   const [steeringMessages, setSteeringMessages] = useState<string[]>([]);
   const [followUpMessages, setFollowUpMessages] = useState<string[]>([]);
+  const [queuedPrompts, setQueuedPrompts] = useState<QueuedPrompt[]>([]);
+  const [queuedActionId, setQueuedActionId] = useState<string>();
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [settingsSection, setSettingsSection] = useState<SettingsSection>("general");
   const [projectDialogOpen, setProjectDialogOpen] = useState(false);
@@ -1206,6 +1209,7 @@ export default function App() {
   const editorSyncRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
   const searchSequenceRef = useRef(0);
   const navigationSequenceRef = useRef(0);
+  const queuedActionRef = useRef<string | undefined>(undefined);
 
   useEffect(() => {
     activeIdRef.current = activeConversationId;
@@ -1578,6 +1582,7 @@ export default function App() {
     setFooterLines([]);
     setSteeringMessages([]);
     setFollowUpMessages([]);
+    setQueuedPrompts([]);
     setExtensionDialog(undefined);
     setLastDuration(undefined);
     setRunDiff(undefined);
@@ -1599,6 +1604,7 @@ export default function App() {
       setFooterLines(next.extensionUi.footerLines);
       setSteeringMessages(next.state.steeringMessages ?? []);
       setFollowUpMessages(next.state.followUpMessages ?? []);
+      setQueuedPrompts(next.queuedPrompts ?? []);
       setExtensionDialog(next.extensionUi.pendingDialogs[0]
         ? { conversationId, request: next.extensionUi.pendingDialogs[0] }
         : undefined);
@@ -1650,6 +1656,7 @@ export default function App() {
       setFooterLines(next.extensionUi.footerLines);
       setSteeringMessages([]);
       setFollowUpMessages([]);
+      setQueuedPrompts([]);
       setExtensionDialog(undefined);
       document.title = "Pi Desktop";
       setLastDuration(undefined);
@@ -1716,6 +1723,7 @@ export default function App() {
     setFooterLines([]);
     setSteeringMessages([]);
     setFollowUpMessages([]);
+    setQueuedPrompts([]);
     setExtensionDialog(undefined);
   };
 
@@ -1798,13 +1806,27 @@ export default function App() {
     }
   };
 
-  const submit = async (steerNow = false) => {
+  const submit = async () => {
     const text = input.trim() || (attachments.length ? "Посмотри вложения." : "");
     if (!text || !activeConversationId) return;
+    const conversationId = activeConversationId;
     const submittedAttachments = attachments;
     autoScrollRef.current = true;
     setInput("");
     setAttachments([]);
+    if (working) {
+      try {
+        const queued = await window.piDesktop.queuePrompt(conversationId, text, submittedAttachments);
+        if (activeIdRef.current === conversationId) setQueuedPrompts(queued);
+      } catch (error) {
+        if (activeIdRef.current === conversationId) {
+          setInput(text);
+          setAttachments(submittedAttachments);
+        }
+        addNotice(error instanceof Error ? error.message : String(error), "error");
+      }
+      return;
+    }
     const optimistic = {
       id: `local-${crypto.randomUUID()}`,
       role: "user",
@@ -1812,19 +1834,75 @@ export default function App() {
       attachments: submittedAttachments.map((item) => item.name),
       optimistic: true,
     };
-    if (!working) setMessages((current) => [...current, optimistic]);
+    setMessages((current) => [...current, optimistic]);
     try {
-      await window.piDesktop.sendPrompt(
-        activeConversationId,
-        text,
-        submittedAttachments,
-        working ? (steerNow ? "steer" : "followUp") : undefined,
-      );
+      await window.piDesktop.sendPrompt(conversationId, text, submittedAttachments);
     } catch (error) {
-      if (!working) setMessages((current) => current.filter((item) => item.id !== optimistic.id));
-      setInput(text);
-      setAttachments(submittedAttachments);
+      if (activeIdRef.current === conversationId) {
+        setMessages((current) => current.filter((item) => item.id !== optimistic.id));
+        setInput(text);
+        setAttachments(submittedAttachments);
+      }
       addNotice(error instanceof Error ? error.message : String(error), "error");
+    }
+  };
+
+  const sendQueuedPrompt = async (prompt: QueuedPrompt) => {
+    if (!activeConversationId) return;
+    if (queuedActionRef.current) return;
+    const conversationId = activeConversationId;
+    queuedActionRef.current = prompt.id;
+    setQueuedActionId(prompt.id);
+    try {
+      const queued = await window.piDesktop.sendQueuedPrompt(conversationId, prompt.id);
+      if (activeIdRef.current === conversationId) setQueuedPrompts(queued);
+      autoScrollRef.current = true;
+    } catch (error) {
+      addNotice(error instanceof Error ? error.message : String(error), "error");
+    } finally {
+      queuedActionRef.current = undefined;
+      setQueuedActionId(undefined);
+    }
+  };
+
+  const editQueuedPrompt = async (prompt: QueuedPrompt) => {
+    if (!activeConversationId) return;
+    if (queuedActionRef.current) return;
+    const conversationId = activeConversationId;
+    queuedActionRef.current = prompt.id;
+    setQueuedActionId(prompt.id);
+    try {
+      const queued = await window.piDesktop.removeQueuedPrompt(conversationId, prompt.id);
+      if (activeIdRef.current === conversationId) {
+        setQueuedPrompts(queued);
+        setInput((current) => current ? `${prompt.message}\n\n${current}` : prompt.message);
+        setAttachments((current) => [
+          ...prompt.attachments,
+          ...current.filter((item) => !prompt.attachments.some((queuedAttachment) => queuedAttachment.id === item.id || queuedAttachment.path === item.path)),
+        ]);
+      }
+    } catch (error) {
+      addNotice(error instanceof Error ? error.message : String(error), "error");
+    } finally {
+      queuedActionRef.current = undefined;
+      setQueuedActionId(undefined);
+    }
+  };
+
+  const deleteQueuedPrompt = async (promptId: string) => {
+    if (!activeConversationId) return;
+    if (queuedActionRef.current) return;
+    const conversationId = activeConversationId;
+    queuedActionRef.current = promptId;
+    setQueuedActionId(promptId);
+    try {
+      const queued = await window.piDesktop.removeQueuedPrompt(conversationId, promptId);
+      if (activeIdRef.current === conversationId) setQueuedPrompts(queued);
+    } catch (error) {
+      addNotice(error instanceof Error ? error.message : String(error), "error");
+    } finally {
+      queuedActionRef.current = undefined;
+      setQueuedActionId(undefined);
     }
   };
 
@@ -2157,8 +2235,21 @@ export default function App() {
                   <em>{command.source}</em>
                 </button>)}
               </div>}
+              {queuedPrompts.length > 0 && <div className="queued-messages desktop-queue">
+                <div className="queued-head"><span>Ожидают отправки: {queuedPrompts.length}</span></div>
+                {queuedPrompts.map((prompt) => <div className="queued-message" key={prompt.id}>
+                  <Clock3 size={13} />
+                  <span title={prompt.message}>{prompt.message}</span>
+                  {prompt.attachments.length > 0 && <small>{prompt.attachments.length} влож.</small>}
+                  <div className="queued-actions">
+                    <button className="queued-send" title="Передать сообщение модели" disabled={Boolean(queuedActionId)} onClick={() => void sendQueuedPrompt(prompt)}><Zap size={13} /><span>Скорректировать</span></button>
+                    <button title="Вернуть в поле ввода" disabled={Boolean(queuedActionId)} onClick={() => void editQueuedPrompt(prompt)}><Pencil size={13} /></button>
+                    <button title="Удалить из очереди" disabled={Boolean(queuedActionId)} onClick={() => void deleteQueuedPrompt(prompt.id)}><Trash2 size={13} /></button>
+                  </div>
+                </div>)}
+              </div>}
               {(steeringMessages.length > 0 || followUpMessages.length > 0) && <div className="queued-messages">
-                <div className="queued-head"><span>В очереди: {steeringMessages.length + followUpMessages.length}</span><button onClick={() => void restoreQueuedMessages()}>Вернуть в редактор</button></div>
+                <div className="queued-head"><span>Очередь Pi: {steeringMessages.length + followUpMessages.length}</span><button onClick={() => void restoreQueuedMessages()}>Вернуть в редактор</button></div>
                 {steeringMessages.map((message, index) => <div className="queued-message steer" key={`steer-${index}`}><Zap size={13} /><span>{message}</span><small>в текущую работу</small></div>)}
                 {followUpMessages.map((message, index) => <div className="queued-message" key={`follow-${index}`}><Clock3 size={13} /><span>{message}</span><small>следом</small></div>)}
               </div>}
@@ -2189,10 +2280,10 @@ export default function App() {
                   onKeyDown={(event) => {
                     if (event.key === "Enter" && !event.shiftKey) {
                       event.preventDefault();
-                      void submit(event.ctrlKey || event.metaKey);
+                      void submit();
                     }
                   }}
-                  placeholder={working ? "Сообщение будет отправлено после завершения…" : "Спросите что-нибудь или опишите задачу"}
+                  placeholder={working ? "Сообщение будет добавлено в очередь…" : "Спросите что-нибудь или опишите задачу"}
                   rows={2}
                 />
                 <div className="composer-toolbar">
@@ -2222,7 +2313,7 @@ export default function App() {
                   </div>
                   {working ? (
                     <>
-                      <button className="send-button steer" title="Отправить сейчас" disabled={!input.trim() && !attachments.length} onClick={() => void submit(true)}><Zap size={17} /></button>
+                      <button className="send-button" title="Поставить в очередь" disabled={!input.trim() && !attachments.length} onClick={() => void submit()}><Send size={17} /></button>
                       <button className="send-button stop" title="Остановить" onClick={() => void window.piDesktop.abort(activeConversationId)}><CircleStop size={18} /></button>
                     </>
                   ) : (

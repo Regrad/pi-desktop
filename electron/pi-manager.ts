@@ -11,6 +11,7 @@ import type {
   ExtensionUiState,
   ModelInfo,
   ProjectRecord,
+  QueuedPrompt,
   RuntimeState,
   ThinkingLevel,
 } from "../shared/types.js";
@@ -74,6 +75,7 @@ export class PiManager {
     const running = this.runtimes.get(conversationId);
     if (running?.snapshot) {
       if (running.snapshot.state.isStreaming) await this.refreshRuntimeSnapshot(running);
+      running.snapshot.queuedPrompts = this.store.getQueuedPrompts(conversationId);
       return structuredClone(running.snapshot);
     }
     return this.previewConversation(this.store.getConversation(conversationId));
@@ -170,6 +172,29 @@ export class PiManager {
     }
   }
 
+  async queuePrompt(conversationId: string, message: string, attachments: Attachment[]): Promise<QueuedPrompt[]> {
+    const queued = await this.store.queuePrompt(conversationId, message, attachments);
+    this.syncQueuedPrompts(conversationId, queued);
+    return queued;
+  }
+
+  async sendQueuedPrompt(conversationId: string, promptId: string): Promise<QueuedPrompt[]> {
+    const prompt = this.store.getQueuedPrompts(conversationId).find((item) => item.id === promptId);
+    if (!prompt) throw new Error("Сообщение в очереди не найдено");
+    const runtime = this.runtimes.get(conversationId);
+    const isStreaming = runtime ? (await this.refreshState(conversationId, runtime)).isStreaming : false;
+    await this.sendPrompt(conversationId, prompt.message, prompt.attachments, isStreaming ? "steer" : undefined);
+    const queued = await this.store.removeQueuedPrompt(conversationId, promptId);
+    this.syncQueuedPrompts(conversationId, queued);
+    return queued;
+  }
+
+  async removeQueuedPrompt(conversationId: string, promptId: string): Promise<QueuedPrompt[]> {
+    const queued = await this.store.removeQueuedPrompt(conversationId, promptId);
+    this.syncQueuedPrompts(conversationId, queued);
+    return queued;
+  }
+
   async abort(conversationId: string): Promise<void> {
     const runtime = this.runtimes.get(conversationId);
     if (!runtime) return;
@@ -237,6 +262,11 @@ export class PiManager {
     return result;
   }
 
+  private syncQueuedPrompts(conversationId: string, queued: QueuedPrompt[]): void {
+    const runtime = this.runtimes.get(conversationId);
+    if (runtime?.snapshot) runtime.snapshot.queuedPrompts = structuredClone(queued);
+  }
+
   async shutdown(): Promise<void> {
     await Promise.all([...this.runtimes.values()].map((runtime) => runtime.rpc.stop()));
     this.runtimes.clear();
@@ -291,6 +321,7 @@ export class PiManager {
         workingVisible: true,
       },
       messages,
+      queuedPrompts: this.store.getQueuedPrompts(conversation.id),
       models: configuration.models,
       thinkingLevels,
       commands: structuredClone(this.cachedCommands),
@@ -400,6 +431,7 @@ export class PiManager {
         conversation: updated,
         state,
         messages: messagesData.messages ?? [],
+        queuedPrompts: this.store.getQueuedPrompts(conversation.id),
         models: modelsData.models ?? [],
         thinkingLevels: levelsData.levels ?? ["off"],
         commands: commandsData.commands ?? [],

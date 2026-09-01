@@ -195,7 +195,6 @@ button:not(:disabled) { cursor: pointer; }
 .dropdown-item small { color: #888; margin-top: 2px; }
 .send-button { width: 30px; height: 30px; border: 0; border-radius: 50%; display: grid; place-items: center; color: white; background: #111; }
 .send-button:disabled { background: #d4d4d0; }
-.send-button.steer { background: #e96a32; }
 .send-button.stop { background: #222; }
 .status-line { display: grid; grid-template-columns: repeat(auto-fit, minmax(190px, 1fr)); gap: 6px; padding: 8px 8px 0; color: #666; font-size: 13px; line-height: 1.35; }
 .status-item, .status-line > span { min-width: 0; min-height: 32px; display: flex; align-items: center; gap: 6px; padding: 6px 9px; border: 1px solid #e2e2dc; border-radius: 8px; background: #fafaf8; overflow-wrap: anywhere; }
@@ -206,11 +205,19 @@ button:not(:disabled) { cursor: pointer; }
 .queued-head { min-height: 34px; padding: 6px 9px; display: flex; align-items: center; justify-content: space-between; border-bottom: 1px solid #e8e8e3; color: #686864; font-size: 13px; }
 .queued-head button { border: 0; border-radius: 6px; background: transparent; padding: 4px 7px; color: #666; font-size: 12px; }
 .queued-head button:hover { background: var(--hover); }
-.queued-message { min-height: 36px; display: grid; grid-template-columns: 17px minmax(0, 1fr) auto; align-items: center; gap: 7px; padding: 7px 9px; border-bottom: 1px solid #ecece7; color: #555; font-size: 13px; }
+.queued-message { min-height: 36px; display: grid; grid-template-columns: 17px minmax(0, 1fr) auto auto; align-items: center; gap: 7px; padding: 7px 9px; border-bottom: 1px solid #ecece7; color: #555; font-size: 13px; }
 .queued-message:last-child { border-bottom: 0; }
-.queued-message span { overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+.queued-message > span { overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
 .queued-message small { color: #999; font-size: 11.5px; }
 .queued-message.steer svg { color: var(--orange); }
+.desktop-queue { background: #fff; }
+.desktop-queue .queued-head { justify-content: flex-start; }
+.queued-actions { display: flex; align-items: center; gap: 3px; }
+.queued-actions button { min-width: 28px; height: 28px; display: inline-flex; align-items: center; justify-content: center; gap: 5px; border: 0; border-radius: 7px; padding: 0 7px; background: transparent; color: #777; font-size: 12px; }
+.queued-actions button:hover { background: var(--hover); color: #333; }
+.queued-actions button:disabled { opacity: .45; pointer-events: none; }
+.queued-actions .queued-send { color: #777; }
+.queued-actions .queued-send:hover { color: var(--orange); }
 .extension-frame, .extension-entry { margin: 0 0 18px; padding: 9px 11px; border: 1px solid #e2e2dc; border-radius: 9px; background: #fafaf8; color: #62625e; font: 12.5px/1.5 "Cascadia Code", Consolas, monospace; white-space: pre-wrap; overflow-wrap: anywhere; }
 .footer-frame { margin-top: 18px; }
 .content-image { display: block; max-width: 100%; max-height: 520px; margin: 8px 0 14px; border-radius: 10px; border: 1px solid #e1e1dc; object-fit: contain; }
