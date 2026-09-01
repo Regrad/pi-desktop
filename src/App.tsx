@@ -2379,7 +2379,10 @@ export default function App() {
                 })}
                 {orphanTools.map((tool) => <ToolCard key={tool.id} tool={tool} />)}
                 {snapshot?.entries.filter((entry) => entry.renderedLines?.length).map((entry, index) => (
-                  <div className="extension-entry" key={entry.id ?? `${entry.type}-${index}`}>{entry.renderedLines!.map((line, lineIndex) => <div key={`${lineIndex}-${line}`}>{line}</div>)}</div>
+                  <div className="extension-entry" key={entry.id ?? `${entry.type}-${index}`}>{entry.renderedLines!.map((line, lineIndex) => {
+                    const cleanLine = stripTerminalCodes(line);
+                    return <div key={`${lineIndex}-${cleanLine}`}>{cleanLine}</div>;
+                  })}</div>
                 ))}
                 {footerLines.length > 0 && <div className="extension-frame footer-frame">{footerLines.map((line, index) => <div key={`${index}-${line}`}>{line}</div>)}</div>}
                 {working && (
@@ -2568,13 +2571,18 @@ function formatTokens(tokens: number): string {
 
 function sanitizeStatusText(value?: string): string {
   if (!value) return "";
-  return value
+  return stripTerminalCodes(value)
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function stripTerminalCodes(value: unknown): string {
+  return String(value ?? "")
     .replace(/\u001B\][^\u0007]*(?:\u0007|\u001B\\)/g, "")
     .replace(/(?:\u001B\[|\u009B)[0-?]*[ -/]*[@-~]/g, "")
     .replace(/\u001B[@-_]/g, "")
     .replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F-\u009F]/g, "")
-    .replace(/\s+/g, " ")
-    .trim();
+    .replace(/\s+$/g, "");
 }
 
 function pluralFiles(count: number): string {
