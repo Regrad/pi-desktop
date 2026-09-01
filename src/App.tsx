@@ -38,7 +38,9 @@ import type {
   BootstrapPayload,
   ConversationRecord,
   ConversationSnapshot,
+  ExtensionState,
   ExtensionUiRequest,
+  ExtensionWidgetState,
   DiffHunk,
   ModelInfo,
   ProjectRecord,
@@ -72,16 +74,11 @@ interface ConversationMenuState {
   y: number;
 }
 
-const MODULES = [
-  ["pi-web-access", "0.23.0"],
-  ["pi-tool-repair", "0.2.1"],
-  ["pi-llama-cpp-stats", "0.1.6"],
-  ["pi-token-speed", "0.7.1"],
-  ["pi-mcp-adapter", "2.26.0"],
-  ["pi-lens", "4.0.0"],
-  ["pi-loop-police", "1.14.1"],
-  ["pi-lens-all-tools", "локальный"],
-] as const;
+interface ProjectMenuState {
+  projectId: string;
+  x: number;
+  y: number;
+}
 
 const THINKING_LABELS: Record<ThinkingLevel, string> = {
   off: "Без рассуждений",
@@ -111,14 +108,53 @@ function textFromResult(result: unknown): string {
   const content = (result as JsonObject).content;
   if (Array.isArray(content)) {
     return content
-      .map((item) => (item?.type === "text" ? String(item.text ?? "") : JSON.stringify(item)))
+      .map((item) => {
+        if (item?.type === "text") return String(item.text ?? "");
+        if (item?.type === "image") return `[Изображение: ${String(item.mimeType ?? "image")}]`;
+        if (item?.type === "audio") return `[Аудио: ${String(item.mimeType ?? "audio")}]`;
+        if (item?.type === "resource_link") return `[Ресурс: ${String(item.title ?? item.name ?? item.uri ?? "ссылка")}]`;
+        if (item?.type === "resource") return `[Встроенный ресурс: ${String(item.resource?.uri ?? "данные")}]`;
+        return `[${String(item?.type ?? "данные")}]`;
+      })
       .filter(Boolean)
       .join("\n");
   }
   return JSON.stringify(result, null, 2);
 }
 
-function MessageContent({ message }: { message: JsonObject }) {
+function mediaSource(part: JsonObject): string | undefined {
+  if (typeof part.data === "string") {
+    return `data:${String(part.mimeType ?? "application/octet-stream")};base64,${part.data}`;
+  }
+  if (typeof part.url === "string") return part.url;
+  if (typeof part.image_url === "string") return part.image_url;
+  return undefined;
+}
+
+function ContentParts({ content }: { content: JsonObject[] }) {
+  return <>{content.map((part, index) => {
+    if (part.type === "text") return <Markdown key={index} text={String(part.text ?? "")} />;
+    if (part.type === "image") {
+      const src = mediaSource(part);
+      return src ? <img className="content-image" key={index} src={src} alt="Изображение" /> : <div className="muted" key={index}>Изображение недоступно</div>;
+    }
+    if (part.type === "audio") {
+      const src = mediaSource(part);
+      return src ? <audio className="content-audio" key={index} src={src} controls /> : <div className="muted" key={index}>Аудио недоступно</div>;
+    }
+    if (part.type === "resource_link") {
+      const href = String(part.uri ?? "");
+      return <a className="resource-link" key={index} href={href} target="_blank" rel="noreferrer">{String(part.title ?? part.name ?? href)}</a>;
+    }
+    if (part.type === "resource") {
+      const resource = part.resource as JsonObject | undefined;
+      return <pre className="embedded-resource" key={index}>{String(resource?.text ?? `[${resource?.uri ?? "Ресурс"}]`)}</pre>;
+    }
+    return null;
+  })}</>;
+}
+
+function MessageContent({ message, thinkingLabel }: { message: JsonObject; thinkingLabel?: string }) {
   const content = message.content;
   if (typeof content === "string") {
     return (
@@ -136,11 +172,13 @@ function MessageContent({ message }: { message: JsonObject }) {
   return (
     <>
       {content.map((part: JsonObject, index: number) => {
-        if (part.type === "text") return <Markdown key={index} text={String(part.text ?? "")} />;
+        if (["text", "image", "audio", "resource", "resource_link"].includes(String(part.type))) {
+          return <ContentParts key={index} content={[part]} />;
+        }
         if (part.type === "thinking") {
           return (
             <details className="thinking-block" key={index}>
-              <summary><Sparkles size={14} /> Рассуждения</summary>
+              <summary><Sparkles size={14} /> {thinkingLabel || "Рассуждения"}</summary>
               <div>{String(part.thinking ?? part.text ?? "")}</div>
             </details>
           );
@@ -154,11 +192,37 @@ function MessageContent({ message }: { message: JsonObject }) {
             </div>
           );
         }
-        if (part.type === "image") return <div className="muted" key={index}>Изображение</div>;
         return null;
       })}
     </>
   );
+}
+
+function PersistedToolResult({ message }: { message: JsonObject }) {
+  const [expanded, setExpanded] = useState(Boolean(message.isError));
+  const content = Array.isArray(message.content)
+    ? message.content as JsonObject[]
+    : typeof message.content === "string"
+      ? [{ type: "text", text: message.content }]
+      : [];
+  return (
+    <div className={`tool-card persisted ${message.isError ? "error" : ""}`}>
+      <button className="tool-card-head" onClick={() => setExpanded((value) => !value)}>
+        {expanded ? <ChevronDown size={15} /> : <ChevronRight size={15} />}
+        <Wrench size={15} />
+        <span>{String(message.toolName ?? message.name ?? "Инструмент")}</span>
+        <span className="tool-state">{message.isError ? "Ошибка" : "Результат"}</span>
+      </button>
+      {expanded && <div className="tool-card-body"><ContentParts content={content} /></div>}
+    </div>
+  );
+}
+
+function ToolResultContent({ result }: { result: unknown }) {
+  if (result && typeof result === "object" && Array.isArray((result as JsonObject).content)) {
+    return <ContentParts content={(result as JsonObject).content as JsonObject[]} />;
+  }
+  return <pre>{textFromResult(result)}</pre>;
 }
 
 function Markdown({ text }: { text: string }) {
@@ -188,11 +252,23 @@ function ToolCard({ tool }: { tool: ToolActivity }) {
       {expanded && (
         <div className="tool-card-body">
           {tool.args !== undefined && <pre>{JSON.stringify(tool.args, null, 2)}</pre>}
-          {tool.result !== undefined && <pre>{textFromResult(tool.result)}</pre>}
+          {tool.result !== undefined && <ToolResultContent result={tool.result} />}
         </div>
       )}
     </div>
   );
+}
+
+function WorkingIndicator({ indicator }: { indicator?: { frames?: string[]; intervalMs?: number } }) {
+  const frames = indicator?.frames?.filter(Boolean) ?? [];
+  const [index, setIndex] = useState(0);
+  useEffect(() => {
+    setIndex(0);
+    if (frames.length < 2) return;
+    const timer = setInterval(() => setIndex((value) => (value + 1) % frames.length), Math.max(60, indicator?.intervalMs ?? 100));
+    return () => clearInterval(timer);
+  }, [frames.join("\u0000"), indicator?.intervalMs]);
+  return frames.length ? <span className="working-frame">{frames[index] ?? frames[0]}</span> : <span className="spinner" />;
 }
 
 function DiffHunkView({ hunk }: { hunk: DiffHunk }) {
@@ -253,8 +329,21 @@ function ExtensionDialog({
   const [value, setValue] = useState(request.prefill ?? "");
   const respond = async (payload: Record<string, unknown>) => {
     await window.piDesktop.respondToExtensionUi(conversationId, { id: request.id, ...payload });
-    onClose();
+    if (typeof payload.customInput !== "string") onClose();
   };
+
+  useEffect(() => {
+    if (request.method !== "custom") return;
+    const onKeyDown = (event: KeyboardEvent) => {
+      const input = terminalInputFromKeyboard(event);
+      if (!input) return;
+      event.preventDefault();
+      event.stopPropagation();
+      void respond({ customInput: input });
+    };
+    window.addEventListener("keydown", onKeyDown, true);
+    return () => window.removeEventListener("keydown", onKeyDown, true);
+  }, [conversationId, request.id, request.method]);
 
   return (
     <div className="modal-backdrop">
@@ -264,6 +353,9 @@ function ExtensionDialog({
           <button className="icon-button" onClick={() => void respond({ cancelled: true })}><X size={17} /></button>
         </div>
         {request.message && <p>{request.message}</p>}
+        {request.method === "custom" && (
+          <pre className="extension-custom-frame">{(request.customLines ?? []).join("\n")}</pre>
+        )}
         {request.method === "select" && (
           <div className="select-list">
             {(request.options ?? []).map((option) => (
@@ -277,7 +369,7 @@ function ExtensionDialog({
             : <input className="modal-input" value={value} placeholder={request.placeholder} onChange={(event) => setValue(event.target.value)} autoFocus />
         )}
         <div className="modal-actions">
-          <button onClick={() => void respond({ cancelled: true })}>Отмена</button>
+          <button onClick={() => void respond({ cancelled: true })}>{request.method === "custom" ? "Закрыть" : "Отмена"}</button>
           {request.method === "confirm" && <button onClick={() => void respond({ confirmed: false })}>Нет</button>}
           {request.method === "confirm" && <button className="primary" onClick={() => void respond({ confirmed: true })}>Да</button>}
           {(request.method === "input" || request.method === "editor") && (
@@ -287,6 +379,31 @@ function ExtensionDialog({
       </div>
     </div>
   );
+}
+
+function terminalInputFromKeyboard(event: KeyboardEvent): string | undefined {
+  if (event.ctrlKey && event.key.length === 1) {
+    const code = event.key.toLocaleLowerCase().charCodeAt(0);
+    if (code >= 97 && code <= 122) return String.fromCharCode(code - 96);
+  }
+  const special: Record<string, string> = {
+    ArrowUp: "\u001b[A",
+    ArrowDown: "\u001b[B",
+    ArrowRight: "\u001b[C",
+    ArrowLeft: "\u001b[D",
+    Enter: "\r",
+    Escape: "\u001b",
+    Tab: "\t",
+    Backspace: "\u007f",
+    Delete: "\u001b[3~",
+    Home: "\u001b[H",
+    End: "\u001b[F",
+    PageUp: "\u001b[5~",
+    PageDown: "\u001b[6~",
+  };
+  if (special[event.key]) return special[event.key];
+  if (!event.altKey && !event.metaKey && event.key.length === 1) return event.key;
+  return undefined;
 }
 
 function ProjectDialog({
@@ -357,10 +474,12 @@ function ProjectDialog({
 
 function RenameConversationDialog({
   title,
+  heading = "Переименовать чат",
   onClose,
   onSave,
 }: {
   title: string;
+  heading?: string;
   onClose: () => void;
   onSave: (title: string) => void;
 }) {
@@ -372,7 +491,7 @@ function RenameConversationDialog({
         const normalized = value.trim();
         if (normalized) onSave(normalized);
       }}>
-        <div className="modal-head"><strong>Переименовать чат</strong><button type="button" className="icon-button" onClick={onClose}><X size={17} /></button></div>
+        <div className="modal-head"><strong>{heading}</strong><button type="button" className="icon-button" onClick={onClose}><X size={17} /></button></div>
         <input className="modal-input" value={value} onChange={(event) => setValue(event.target.value)} autoFocus />
         <div className="modal-actions">
           <button type="button" onClick={onClose}>Отмена</button>
@@ -414,6 +533,7 @@ function SettingsPage({
   models,
   currentModel,
   thinkingLevels,
+  extensionState,
   archivedConversations,
   projects,
   onRestoreConversation,
@@ -427,6 +547,7 @@ function SettingsPage({
   models: ModelInfo[];
   currentModel?: ModelInfo | null;
   thinkingLevels: ThinkingLevel[];
+  extensionState?: ExtensionState;
   archivedConversations: ConversationRecord[];
   projects: ProjectRecord[];
   onRestoreConversation: (conversationId: string) => void;
@@ -498,10 +619,33 @@ function SettingsPage({
           {section === "modules" && (
             <>
               <h1>Модули</h1>
-              <p className="settings-lead">Модули встроены в приложение и загружаются локально. Автоматическое обновление отключено.</p>
+              <p className="settings-lead">Фактическое состояние модулей, инструментов и ошибок из работающего процесса Pi.</p>
               <div className="settings-card module-list">
-                {MODULES.map(([name, version]) => <SettingRow key={name} title={name} description={`Версия: ${version}`} value="Подключён" />)}
+                {extensionState?.extensionPaths.length ? extensionState.extensionPaths.map((extensionPath) => {
+                  const name = extensionName(extensionPath);
+                  const normalizedName = `/${name}/`;
+                  const tools = extensionState.tools.filter((tool) => tool.source?.replace(/\\/g, "/").includes(normalizedName));
+                  const activeTools = tools.filter((tool) => tool.active).length;
+                  const errors = extensionState.errors.filter((error) => error.extensionPath?.replace(/\\/g, "/").includes(normalizedName));
+                  return <SettingRow
+                    key={extensionPath}
+                    title={name}
+                    description={`${extensionPath}${tools.length ? ` · инструменты ${activeTools}/${tools.length}` : ""}${errors.length ? ` · ошибок ${errors.length}` : ""}`}
+                    value={errors.length ? "Есть ошибки" : "Загружен"}
+                  />;
+                }) : <div className="settings-empty">Откройте чат, чтобы получить состояние расширений непосредственно из Pi.</div>}
               </div>
+              {extensionState && <>
+                <h2>Инструменты</h2>
+                <div className="settings-card module-list">
+                  <SettingRow title="Активные инструменты" description="Именно этот набор сейчас передаётся модели." value={`${extensionState.activeTools.length} из ${extensionState.tools.length}`} />
+                  {extensionState.errors.map((error, index) => <SettingRow key={`${error.extensionPath}-${index}`} title="Ошибка расширения" description={`${error.extensionPath ?? "Неизвестный модуль"}: ${error.error}`} value={error.event ?? "runtime"} />)}
+                </div>
+                <details className="module-tools-details">
+                  <summary>Показать активные инструменты</summary>
+                  <div>{extensionState.activeTools.map((tool) => <code key={tool}>{tool}</code>)}</div>
+                </details>
+              </>}
             </>
           )}
           {section === "configuration" && (
@@ -576,29 +720,71 @@ export default function App() {
   const [modelMenuOpen, setModelMenuOpen] = useState(false);
   const [thinkingMenuOpen, setThinkingMenuOpen] = useState(false);
   const [search, setSearch] = useState("");
+  const [searchMatches, setSearchMatches] = useState<Set<string>>();
   const [extensionDialog, setExtensionDialog] = useState<{ conversationId: string; request: ExtensionUiRequest }>();
   const [notices, setNotices] = useState<Notice[]>([]);
   const [statuses, setStatuses] = useState<Record<string, string>>({});
   const [workingMessage, setWorkingMessage] = useState("");
-  const [widgets, setWidgets] = useState<Record<string, string[]>>({});
+  const [workingVisible, setWorkingVisible] = useState(true);
+  const [workingIndicator, setWorkingIndicator] = useState<{ frames?: string[]; intervalMs?: number }>();
+  const [hiddenThinkingLabel, setHiddenThinkingLabel] = useState("");
+  const [widgets, setWidgets] = useState<ExtensionWidgetState[]>([]);
+  const [headerLines, setHeaderLines] = useState<string[]>([]);
+  const [footerLines, setFooterLines] = useState<string[]>([]);
+  const [steeringMessages, setSteeringMessages] = useState<string[]>([]);
+  const [followUpMessages, setFollowUpMessages] = useState<string[]>([]);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [settingsSection, setSettingsSection] = useState<SettingsSection>("general");
   const [projectDialogOpen, setProjectDialogOpen] = useState(false);
   const [conversationMenu, setConversationMenu] = useState<ConversationMenuState>();
+  const [projectMenu, setProjectMenu] = useState<ProjectMenuState>();
   const [renameConversation, setRenameConversation] = useState<ConversationRecord>();
+  const [renameProject, setRenameProject] = useState<ProjectRecord>();
   const endRef = useRef<HTMLDivElement>(null);
   const activeIdRef = useRef<string | undefined>(undefined);
+  const conversationsRef = useRef<ConversationRecord[]>([]);
   const startedAtRef = useRef<number | undefined>(undefined);
+  const editorSyncRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+  const searchSequenceRef = useRef(0);
+  const navigationSequenceRef = useRef(0);
 
   useEffect(() => {
     activeIdRef.current = activeConversationId;
   }, [activeConversationId]);
+
+  useEffect(() => {
+    conversationsRef.current = conversations;
+  }, [conversations]);
+
+  useEffect(() => {
+    if (!activeConversationId) return;
+    clearTimeout(editorSyncRef.current);
+    editorSyncRef.current = setTimeout(() => {
+      void window.piDesktop.setHostEditorText(activeConversationId, input).catch(() => undefined);
+    }, 180);
+    return () => clearTimeout(editorSyncRef.current);
+  }, [activeConversationId, input]);
 
   const addNotice = useCallback((message: string, type: Notice["type"] = "info") => {
     const notice = { id: crypto.randomUUID(), message, type };
     setNotices((current) => [...current, notice]);
     setTimeout(() => setNotices((current) => current.filter((item) => item.id !== notice.id)), 5_000);
   }, []);
+
+  useEffect(() => {
+    const query = search.trim();
+    const sequence = ++searchSequenceRef.current;
+    if (!query) {
+      setSearchMatches(undefined);
+      return;
+    }
+    const timer = setTimeout(() => {
+      void window.piDesktop.searchConversations(query).then((ids) => {
+        if (searchSequenceRef.current === sequence) setSearchMatches(new Set(ids));
+      }).catch((error) => addNotice(error instanceof Error ? error.message : String(error), "error"));
+    }, 250);
+    return () => clearTimeout(timer);
+  }, [search, addNotice]);
 
   useEffect(() => {
     void window.piDesktop.bootstrap().then((payload) => {
@@ -627,16 +813,28 @@ export default function App() {
   }), []);
 
   useEffect(() => window.piDesktop.onPiEvent(({ conversationId, event }) => {
-    if (conversationId !== activeIdRef.current) return;
+    if (conversationId !== activeIdRef.current) {
+      if (event.type === "agent_settled") {
+        const title = conversationsRef.current.find((item) => item.id === conversationId)?.title ?? "Фоновый чат";
+        addNotice(`Задача завершена: ${title}`);
+      }
+      return;
+    }
     handlePiEvent(event);
-  }), []);
+  }), [addNotice]);
 
   useEffect(() => window.piDesktop.onExtensionUi(({ conversationId, request }) => {
     if (request.method === "notify") {
       addNotice(request.message ?? "Уведомление расширения", request.notifyType ?? "info");
       return;
     }
-    if (conversationId !== activeIdRef.current) return;
+    if (conversationId !== activeIdRef.current) {
+      if (["select", "confirm", "input", "editor", "custom"].includes(request.method)) {
+        const title = conversationsRef.current.find((item) => item.id === conversationId)?.title ?? "Фоновый чат";
+        addNotice(`Расширение ожидает действие в чате «${title}»`, "warning");
+      }
+      return;
+    }
     if (request.method === "setStatus" && request.statusKey) {
       setStatuses((current) => {
         const next = { ...current };
@@ -651,21 +849,52 @@ export default function App() {
       setWorkingMessage(sanitizeStatusText(request.workingText));
       return;
     }
+    if (request.method === "setWorkingVisible") {
+      setWorkingVisible(request.workingVisible !== false);
+      return;
+    }
+    if (request.method === "setWorkingIndicator") {
+      setWorkingIndicator(request.workingIndicator);
+      return;
+    }
+    if (request.method === "setHiddenThinkingLabel") {
+      setHiddenThinkingLabel(request.hiddenThinkingLabel ?? "");
+      return;
+    }
     if (request.method === "setWidget" && request.widgetKey) {
       setWidgets((current) => {
-        const next = { ...current };
-        if (request.widgetLines) next[request.widgetKey!] = request.widgetLines;
-        else delete next[request.widgetKey!];
+        const next = current.filter((widget) => widget.key !== request.widgetKey);
+        if (request.widgetLines) next.push({
+          key: request.widgetKey!,
+          lines: request.widgetLines,
+          placement: request.widgetPlacement ?? "aboveEditor",
+        });
         return next;
       });
+      return;
+    }
+    if (request.method === "setHeader") {
+      setHeaderLines(request.customLines ?? []);
+      return;
+    }
+    if (request.method === "setFooter") {
+      setFooterLines(request.customLines ?? []);
+      return;
+    }
+    if (request.method === "setTitle" && request.title) {
+      document.title = request.title;
       return;
     }
     if (request.method === "set_editor_text") {
       setInput(request.text ?? "");
       return;
     }
-    if (["select", "confirm", "input", "editor"].includes(request.method)) {
+    if (["select", "confirm", "input", "editor", "custom"].includes(request.method)) {
       setExtensionDialog({ conversationId, request });
+      return;
+    }
+    if (request.method === "customClose") {
+      setExtensionDialog((current) => current?.request.id === request.id ? undefined : current);
     }
   }), [addNotice]);
 
@@ -682,8 +911,9 @@ export default function App() {
   }, [messages, streamingMessage, tools]);
 
   const handlePiEvent = (event: JsonObject) => {
-    if (event.type === "agent_start") {
-      const now = Date.now();
+    if (event.type === "desktop_run_started" || event.type === "agent_start") {
+      const runStartedAt = typeof event.run?.startedAt === "string" ? Date.parse(event.run.startedAt) : NaN;
+      const now = Number.isFinite(runStartedAt) ? runStartedAt : (startedAtRef.current ?? Date.now());
       setWorking(true);
       setStartedAt(now);
       startedAtRef.current = now;
@@ -696,11 +926,21 @@ export default function App() {
       setWorking(false);
       setWorkingMessage("");
       setStreamingMessage(null);
-      if (startedAtRef.current) {
-        const duration = Date.now() - startedAtRef.current;
+      const savedDuration = typeof event.run?.durationMs === "number" ? event.run.durationMs : undefined;
+      if (startedAtRef.current || savedDuration !== undefined) {
+        const duration = savedDuration ?? (Date.now() - startedAtRef.current!);
         setElapsed(duration);
         setLastDuration(duration);
         startedAtRef.current = undefined;
+      }
+      setTools({});
+      if (event.state) {
+        setSnapshot((current) => current ? {
+          ...current,
+          state: event.state,
+          entries: Array.isArray(event.entries) ? event.entries : current.entries,
+          extensionState: event.extensionState ?? current.extensionState,
+        } : current);
       }
     } else if (event.type === "message_start") {
       if (event.message?.role === "assistant") setStreamingMessage(structuredClone(event.message));
@@ -736,6 +976,8 @@ export default function App() {
       if (event.message.role === "assistant") {
         setMessages((current) => [...current, event.message]);
         setStreamingMessage(null);
+      } else if (event.message.role === "toolResult" || event.message.role === "tool") {
+        setMessages((current) => [...current, event.message]);
       }
     } else if (event.type === "tool_execution_start") {
       setTools((current) => ({
@@ -766,18 +1008,33 @@ export default function App() {
           error: Boolean(event.isError),
         },
       }));
+    } else if (event.type === "queue_update") {
+      const steering = Array.isArray(event.steering) ? event.steering.map(String) : [];
+      const followUp = Array.isArray(event.followUp) ? event.followUp.map(String) : [];
+      setSteeringMessages(steering);
+      setFollowUpMessages(followUp);
+      setSnapshot((current) => current ? {
+        ...current,
+        state: { ...current.state, steeringMessages: steering, followUpMessages: followUp, pendingMessageCount: steering.length + followUp.length },
+      } : current);
     } else if (event.type === "runtime_error" || event.type === "extension_error") {
       addNotice(String(event.error ?? "Ошибка Pi"), "error");
       setWorking(false);
       setWorkingMessage("");
+      if (typeof event.run?.durationMs === "number") setLastDuration(event.run.durationMs);
     } else if (event.type === "desktop_run_diff" && event.diff) {
       setRunDiff(event.diff as RunDiff);
+      if (typeof event.run?.durationMs === "number") setLastDuration(event.run.durationMs);
+    } else if (event.type === "desktop_preparing") {
+      setWorking(true);
+      setWorkingMessage(String(event.message ?? "Подготовка…"));
     } else if (event.type === "desktop_diff_error") {
       addNotice(`Не удалось построить diff: ${String(event.error ?? "неизвестная ошибка")}`, "warning");
     }
   };
 
   const openConversation = async (conversationId: string) => {
+    const navigationSequence = ++navigationSequenceRef.current;
     setActiveConversationId(conversationId);
     const conversation = conversations.find((item) => item.id === conversationId);
     if (conversation) setActiveProjectId(conversation.projectId);
@@ -788,32 +1045,63 @@ export default function App() {
     setAttachments([]);
     setStatuses({});
     setWorkingMessage("");
-    setWidgets({});
+    setWorkingVisible(true);
+    setWorkingIndicator(undefined);
+    setHiddenThinkingLabel("");
+    setWidgets([]);
+    setHeaderLines([]);
+    setFooterLines([]);
+    setSteeringMessages([]);
+    setFollowUpMessages([]);
+    setExtensionDialog(undefined);
     setLastDuration(undefined);
     setRunDiff(undefined);
     setDiffOpen(false);
     try {
       const next = await window.piDesktop.openConversation(conversationId);
+      if (navigationSequenceRef.current !== navigationSequence) return;
       setSnapshot(next);
       setActiveProjectId(next.conversation.projectId);
       setMessages(next.messages as JsonObject[]);
       setWorking(next.state.isStreaming);
+      setStatuses(next.extensionUi.statuses);
+      setWorkingMessage(next.extensionUi.workingMessage ?? "");
+      setWorkingVisible(next.extensionUi.workingVisible);
+      setWorkingIndicator(next.extensionUi.workingIndicator);
+      setHiddenThinkingLabel(next.extensionUi.hiddenThinkingLabel ?? "");
+      setWidgets(next.extensionUi.widgets);
+      setHeaderLines(next.extensionUi.headerLines);
+      setFooterLines(next.extensionUi.footerLines);
+      setSteeringMessages(next.state.steeringMessages ?? []);
+      setFollowUpMessages(next.state.followUpMessages ?? []);
+      setExtensionDialog(next.extensionUi.pendingDialogs[0]
+        ? { conversationId, request: next.extensionUi.pendingDialogs[0] }
+        : undefined);
+      document.title = next.extensionUi.title || "Pi Desktop";
+      setRunDiff(next.run?.diff);
+      setLastDuration(next.run?.durationMs);
       if (next.state.isStreaming) {
-        const now = Date.now();
+        const savedStartedAt = next.run?.startedAt ? Date.parse(next.run.startedAt) : NaN;
+        const now = Number.isFinite(savedStartedAt) ? savedStartedAt : Date.now();
         setStartedAt(now);
         startedAtRef.current = now;
+      } else {
+        setStartedAt(undefined);
+        startedAtRef.current = undefined;
       }
     } catch (error) {
       addNotice(error instanceof Error ? error.message : String(error), "error");
     } finally {
-      setLoading(false);
+      if (navigationSequenceRef.current === navigationSequence) setLoading(false);
     }
   };
 
   const newChat = async (projectId?: string) => {
+    const navigationSequence = ++navigationSequenceRef.current;
     setLoading(true);
     try {
       const next = await window.piDesktop.createConversation(projectId);
+      if (navigationSequenceRef.current !== navigationSequence) return;
       setConversations((current) => [next.conversation, ...current]);
       setActiveConversationId(next.conversation.id);
       setSnapshot(next);
@@ -823,13 +1111,24 @@ export default function App() {
       setAttachments([]);
       setWorking(false);
       setWorkingMessage("");
+      setWorkingVisible(true);
+      setWorkingIndicator(next.extensionUi.workingIndicator);
+      setHiddenThinkingLabel(next.extensionUi.hiddenThinkingLabel ?? "");
+      setStatuses(next.extensionUi.statuses);
+      setWidgets(next.extensionUi.widgets);
+      setHeaderLines(next.extensionUi.headerLines);
+      setFooterLines(next.extensionUi.footerLines);
+      setSteeringMessages([]);
+      setFollowUpMessages([]);
+      setExtensionDialog(undefined);
+      document.title = "Pi Desktop";
       setLastDuration(undefined);
       setRunDiff(undefined);
       setDiffOpen(false);
     } catch (error) {
       addNotice(error instanceof Error ? error.message : String(error), "error");
     } finally {
-      setLoading(false);
+      if (navigationSequenceRef.current === navigationSequence) setLoading(false);
     }
   };
 
@@ -860,6 +1159,16 @@ export default function App() {
     });
   };
 
+  const showProjectMenu = (event: React.MouseEvent, projectId: string) => {
+    event.preventDefault();
+    event.stopPropagation();
+    setProjectMenu({
+      projectId,
+      x: Math.min(event.clientX, window.innerWidth - 230),
+      y: Math.min(event.clientY, window.innerHeight - 180),
+    });
+  };
+
   const clearConversationView = (conversationId: string) => {
     if (activeConversationId !== conversationId) return;
     setActiveConversationId(undefined);
@@ -870,6 +1179,14 @@ export default function App() {
     setTools({});
     setWorking(false);
     setWorkingMessage("");
+    setWorkingIndicator(undefined);
+    setHiddenThinkingLabel("");
+    setWidgets([]);
+    setHeaderLines([]);
+    setFooterLines([]);
+    setSteeringMessages([]);
+    setFollowUpMessages([]);
+    setExtensionDialog(undefined);
   };
 
   const archiveChat = async (conversationId: string) => {
@@ -921,6 +1238,36 @@ export default function App() {
     }
   };
 
+  const saveProjectTitle = async (name: string) => {
+    const project = renameProject;
+    if (!project) return;
+    setRenameProject(undefined);
+    try {
+      const updated = await window.piDesktop.renameProject(project.id, name);
+      setProjects((current) => current.map((item) => item.id === updated.id ? updated : item));
+    } catch (error) {
+      addNotice(error instanceof Error ? error.message : String(error), "error");
+    }
+  };
+
+  const removeProject = async (projectId: string) => {
+    setProjectMenu(undefined);
+    try {
+      const removed = await window.piDesktop.removeProject(projectId);
+      if (!removed) return;
+      setProjects((current) => current.filter((item) => item.id !== projectId));
+      setConversations((current) => current.filter((item) => item.projectId !== projectId));
+      if (activeProjectId === projectId) {
+        setActiveProjectId(undefined);
+        setActiveConversationId(undefined);
+        setSnapshot(undefined);
+        setMessages([]);
+      }
+    } catch (error) {
+      addNotice(error instanceof Error ? error.message : String(error), "error");
+    }
+  };
+
   const submit = async (steerNow = false) => {
     const text = input.trim() || (attachments.length ? "Посмотри вложения." : "");
     if (!text || !activeConversationId) return;
@@ -934,7 +1281,7 @@ export default function App() {
       attachments: submittedAttachments.map((item) => item.name),
       optimistic: true,
     };
-    setMessages((current) => [...current, optimistic]);
+    if (!working) setMessages((current) => [...current, optimistic]);
     try {
       await window.piDesktop.sendPrompt(
         activeConversationId,
@@ -943,9 +1290,22 @@ export default function App() {
         working ? (steerNow ? "steer" : "followUp") : undefined,
       );
     } catch (error) {
-      setMessages((current) => current.filter((item) => item.id !== optimistic.id));
+      if (!working) setMessages((current) => current.filter((item) => item.id !== optimistic.id));
       setInput(text);
       setAttachments(submittedAttachments);
+      addNotice(error instanceof Error ? error.message : String(error), "error");
+    }
+  };
+
+  const restoreQueuedMessages = async () => {
+    if (!activeConversationId) return;
+    try {
+      const queued = await window.piDesktop.clearQueue(activeConversationId);
+      const restored = [...queued.steering, ...queued.followUp].join("\n\n");
+      if (restored) setInput((current) => current ? `${restored}\n\n${current}` : restored);
+      setSteeringMessages([]);
+      setFollowUpMessages([]);
+    } catch (error) {
       addNotice(error instanceof Error ? error.message : String(error), "error");
     }
   };
@@ -991,12 +1351,12 @@ export default function App() {
   const grouped = useMemo(() => projects.map((project) => ({
     project,
     chats: conversations
-      .filter((item) => item.projectId === project.id && item.title.toLocaleLowerCase().includes(search.toLocaleLowerCase()))
+      .filter((item) => item.projectId === project.id && (!searchMatches || searchMatches.has(item.id)))
       .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt)),
-  })), [projects, conversations, search]);
+  })), [projects, conversations, searchMatches]);
   const standaloneChats = useMemo(() => conversations
-    .filter((item) => !item.projectId && item.title.toLocaleLowerCase().includes(search.toLocaleLowerCase()))
-    .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt)), [conversations, search]);
+    .filter((item) => !item.projectId && (!searchMatches || searchMatches.has(item.id)))
+    .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt)), [conversations, searchMatches]);
   const openProject = async (projectId: string) => {
     setActiveProjectId(projectId);
     try {
@@ -1012,6 +1372,10 @@ export default function App() {
     }
   };
   const renderedMessages = streamingMessage ? [...messages, streamingMessage] : messages;
+  const slashQuery = input.startsWith("/") && !input.includes(" ") ? input.slice(1).toLocaleLowerCase() : undefined;
+  const slashCommands = slashQuery === undefined ? [] : (snapshot?.commands ?? [])
+    .filter((command) => command.name.toLocaleLowerCase().includes(slashQuery))
+    .slice(0, 10);
   let lastUserMessageIndex = -1;
   renderedMessages.forEach((message, index) => {
     if (message.role === "user") lastUserMessageIndex = index;
@@ -1036,6 +1400,7 @@ export default function App() {
             models={snapshot?.models ?? []}
             currentModel={snapshot?.state.model}
             thinkingLevels={snapshot?.thinkingLevels ?? []}
+            extensionState={snapshot?.extensionState}
             archivedConversations={archivedConversations}
             projects={projects}
             onRestoreConversation={(conversationId) => void restoreChat(conversationId)}
@@ -1048,19 +1413,20 @@ export default function App() {
             <div className="sidebar-brand">
               <div className="brand-label">Pi Desktop</div>
             </div>
-            <div className="search-box"><Search size={14} /><input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Поиск" /></div>
+            <div className="search-box"><Search size={14} /><input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Поиск по чатам" /></div>
             <div className="project-list">
               <div className="sidebar-section-title"><span>Проекты</span><button title="Создать проект" onClick={() => setProjectDialogOpen(true)}><Plus size={15} /></button></div>
               {grouped.map(({ project, chats }) => (
-                <section className="project-section" key={project.id}>
+                <section className="project-section" key={project.id} onContextMenu={(event) => showProjectMenu(event, project.id)}>
                   <div className="project-row-wrap">
                     <button className={`project-row ${activeProjectId === project.id ? "active" : ""}`} onClick={() => void openProject(project.id)}>
                       <Folder size={16} /><span>{project.name}</span>
                     </button>
                     <button className="project-new-chat" title={`Новый чат в проекте «${project.name}»`} onClick={() => void newChat(project.id)}><Plus size={14} /></button>
+                    <button className="project-more" title="Действия с проектом" onClick={(event) => showProjectMenu(event, project.id)}><MoreHorizontal size={14} /></button>
                   </div>
                   <div className="chat-list">
-                    {chats.slice(0, 12).map((chat) => (
+                    {chats.map((chat) => (
                       <div className="chat-entry" key={chat.id} data-conversation-id={chat.id} onContextMenu={(event) => showConversationMenu(event, chat.id)}>
                         <button className={`chat-row ${chat.id === activeConversationId ? "selected" : ""}`} onClick={() => void openConversation(chat.id)}>
                           <span className={`status-dot ${chat.status}`} />
@@ -1117,26 +1483,32 @@ export default function App() {
               </div>
             ) : (
               <div className="thread">
+                {headerLines.length > 0 && <div className="extension-frame header-frame">{headerLines.map((line, index) => <div key={`${index}-${line}`}>{line}</div>)}</div>}
                 {renderedMessages.map((message, index) => {
-                  if (message.role === "toolResult" || message.role === "tool") return null;
+                  if (message.role === "toolResult" || message.role === "tool") {
+                    return <PersistedToolResult key={messageKey(message, index)} message={message} />;
+                  }
                   return (
                     <Fragment key={messageKey(message, index)}>
                       <article className={`message ${message.role ?? "assistant"}`}>
                         {message.role === "user" ? (
-                          <div className="user-bubble"><MessageContent message={message} /></div>
+                          <div className="user-bubble"><MessageContent message={message} thinkingLabel={hiddenThinkingLabel} /></div>
                         ) : (
-                          <div className="assistant-message"><MessageContent message={message} /></div>
+                          <div className="assistant-message"><MessageContent message={message} thinkingLabel={hiddenThinkingLabel} /></div>
                         )}
                       </article>
-                      {working && index === lastUserMessageIndex && (
-                        <div className="run-timer working"><span className="spinner" />{workingMessage ? <><span className="working-message">{workingMessage}</span><span className="working-elapsed">· {formatElapsed(elapsed)}</span></> : <>Работает уже {formatElapsed(elapsed)}</>}</div>
+                      {working && workingVisible && index === lastUserMessageIndex && (
+                        <div className="run-timer working"><WorkingIndicator indicator={workingIndicator} />{workingMessage ? <><span className="working-message">{workingMessage}</span><span className="working-elapsed">· {formatElapsed(elapsed)}</span></> : <>Работает уже {formatElapsed(elapsed)}</>}</div>
                       )}
                     </Fragment>
                   );
                 })}
                 {Object.values(tools).map((tool) => <ToolCard key={tool.id} tool={tool} />)}
-                {working && lastUserMessageIndex < 0 && (
-                  <div className="run-timer working"><span className="spinner" />{workingMessage ? <><span className="working-message">{workingMessage}</span><span className="working-elapsed">· {formatElapsed(elapsed)}</span></> : <>Работает уже {formatElapsed(elapsed)}</>}</div>
+                {snapshot?.entries.filter((entry) => entry.renderedLines?.length).map((entry, index) => (
+                  <div className="extension-entry" key={entry.id ?? `${entry.type}-${index}`}>{entry.renderedLines!.map((line, lineIndex) => <div key={`${lineIndex}-${line}`}>{line}</div>)}</div>
+                ))}
+                {working && workingVisible && lastUserMessageIndex < 0 && (
+                  <div className="run-timer working"><WorkingIndicator indicator={workingIndicator} />{workingMessage ? <><span className="working-message">{workingMessage}</span><span className="working-elapsed">· {formatElapsed(elapsed)}</span></> : <>Работает уже {formatElapsed(elapsed)}</>}</div>
                 )}
                 {!working && lastDuration !== undefined && (
                   <div className="run-complete">
@@ -1148,6 +1520,7 @@ export default function App() {
                     )}
                   </div>
                 )}
+                {footerLines.length > 0 && <div className="extension-frame footer-frame">{footerLines.map((line, index) => <div key={`${index}-${line}`}>{line}</div>)}</div>}
                 <div ref={endRef} />
               </div>
             )}
@@ -1155,7 +1528,18 @@ export default function App() {
 
           {activeConversationId && (
             <div className="composer-wrap">
-              {Object.entries(widgets).map(([key, lines]) => <div className="extension-widget" key={key}>{lines.map((line) => <div key={line}>{line}</div>)}</div>)}
+              {slashCommands.length > 0 && <div className="slash-menu">
+                {slashCommands.map((command) => <button key={`${command.source}-${command.name}`} onClick={() => setInput(`/${command.name} `)}>
+                  <span><strong>/{command.name}</strong><small>{command.description ?? command.source}</small></span>
+                  <em>{command.source}</em>
+                </button>)}
+              </div>}
+              {(steeringMessages.length > 0 || followUpMessages.length > 0) && <div className="queued-messages">
+                <div className="queued-head"><span>В очереди: {steeringMessages.length + followUpMessages.length}</span><button onClick={() => void restoreQueuedMessages()}>Вернуть в редактор</button></div>
+                {steeringMessages.map((message, index) => <div className="queued-message steer" key={`steer-${index}`}><Zap size={13} /><span>{message}</span><small>в текущую работу</small></div>)}
+                {followUpMessages.map((message, index) => <div className="queued-message" key={`follow-${index}`}><Clock3 size={13} /><span>{message}</span><small>следом</small></div>)}
+              </div>}
+              {widgets.filter((widget) => widget.placement === "aboveEditor").map((widget) => <div className="extension-widget" key={widget.key}>{widget.lines.map((line, index) => <div key={`${index}-${line}`}>{line}</div>)}</div>)}
               <div className="composer">
                 {attachments.length > 0 && (
                   <div className="attachment-list">
@@ -1215,9 +1599,11 @@ export default function App() {
                   )}
                 </div>
               </div>
+              {widgets.filter((widget) => widget.placement === "belowEditor").map((widget) => <div className="extension-widget below" key={widget.key}>{widget.lines.map((line, index) => <div key={`${index}-${line}`}>{line}</div>)}</div>)}
               <div className="status-line">
                 {Object.entries(statuses).map(([key, status]) => <span className="status-item" key={key} title={status}>{status}</span>)}
-                {snapshot?.state.model?.contextWindow && <span className="status-item status-context"><Gauge size={14} /> Контекст: {Math.round(snapshot.state.model.contextWindow / 1000)}k</span>}
+                {snapshot?.state.contextUsage && <span className="status-item status-context"><Gauge size={14} /> Контекст: {snapshot.state.contextUsage.tokens === null ? "—" : formatTokens(snapshot.state.contextUsage.tokens)} / {formatTokens(snapshot.state.contextUsage.contextWindow)}{snapshot.state.contextUsage.percent === null ? "" : ` (${Math.round(snapshot.state.contextUsage.percent)}%)`}</span>}
+                {snapshot?.state.isCompacting && <span className="status-item compacting"><span className="spinner" /> Сжатие контекста</span>}
               </div>
             </div>
           )}
@@ -1231,6 +1617,21 @@ export default function App() {
       <div className="toast-stack">{notices.map((notice) => <div key={notice.id} className={`toast ${notice.type}`}>{notice.message}</div>)}</div>
       {extensionDialog && <ExtensionDialog item={extensionDialog} onClose={() => setExtensionDialog(undefined)} />}
       {projectDialogOpen && <ProjectDialog onClose={() => setProjectDialogOpen(false)} onCreated={(project) => void projectCreated(project)} onError={(message) => addNotice(message, "error")} />}
+      {projectMenu && (() => {
+        const project = projects.find((item) => item.id === projectMenu.projectId);
+        if (!project) return null;
+        return (
+          <div className="context-menu-layer" onPointerDown={() => setProjectMenu(undefined)}>
+            <div className="conversation-menu" style={{ left: projectMenu.x, top: projectMenu.y }} onPointerDown={(event) => event.stopPropagation()}>
+              <button onClick={() => { setRenameProject(project); setProjectMenu(undefined); }}><Pencil size={15} /> Переименовать</button>
+              <button onClick={() => { void window.piDesktop.showItemInFolder(project.path); setProjectMenu(undefined); }}><FolderOpen size={15} /> Показать папку</button>
+              <button onClick={() => { void newChat(project.id); setProjectMenu(undefined); }}><MessageSquarePlus size={15} /> Новый чат</button>
+              <div className="conversation-menu-separator" />
+              <button className="danger" onClick={() => void removeProject(project.id)}><Trash2 size={15} /> Убрать проект</button>
+            </div>
+          </div>
+        );
+      })()}
       {conversationMenu && (() => {
         const conversation = conversations.find((item) => item.id === conversationMenu.conversationId);
         if (!conversation) return null;
@@ -1246,6 +1647,7 @@ export default function App() {
         );
       })()}
       {renameConversation && <RenameConversationDialog title={renameConversation.title} onClose={() => setRenameConversation(undefined)} onSave={(title) => void saveConversationTitle(title)} />}
+      {renameProject && <RenameConversationDialog heading="Переименовать проект" title={renameProject.name} onClose={() => setRenameProject(undefined)} onSave={(title) => void saveProjectTitle(title)} />}
     </div>
   );
 }
@@ -1257,6 +1659,11 @@ function formatElapsed(milliseconds: number): string {
   const seconds = total % 60;
   if (hours) return `${hours}:${String(minutes).padStart(2, "0")}:${String(seconds).padStart(2, "0")}`;
   return `${minutes}:${String(seconds).padStart(2, "0")}`;
+}
+
+function formatTokens(tokens: number): string {
+  if (tokens < 1_000) return String(tokens);
+  return `${(tokens / 1_000).toFixed(tokens < 10_000 ? 1 : 0)}k`;
 }
 
 function sanitizeStatusText(value?: string): string {
@@ -1277,4 +1684,11 @@ function pluralFiles(count: number): string {
   if (last === 1) return "файл";
   if (last >= 2 && last <= 4) return "файла";
   return "файлов";
+}
+
+function extensionName(extensionPath: string): string {
+  const parts = extensionPath.replace(/\\/g, "/").split("/").filter(Boolean);
+  const extensionIndex = parts.lastIndexOf("extensions");
+  if (extensionIndex >= 0 && parts[extensionIndex + 1]) return parts[extensionIndex + 1];
+  return parts.at(-2) ?? parts.at(-1) ?? extensionPath;
 }

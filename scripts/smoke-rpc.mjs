@@ -42,6 +42,9 @@ const child = spawn(
       ...process.env,
       ...(process.env.PI_DESKTOP_SMOKE_EXECUTABLE ? { ELECTRON_RUN_AS_NODE: "1" } : {}),
       PI_CODING_AGENT_DIR: agentDir,
+      PI_DESKTOP_EXECUTABLE: process.env.PI_DESKTOP_SMOKE_EXECUTABLE ?? process.execPath,
+      PI_DESKTOP_MCP_ENTRY: path.join(root, ...(process.env.PI_DESKTOP_SMOKE_ROOT ? ["resources", "app"] : []), "node_modules", "@zavora-ai", "computer-use-mcp", "dist", "server.js"),
+      MCP_DIRECT_TOOLS: "computer-use",
       NO_UPDATE_NOTIFIER: "1",
     },
     stdio: ["pipe", "pipe", "pipe"],
@@ -119,6 +122,9 @@ try {
   const models = await request("get_available_models");
   const thinking = await request("get_available_thinking_levels");
   const commands = await request("get_commands");
+  const extensionState = await request("get_extension_state");
+  const entries = await request("get_session_entries");
+  const clearedQueue = await request("clear_queue");
 
   const result = {
     model: state?.model ?? null,
@@ -132,6 +138,11 @@ try {
     commands: Array.isArray(commands?.commands)
       ? commands.commands.map((command) => command.name).filter(Boolean)
       : [],
+    extensionCount: Array.isArray(extensionState?.extensionPaths) ? extensionState.extensionPaths.length : 0,
+    activeToolCount: Array.isArray(extensionState?.activeTools) ? extensionState.activeTools.length : 0,
+    activeTools: Array.isArray(extensionState?.activeTools) ? extensionState.activeTools : [],
+    entryCount: Array.isArray(entries?.entries) ? entries.entries.length : 0,
+    queueClearShape: Boolean(Array.isArray(clearedQueue?.steering) && Array.isArray(clearedQueue?.followUp)),
   };
   process.stdout.write(`${JSON.stringify(result, null, 2)}\n`);
   if (stderr.trim()) process.stdout.write(`--- stderr ---\n${stderr.trim()}\n`);

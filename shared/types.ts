@@ -1,4 +1,5 @@
 export type ThinkingLevel = "off" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max";
+export type JsonObject = Record<string, unknown>;
 
 export interface ProjectRecord {
   id: string;
@@ -46,11 +47,65 @@ export interface RuntimeState {
   sessionFile?: string;
   sessionId?: string;
   sessionName?: string;
+  isCompacting?: boolean;
+  steeringMode?: "all" | "one-at-a-time";
+  followUpMode?: "all" | "one-at-a-time";
+  autoCompactionEnabled?: boolean;
+  messageCount?: number;
+  pendingMessageCount?: number;
+  steeringMessages?: string[];
+  followUpMessages?: string[];
+  workingVisible?: boolean;
+  workingIndicator?: { frames?: string[]; intervalMs?: number };
+  hiddenThinkingLabel?: string;
   contextUsage?: {
     tokens: number | null;
     contextWindow: number;
     percent: number | null;
   };
+}
+
+export interface ExtensionToolInfo {
+  name: string;
+  description?: string;
+  source?: string;
+  active: boolean;
+}
+
+export interface ExtensionState {
+  extensionPaths: string[];
+  activeTools: string[];
+  tools: ExtensionToolInfo[];
+  commandDiagnostics: unknown[];
+  shortcutDiagnostics: unknown[];
+  errors: Array<{ extensionPath?: string; event?: string; error: string }>;
+}
+
+export interface SessionEntryView extends JsonObject {
+  type: string;
+  id?: string;
+  timestamp?: string;
+  customType?: string;
+  renderedLines?: string[];
+}
+
+export interface ExtensionWidgetState {
+  key: string;
+  lines: string[];
+  placement: "aboveEditor" | "belowEditor";
+}
+
+export interface ExtensionUiState {
+  statuses: Record<string, string>;
+  widgets: ExtensionWidgetState[];
+  headerLines: string[];
+  footerLines: string[];
+  workingMessage?: string;
+  workingVisible: boolean;
+  workingIndicator?: { frames?: string[]; intervalMs?: number };
+  hiddenThinkingLabel?: string;
+  title?: string;
+  pendingDialogs: ExtensionUiRequest[];
 }
 
 export interface DiffHunk {
@@ -94,12 +149,16 @@ export interface ConversationSnapshot {
   models: ModelInfo[];
   thinkingLevels: ThinkingLevel[];
   commands: Array<{ name: string; description?: string; source: string }>;
+  entries: SessionEntryView[];
+  extensionState: ExtensionState;
+  extensionUi: ExtensionUiState;
+  run?: ConversationRun;
 }
 
 export interface ExtensionUiRequest {
   type: "extension_ui_request";
   id: string;
-  method: "select" | "confirm" | "input" | "editor" | "notify" | "setStatus" | "setWorkingMessage" | "setWidget" | "setTitle" | "set_editor_text";
+  method: "select" | "confirm" | "input" | "editor" | "notify" | "setStatus" | "setWorkingMessage" | "setWorkingVisible" | "setWorkingIndicator" | "setHiddenThinkingLabel" | "setWidget" | "setHeader" | "setFooter" | "setTitle" | "set_editor_text" | "custom" | "customClose";
   title?: string;
   message?: string;
   options?: string[];
@@ -112,7 +171,21 @@ export interface ExtensionUiRequest {
   widgetKey?: string;
   widgetLines?: string[];
   widgetPlacement?: "aboveEditor" | "belowEditor";
+  customLines?: string[];
+  overlay?: boolean;
+  overlayOptions?: JsonObject;
+  workingVisible?: boolean;
+  workingIndicator?: { frames?: string[]; intervalMs?: number };
+  hiddenThinkingLabel?: string;
   text?: string;
+}
+
+export interface ConversationRun {
+  startedAt: string;
+  completedAt?: string;
+  durationMs?: number;
+  diff?: RunDiff;
+  diffError?: string;
 }
 
 export interface PiDesktopApi {
@@ -120,8 +193,10 @@ export interface PiDesktopApi {
   chooseProjectFolders(): Promise<string[]>;
   createProject(name: string, paths: string[]): Promise<ProjectRecord>;
   refreshProjectSessions(projectId: string): Promise<ConversationRecord[]>;
+  searchConversations(query: string): Promise<string[]>;
   chooseAttachments(): Promise<Attachment[]>;
-  removeProject(projectId: string): Promise<void>;
+  removeProject(projectId: string): Promise<boolean>;
+  renameProject(projectId: string, name: string): Promise<ProjectRecord>;
   createConversation(projectId?: string): Promise<ConversationSnapshot>;
   openConversation(conversationId: string): Promise<ConversationSnapshot>;
   deleteConversation(conversationId: string): Promise<boolean>;
@@ -136,6 +211,8 @@ export interface PiDesktopApi {
   abort(conversationId: string): Promise<void>;
   setModel(conversationId: string, provider: string, modelId: string): Promise<RuntimeState>;
   setThinkingLevel(conversationId: string, level: ThinkingLevel): Promise<RuntimeState>;
+  setHostEditorText(conversationId: string, text: string): Promise<void>;
+  clearQueue(conversationId: string): Promise<{ steering: string[]; followUp: string[] }>;
   renameConversation(conversationId: string, title: string): Promise<void>;
   respondToExtensionUi(conversationId: string, response: Record<string, unknown>): Promise<void>;
   showItemInFolder(path: string): Promise<void>;

@@ -1,0 +1,8 @@
+{
+  "grammarRepair": {
+    "enabled": true,
+    "mode": "recover",
+    "requireKnownTool": true,
+    "grammars": ["qwen"]
+  }
+}

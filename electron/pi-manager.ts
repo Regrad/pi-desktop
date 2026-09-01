@@ -3,8 +3,12 @@ import { app, BrowserWindow, shell } from "electron";
 import { existsSync } from "node:fs";
 import type {
   Attachment,
+  ConversationRun,
   ConversationRecord,
   ConversationSnapshot,
+  ExtensionState,
+  ExtensionUiRequest,
+  ExtensionUiState,
   ModelInfo,
   RuntimeState,
   ThinkingLevel,
@@ -20,6 +24,21 @@ interface RuntimeRecord {
   rpc: PiRpcProcess;
   snapshot?: ConversationSnapshot;
   diffTracker?: Promise<RunDiffTracker>;
+  extensionUi: ExtensionUiState;
+  extensionErrors: ExtensionState["errors"];
+  eventQueue: Promise<void>;
+  activeRun?: ConversationRun;
+}
+
+function createExtensionUiState(): ExtensionUiState {
+  return {
+    statuses: {},
+    widgets: [],
+    headerLines: [],
+    footerLines: [],
+    workingVisible: true,
+    pendingDialogs: [],
+  };
 }
 
 export class PiManager {
@@ -28,6 +47,7 @@ export class PiManager {
   constructor(
     private readonly store: DataStore,
     private readonly getWindow: () => BrowserWindow | null,
+    private readonly onConversationSettled?: (conversation: ConversationRecord) => void,
   ) {}
 
   async createConversation(projectId?: string): Promise<ConversationSnapshot> {
@@ -38,7 +58,10 @@ export class PiManager {
   async openConversation(conversationId: string): Promise<ConversationSnapshot> {
     await this.store.activateConversation(conversationId);
     const running = this.runtimes.get(conversationId);
-    if (running?.snapshot) return structuredClone(running.snapshot);
+    if (running?.snapshot) {
+      if (running.snapshot.state.isStreaming) await this.refreshRuntimeSnapshot(running);
+      return structuredClone(running.snapshot);
+    }
     return this.startConversation(this.store.getConversation(conversationId));
   }
 
@@ -65,6 +88,10 @@ export class PiManager {
     await Promise.all(ids.map((id) => this.stopConversation(id)));
   }
 
+  async renameProject(projectId: string, name: string): Promise<ProjectRecord> {
+    return this.store.renameProject(projectId, name);
+  }
+
   async sendPrompt(
     conversationId: string,
     message: string,
@@ -73,8 +100,21 @@ export class PiManager {
   ): Promise<void> {
     const runtime = await this.ensureRuntime(conversationId);
     const conversation = this.store.getConversation(conversationId);
+    if (!runtime.snapshot?.state.isStreaming && (!runtime.activeRun || runtime.activeRun.completedAt)) {
+      runtime.activeRun = { startedAt: new Date().toISOString() };
+      if (runtime.snapshot) runtime.snapshot.run = structuredClone(runtime.activeRun);
+      await this.store.saveConversationRun(conversationId, runtime.activeRun);
+      this.getWindow()?.webContents.send("pi:event", {
+        conversationId,
+        event: { type: "desktop_run_started", run: runtime.activeRun },
+      });
+    }
     let startedDiffTracker = false;
     if (!runtime.diffTracker) {
+      this.getWindow()?.webContents.send("pi:event", {
+        conversationId,
+        event: { type: "desktop_preparing", message: "Подготавливаю отслеживание изменений…" },
+      });
       runtime.diffTracker = RunDiffTracker.start(
         await this.store.getConversationWorkspacePaths(conversation),
       );
@@ -104,6 +144,14 @@ export class PiManager {
       else await runtime.rpc.request("prompt", payload);
     } catch (error) {
       if (startedDiffTracker) runtime.diffTracker = undefined;
+      if (runtime.activeRun && !runtime.snapshot?.state.isStreaming) {
+        runtime.activeRun = {
+          ...runtime.activeRun,
+          completedAt: new Date().toISOString(),
+          durationMs: Date.now() - Date.parse(runtime.activeRun.startedAt),
+        };
+        await this.store.saveConversationRun(conversationId, runtime.activeRun);
+      }
       throw error;
     }
   }
@@ -142,7 +190,26 @@ export class PiManager {
   }
 
   respondToExtensionUi(conversationId: string, response: JsonObject): void {
-    this.runtimes.get(conversationId)?.rpc.sendExtensionUiResponse(response);
+    const runtime = this.runtimes.get(conversationId);
+    if (!runtime) return;
+    if (response.cancelled === true || typeof response.customInput !== "string") {
+      runtime.extensionUi.pendingDialogs = runtime.extensionUi.pendingDialogs.filter(
+        (request) => request.id !== response.id,
+      );
+    }
+    runtime.rpc.sendExtensionUiResponse(response);
+  }
+
+  async setHostEditorText(conversationId: string, text: string): Promise<void> {
+    const runtime = await this.ensureRuntime(conversationId);
+    await runtime.rpc.request("set_host_editor_text", { text }, 10_000);
+  }
+
+  async clearQueue(conversationId: string): Promise<{ steering: string[]; followUp: string[] }> {
+    const runtime = await this.ensureRuntime(conversationId);
+    const result = await runtime.rpc.request<{ steering: string[]; followUp: string[] }>("clear_queue");
+    await this.refreshState(conversationId, runtime);
+    return result;
   }
 
   async shutdown(): Promise<void> {
@@ -179,6 +246,7 @@ export class PiManager {
       "dist",
       "cli.js",
     );
+    let record!: RuntimeRecord;
     const rpc = new PiRpcProcess({
       executablePath: process.execPath,
       cliPath,
@@ -191,36 +259,48 @@ export class PiManager {
       model: conversation.model,
       thinkingLevel: conversation.thinkingLevel,
       appendSystemPrompt,
-      onEvent: (event) => void this.handleEvent(conversation.id, event),
-      onExtensionUi: (request) => {
-        const sanitizedRequest = request.method === "setStatus"
-          ? { ...request, statusText: sanitizeStatusText(request.statusText) }
-          : request.method === "setWorkingMessage"
-            ? { ...request, workingText: sanitizeStatusText(request.workingText) }
-            : request;
-        this.getWindow()?.webContents.send("pi:extension-ui", { conversationId: conversation.id, request: sanitizedRequest });
+      mcpEntryPath: path.join(app.getAppPath(), "node_modules", "@zavora-ai", "computer-use-mcp", "dist", "server.js"),
+      mcpDirectTools: await this.store.getMcpDirectToolSelectors(),
+      onEvent: (event) => {
+        record.eventQueue = record.eventQueue
+          .then(() => this.handleEvent(conversation.id, event))
+          .catch((queueError) => {
+            this.getWindow()?.webContents.send("pi:event", {
+              conversationId: conversation.id,
+              event: { type: "runtime_error", error: queueError instanceof Error ? queueError.message : String(queueError) },
+            });
+          });
       },
+      onExtensionUi: (request) => this.handleExtensionUi(conversation.id, request),
       onExit: (error) => {
+        if (this.runtimes.get(conversation.id) !== record) return;
         this.runtimes.delete(conversation.id);
-        void this.updateConversation(conversation.id, { status: error ? "error" : "idle" });
-        if (error) {
+        void this.handleRuntimeExit(conversation.id, record, error).catch((exitError) => {
           this.getWindow()?.webContents.send("pi:event", {
             conversationId: conversation.id,
-            event: { type: "runtime_error", error: error.message },
+            event: { type: "runtime_error", error: exitError instanceof Error ? exitError.message : String(exitError) },
           });
-        }
+        });
       },
     });
-    const record: RuntimeRecord = { rpc };
+    record = {
+      rpc,
+      extensionUi: createExtensionUiState(),
+      extensionErrors: [],
+      eventQueue: Promise.resolve(),
+      activeRun: await this.store.getConversationRun(conversation.id),
+    };
     this.runtimes.set(conversation.id, record);
     try {
       await rpc.start();
-      const [stateData, messagesData, modelsData, levelsData, commandsData] = await Promise.all([
+      const [stateData, messagesData, modelsData, levelsData, commandsData, entriesData, extensionData] = await Promise.all([
         rpc.request<JsonObject>("get_state"),
         rpc.request<{ messages: unknown[] }>("get_messages"),
         rpc.request<{ models: ModelInfo[] }>("get_available_models"),
         rpc.request<{ levels: ThinkingLevel[] }>("get_available_thinking_levels"),
         rpc.request<{ commands: Array<{ name: string; description?: string; source: string }> }>("get_commands"),
+        rpc.request<{ entries: ConversationSnapshot["entries"] }>("get_session_entries"),
+        rpc.request<Omit<ExtensionState, "errors">>("get_extension_state"),
       ]);
       const state = this.normalizeState(stateData);
       const updated = await this.updateConversation(conversation.id, {
@@ -237,6 +317,10 @@ export class PiManager {
         models: modelsData.models ?? [],
         thinkingLevels: levelsData.levels ?? ["off"],
         commands: commandsData.commands ?? [],
+        entries: entriesData.entries ?? [],
+        extensionState: { ...extensionData, errors: [...record.extensionErrors] },
+        extensionUi: structuredClone(record.extensionUi),
+        run: record.activeRun ? structuredClone(record.activeRun) : undefined,
       };
       return structuredClone(record.snapshot);
     } catch (error) {
@@ -251,32 +335,146 @@ export class PiManager {
     const runtime = this.runtimes.get(conversationId);
     if (!runtime) return;
     if (event.type === "agent_start") {
+      if (!runtime.activeRun || runtime.activeRun.completedAt) {
+        runtime.activeRun = { startedAt: new Date().toISOString() };
+        await this.store.saveConversationRun(conversationId, runtime.activeRun);
+      }
+      if (runtime.snapshot) runtime.snapshot.run = structuredClone(runtime.activeRun);
+      if (runtime.snapshot) runtime.snapshot.state.isStreaming = true;
       await this.updateConversation(conversationId, { status: "working" });
     } else if (event.type === "agent_settled") {
       await this.updateConversation(conversationId, { status: "idle" });
-      await this.refreshState(conversationId, runtime);
+      await this.refreshRuntimeSnapshot(runtime);
+      if (runtime.activeRun && !runtime.activeRun.completedAt) {
+        const completedAt = new Date().toISOString();
+        runtime.activeRun = {
+          ...runtime.activeRun,
+          completedAt,
+          durationMs: Date.parse(completedAt) - Date.parse(runtime.activeRun.startedAt),
+        };
+        await this.store.saveConversationRun(conversationId, runtime.activeRun);
+        if (runtime.snapshot) runtime.snapshot.run = structuredClone(runtime.activeRun);
+      }
       const tracker = runtime.diffTracker;
       runtime.diffTracker = undefined;
-      this.getWindow()?.webContents.send("pi:event", { conversationId, event });
+      this.getWindow()?.webContents.send("pi:event", {
+        conversationId,
+        event: {
+          ...event,
+          run: runtime.activeRun,
+          state: runtime.snapshot?.state,
+          entries: runtime.snapshot?.entries,
+          extensionState: runtime.snapshot?.extensionState,
+        },
+      });
       if (tracker) {
         try {
           const diff = await (await tracker).finish();
+          if (runtime.activeRun) {
+            runtime.activeRun = { ...runtime.activeRun, diff };
+            await this.store.saveConversationRun(conversationId, runtime.activeRun);
+            if (runtime.snapshot) runtime.snapshot.run = structuredClone(runtime.activeRun);
+          }
           this.getWindow()?.webContents.send("pi:event", {
             conversationId,
-            event: { type: "desktop_run_diff", diff },
+            event: { type: "desktop_run_diff", diff, run: runtime.activeRun },
           });
         } catch (error) {
+          const message = error instanceof Error ? error.message : String(error);
+          if (runtime.activeRun) {
+            runtime.activeRun = { ...runtime.activeRun, diffError: message };
+            await this.store.saveConversationRun(conversationId, runtime.activeRun);
+          }
           this.getWindow()?.webContents.send("pi:event", {
             conversationId,
-            event: { type: "desktop_diff_error", error: error instanceof Error ? error.message : String(error) },
+            event: { type: "desktop_diff_error", error: message },
           });
         }
       }
+      this.onConversationSettled?.(this.store.getConversation(conversationId));
       return;
     } else if (event.type === "message_end" && runtime.snapshot && event.message) {
       runtime.snapshot.messages.push(event.message);
+    } else if (event.type === "queue_update" && runtime.snapshot) {
+      const steeringMessages = Array.isArray(event.steering) ? event.steering.map(String) : [];
+      const followUpMessages = Array.isArray(event.followUp) ? event.followUp.map(String) : [];
+      runtime.snapshot.state.steeringMessages = steeringMessages;
+      runtime.snapshot.state.followUpMessages = followUpMessages;
+      runtime.snapshot.state.pendingMessageCount = steeringMessages.length + followUpMessages.length;
+    } else if (event.type === "extension_error") {
+      const extensionError = {
+        extensionPath: typeof event.extensionPath === "string" ? event.extensionPath : undefined,
+        event: typeof event.event === "string" ? event.event : undefined,
+        error: String(event.error ?? "Extension error"),
+      };
+      runtime.extensionErrors.push(extensionError);
+      if (runtime.snapshot) runtime.snapshot.extensionState.errors = [...runtime.extensionErrors];
     }
     this.getWindow()?.webContents.send("pi:event", { conversationId, event });
+  }
+
+  private async handleRuntimeExit(conversationId: string, runtime: RuntimeRecord, error?: Error): Promise<void> {
+    if (runtime.activeRun && !runtime.activeRun.completedAt) {
+      const completedAt = new Date().toISOString();
+      runtime.activeRun = {
+        ...runtime.activeRun,
+        completedAt,
+        durationMs: Date.parse(completedAt) - Date.parse(runtime.activeRun.startedAt),
+      };
+      await this.store.saveConversationRun(conversationId, runtime.activeRun);
+    }
+    await this.updateConversation(conversationId, { status: error ? "error" : "idle" });
+    if (error) {
+      this.getWindow()?.webContents.send("pi:event", {
+        conversationId,
+        event: { type: "runtime_error", error: error.message, run: runtime.activeRun },
+      });
+    }
+  }
+
+  private handleExtensionUi(conversationId: string, request: ExtensionUiRequest): void {
+    const runtime = this.runtimes.get(conversationId);
+    if (!runtime) return;
+    const sanitizedRequest = sanitizeExtensionRequest(request);
+    const ui = runtime.extensionUi;
+
+    if (sanitizedRequest.method === "setStatus" && sanitizedRequest.statusKey) {
+      if (sanitizedRequest.statusText) ui.statuses[sanitizedRequest.statusKey] = sanitizedRequest.statusText;
+      else delete ui.statuses[sanitizedRequest.statusKey];
+    } else if (sanitizedRequest.method === "setWorkingMessage") {
+      ui.workingMessage = sanitizedRequest.workingText;
+    } else if (sanitizedRequest.method === "setWorkingVisible") {
+      ui.workingVisible = sanitizedRequest.workingVisible !== false;
+    } else if (sanitizedRequest.method === "setWorkingIndicator") {
+      ui.workingIndicator = sanitizedRequest.workingIndicator;
+    } else if (sanitizedRequest.method === "setHiddenThinkingLabel") {
+      ui.hiddenThinkingLabel = sanitizedRequest.hiddenThinkingLabel;
+    } else if (sanitizedRequest.method === "setWidget" && sanitizedRequest.widgetKey) {
+      ui.widgets = ui.widgets.filter((widget) => widget.key !== sanitizedRequest.widgetKey);
+      if (sanitizedRequest.widgetLines) {
+        ui.widgets.push({
+          key: sanitizedRequest.widgetKey,
+          lines: sanitizedRequest.widgetLines,
+          placement: sanitizedRequest.widgetPlacement ?? "aboveEditor",
+        });
+      }
+    } else if (sanitizedRequest.method === "setHeader") {
+      ui.headerLines = sanitizedRequest.customLines ?? [];
+    } else if (sanitizedRequest.method === "setFooter") {
+      ui.footerLines = sanitizedRequest.customLines ?? [];
+    } else if (sanitizedRequest.method === "setTitle") {
+      ui.title = sanitizedRequest.title;
+    } else if (["select", "confirm", "input", "editor", "custom"].includes(sanitizedRequest.method)) {
+      ui.pendingDialogs = [
+        ...ui.pendingDialogs.filter((item) => item.id !== sanitizedRequest.id),
+        sanitizedRequest,
+      ];
+    } else if (sanitizedRequest.method === "customClose") {
+      ui.pendingDialogs = ui.pendingDialogs.filter((item) => item.id !== sanitizedRequest.id);
+    }
+
+    if (runtime.snapshot) runtime.snapshot.extensionUi = structuredClone(ui);
+    this.getWindow()?.webContents.send("pi:extension-ui", { conversationId, request: sanitizedRequest });
   }
 
   private async refreshState(conversationId: string, runtime: RuntimeRecord): Promise<RuntimeState> {
@@ -285,15 +483,46 @@ export class PiManager {
     return state;
   }
 
+  private async refreshRuntimeSnapshot(runtime: RuntimeRecord): Promise<void> {
+    const [stateData, messagesData, entriesData, extensionData] = await Promise.all([
+      runtime.rpc.request<JsonObject>("get_state"),
+      runtime.rpc.request<{ messages: unknown[] }>("get_messages"),
+      runtime.rpc.request<{ entries: ConversationSnapshot["entries"] }>("get_session_entries"),
+      runtime.rpc.request<Omit<ExtensionState, "errors">>("get_extension_state"),
+    ]);
+    if (!runtime.snapshot) return;
+    runtime.snapshot.state = this.normalizeState(stateData);
+    runtime.snapshot.messages = messagesData.messages ?? [];
+    runtime.snapshot.entries = entriesData.entries ?? [];
+    runtime.snapshot.extensionState = { ...extensionData, errors: [...runtime.extensionErrors] };
+    runtime.snapshot.extensionUi = structuredClone(runtime.extensionUi);
+  }
+
   private normalizeState(value: JsonObject): RuntimeState {
     const model = value.model && typeof value.model === "object" ? (value.model as ModelInfo) : null;
     return {
       model,
       thinkingLevel: (value.thinkingLevel as ThinkingLevel | undefined) ?? "off",
       isStreaming: Boolean(value.isStreaming),
+      isCompacting: Boolean(value.isCompacting),
+      steeringMode: value.steeringMode === "all" ? "all" : "one-at-a-time",
+      followUpMode: value.followUpMode === "all" ? "all" : "one-at-a-time",
+      autoCompactionEnabled: value.autoCompactionEnabled !== false,
+      messageCount: typeof value.messageCount === "number" ? value.messageCount : undefined,
+      pendingMessageCount: typeof value.pendingMessageCount === "number" ? value.pendingMessageCount : undefined,
+      steeringMessages: Array.isArray(value.steeringMessages) ? value.steeringMessages.map(String) : [],
+      followUpMessages: Array.isArray(value.followUpMessages) ? value.followUpMessages.map(String) : [],
+      workingVisible: value.workingVisible !== false,
+      workingIndicator: value.workingIndicator && typeof value.workingIndicator === "object"
+        ? value.workingIndicator as RuntimeState["workingIndicator"]
+        : undefined,
+      hiddenThinkingLabel: typeof value.hiddenThinkingLabel === "string" ? value.hiddenThinkingLabel : undefined,
       sessionFile: typeof value.sessionFile === "string" ? value.sessionFile : undefined,
       sessionId: typeof value.sessionId === "string" ? value.sessionId : undefined,
       sessionName: typeof value.sessionName === "string" ? value.sessionName : undefined,
+      contextUsage: value.contextUsage && typeof value.contextUsage === "object"
+        ? value.contextUsage as RuntimeState["contextUsage"]
+        : undefined,
     };
   }
 
@@ -325,4 +554,27 @@ function sanitizeStatusText(value?: string): string | undefined {
     .replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F-\u009F]/g, "")
     .replace(/\s+/g, " ")
     .trim();
+}
+
+function sanitizeDisplayLines(lines?: string[]): string[] | undefined {
+  if (!lines) return undefined;
+  return lines.map((line) => String(line)
+    .replace(/\u001B\][^\u0007]*(?:\u0007|\u001B\\)/g, "")
+    .replace(/(?:\u001B\[|\u009B)[0-?]*[ -/]*[@-~]/g, "")
+    .replace(/\u001B[@-_]/g, "")
+    .replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F-\u009F]/g, "")
+    .replace(/\s+$/g, ""));
+}
+
+function sanitizeExtensionRequest(request: ExtensionUiRequest): ExtensionUiRequest {
+  return {
+    ...request,
+    title: sanitizeStatusText(request.title),
+    message: sanitizeStatusText(request.message),
+    statusText: sanitizeStatusText(request.statusText),
+    workingText: sanitizeStatusText(request.workingText),
+    hiddenThinkingLabel: sanitizeStatusText(request.hiddenThinkingLabel),
+    widgetLines: sanitizeDisplayLines(request.widgetLines),
+    customLines: sanitizeDisplayLines(request.customLines),
+  };
 }

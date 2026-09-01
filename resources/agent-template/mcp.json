@@ -1,12 +1,18 @@
 {
+  "settings": {
+    "requestTimeoutMs": 86400000
+  },
   "mcpServers": {
     "godot-ai": {
       "url": "http://127.0.0.1:8000/mcp",
       "directTools": false
     },
     "computer-use": {
-      "command": "npx",
-      "args": ["-y", "--prefer-offline", "@zavora-ai/computer-use-mcp@7.1.0"],
+      "command": "${PI_DESKTOP_EXECUTABLE}",
+      "args": ["${PI_DESKTOP_MCP_ENTRY}"],
+      "env": {
+        "ELECTRON_RUN_AS_NODE": "1"
+      },
       "directTools": true
     }
   }

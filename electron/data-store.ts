@@ -1,10 +1,10 @@
 import { randomUUID } from "node:crypto";
 import { existsSync } from "node:fs";
-import { copyFile, mkdir, readFile, rename, writeFile } from "node:fs/promises";
+import { copyFile, mkdir, readFile, rename, unlink, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import path from "node:path";
 import { SessionManager, type SessionInfo } from "@earendil-works/pi-coding-agent";
-import type { ConversationRecord, ProjectRecord } from "../shared/types.js";
+import type { ConversationRecord, ConversationRun, ProjectRecord } from "../shared/types.js";
 
 interface DesktopState {
   version: 3;
@@ -24,19 +24,27 @@ export class DataStore {
   readonly dataDir: string;
   readonly agentDir: string;
   readonly sessionsDir: string;
+  readonly runsDir: string;
   private readonly statePath: string;
   private state: DesktopState = structuredClone(EMPTY_STATE);
+  private writeQueue: Promise<void> = Promise.resolve();
 
-  constructor(dataDir: string, private readonly appRoot: string) {
+  constructor(
+    dataDir: string,
+    private readonly appRoot: string,
+    private readonly runtimeExecutable: string,
+  ) {
     this.dataDir = dataDir;
     this.agentDir = path.join(dataDir, "agent");
     this.sessionsDir = resolveStandardSessionsDir();
+    this.runsDir = path.join(dataDir, "runs");
     this.statePath = path.join(dataDir, "desktop-state.json");
   }
 
   async initialize(): Promise<void> {
     await mkdir(this.agentDir, { recursive: true });
     await mkdir(this.sessionsDir, { recursive: true });
+    await mkdir(this.runsDir, { recursive: true });
     await this.initializeAgentDirectory();
     try {
       const parsed = JSON.parse(await readFile(this.statePath, "utf8")) as DesktopState;
@@ -78,7 +86,7 @@ export class DataStore {
 
   private async initializeAgentDirectory(): Promise<void> {
     const templateDir = path.join(this.appRoot, "resources", "agent-template");
-    for (const fileName of ["models.json", "mcp.json", "auth.json", "APPEND_SYSTEM.md"]) {
+    for (const fileName of ["models.json", "mcp.json", "auth.json", "APPEND_SYSTEM.md", "web-search.json"]) {
       const destination = path.join(this.agentDir, fileName);
       try {
         await readFile(destination);
@@ -87,6 +95,8 @@ export class DataStore {
         await copyFile(path.join(templateDir, fileName), destination);
       }
     }
+    await this.migrateManagedMcpServers(path.join(this.agentDir, "mcp.json"));
+    await this.migrateLegacySystemPrompt(path.join(this.agentDir, "APPEND_SYSTEM.md"));
 
     const settingsPath = path.join(this.agentDir, "settings.json");
     let settings: Record<string, unknown> = {};
@@ -106,11 +116,53 @@ export class DataStore {
       "pi-lens",
       "pi-loop-police",
     ];
-    settings.packages = [
+    const managedPackages = [
       ...packageNames.map((name) => path.join(this.appRoot, "node_modules", name)),
       path.join(this.appRoot, "resources", "pi-lens-all-tools"),
     ];
+    const configuredPackages = Array.isArray(settings.packages)
+      ? settings.packages.filter((item): item is string => typeof item === "string")
+      : [];
+    const customPackages = configuredPackages.filter((item) => !isManagedPackage(item, packageNames));
+    settings.packages = [...managedPackages, ...customPackages];
     await writeFile(settingsPath, `${JSON.stringify(settings, null, 2)}\n`, "utf8");
+
+    const extensionsDir = path.join(this.agentDir, "extensions");
+    await mkdir(extensionsDir, { recursive: true });
+    const repairConfig = path.join(extensionsDir, "pi-tool-repair.json");
+    if (!existsSync(repairConfig)) {
+      await copyFile(path.join(templateDir, "pi-tool-repair.json"), repairConfig);
+    }
+  }
+
+  private async migrateManagedMcpServers(configPath: string): Promise<void> {
+    const config = JSON.parse(await readFile(configPath, "utf8")) as {
+      settings?: Record<string, unknown>;
+      mcpServers?: Record<string, Record<string, unknown>>;
+    };
+    config.settings = { ...config.settings, requestTimeoutMs: 86_400_000 };
+    const computerUse = config.mcpServers?.["computer-use"];
+    const args = Array.isArray(computerUse?.args) ? computerUse.args : [];
+    const isManagedNpxEntry = computerUse?.command === "npx"
+      && args.some((item) => typeof item === "string" && item.startsWith("@zavora-ai/computer-use-mcp@"));
+    const isManagedDirectEntry = args.some((item) => typeof item === "string"
+      && item.replace(/\\/g, "/").includes("/@zavora-ai/computer-use-mcp/dist/server.js"));
+    const isTemplateEntry = computerUse?.command === "${PI_DESKTOP_EXECUTABLE}";
+    if (isManagedNpxEntry || isManagedDirectEntry || isTemplateEntry) {
+      config.mcpServers!["computer-use"] = {
+        command: this.runtimeExecutable,
+        args: [path.join(this.appRoot, "node_modules", "@zavora-ai", "computer-use-mcp", "dist", "server.js")],
+        env: { ELECTRON_RUN_AS_NODE: "1" },
+        directTools: computerUse.directTools !== false,
+      };
+    }
+    await writeFile(configPath, `${JSON.stringify(config, null, 2)}\n`, "utf8");
+  }
+
+  private async migrateLegacySystemPrompt(promptPath: string): Promise<void> {
+    const current = (await readFile(promptPath, "utf8")).trim();
+    if (current !== "Перед любыми правками файлов ты спрашиваешь у пользователя разрешение.") return;
+    await writeFile(promptPath, "Before modifying any files, ask the user for permission.\n", "utf8");
   }
 
   snapshot(): DesktopState {
@@ -193,6 +245,44 @@ export class DataStore {
     await this.save();
   }
 
+  async searchConversations(query: string): Promise<string[]> {
+    const normalized = query.toLocaleLowerCase().trim();
+    if (!normalized) return this.state.conversations.filter((item) => !item.archived).map((item) => item.id);
+    const matches: string[] = [];
+    for (const conversation of this.state.conversations) {
+      if (conversation.archived) continue;
+      if (conversation.title.toLocaleLowerCase().includes(normalized)) {
+        matches.push(conversation.id);
+        continue;
+      }
+      if (!conversation.sessionFile || !existsSync(conversation.sessionFile)) continue;
+      try {
+        const content = await readFile(conversation.sessionFile, "utf8");
+        if (content.toLocaleLowerCase().includes(normalized)) matches.push(conversation.id);
+      } catch {
+        // A single unavailable session must not break the entire search.
+      }
+    }
+    return matches;
+  }
+
+  async getMcpDirectToolSelectors(): Promise<string[]> {
+    const config = JSON.parse(await readFile(path.join(this.agentDir, "mcp.json"), "utf8")) as {
+      settings?: { directTools?: boolean };
+      mcpServers?: Record<string, { disabled?: boolean; directTools?: boolean | string[] }>;
+    };
+    const selectors: string[] = [];
+    for (const [serverName, definition] of Object.entries(config.mcpServers ?? {})) {
+      if (definition.disabled) continue;
+      const directTools = definition.directTools ?? config.settings?.directTools ?? false;
+      if (directTools === true) selectors.push(serverName);
+      else if (Array.isArray(directTools)) {
+        selectors.push(...directTools.map((toolName) => `${serverName}/${toolName}`));
+      }
+    }
+    return selectors;
+  }
+
   getSessionDir(cwd: string): string {
     const resolvedCwd = path.resolve(cwd);
     const safePath = `--${resolvedCwd.replace(/^[/\\]/, "").replace(/[/\\:]/g, "-")}--`;
@@ -211,6 +301,16 @@ export class DataStore {
     }
     await this.save();
     return conversationIds;
+  }
+
+  async renameProject(projectId: string, name: string): Promise<ProjectRecord> {
+    const project = this.getProject(projectId);
+    const normalized = name.replace(/\s+/g, " ").trim();
+    if (!normalized) throw new Error("Название проекта не может быть пустым");
+    project.name = normalized;
+    project.lastOpenedAt = new Date().toISOString();
+    await this.save();
+    return structuredClone(project);
   }
 
   async createConversation(projectId?: string): Promise<ConversationRecord> {
@@ -271,6 +371,29 @@ export class DataStore {
       this.state.activeConversationId = undefined;
     }
     await this.save();
+    await unlink(this.getRunPath(conversationId)).catch((error: NodeJS.ErrnoException) => {
+      if (error.code !== "ENOENT") throw error;
+    });
+  }
+
+  async getConversationRun(conversationId: string): Promise<ConversationRun | undefined> {
+    try {
+      return JSON.parse(await readFile(this.getRunPath(conversationId), "utf8")) as ConversationRun;
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined;
+      throw error;
+    }
+  }
+
+  async saveConversationRun(conversationId: string, run: ConversationRun): Promise<void> {
+    const destination = this.getRunPath(conversationId);
+    const tempPath = `${destination}.tmp`;
+    const content = `${JSON.stringify(run, null, 2)}\n`;
+    await this.enqueueWrite(async () => {
+      await mkdir(this.runsDir, { recursive: true });
+      await writeFile(tempPath, content, "utf8");
+      await rename(tempPath, destination);
+    });
   }
 
   async setConversationArchived(conversationId: string, archived: boolean): Promise<ConversationRecord> {
@@ -322,10 +445,23 @@ export class DataStore {
   }
 
   private async save(): Promise<void> {
-    await mkdir(this.dataDir, { recursive: true });
     const tempPath = `${this.statePath}.tmp`;
-    await writeFile(tempPath, `${JSON.stringify(this.state, null, 2)}\n`, "utf8");
-    await rename(tempPath, this.statePath);
+    const content = `${JSON.stringify(this.state, null, 2)}\n`;
+    await this.enqueueWrite(async () => {
+      await mkdir(this.dataDir, { recursive: true });
+      await writeFile(tempPath, content, "utf8");
+      await rename(tempPath, this.statePath);
+    });
+  }
+
+  private getRunPath(conversationId: string): string {
+    return path.join(this.runsDir, `${conversationId}.json`);
+  }
+
+  private enqueueWrite(task: () => Promise<void>): Promise<void> {
+    const next = this.writeQueue.then(task, task);
+    this.writeQueue = next.catch(() => undefined);
+    return next;
   }
 }
 
@@ -346,6 +482,17 @@ function normalizePathKey(value: string): string {
 
 function pathsEqual(left: string, right: string): boolean {
   return normalizePathKey(left) === normalizePathKey(right);
+}
+
+function isManagedPackage(value: string, packageNames: string[]): boolean {
+  const normalized = value.replaceAll("/", "\\").toLocaleLowerCase();
+  if (normalized.endsWith("\\resources\\pi-lens-all-tools") || normalized.endsWith("\\local-packages\\pi-lens-all-tools")) {
+    return true;
+  }
+  return packageNames.some((name) =>
+    normalized === `npm:${name}` ||
+    normalized.endsWith(`\\node_modules\\${name}`),
+  );
 }
 
 function sessionTitle(session: SessionInfo): string {

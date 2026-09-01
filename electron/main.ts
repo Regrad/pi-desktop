@@ -1,5 +1,5 @@
-import { app, BrowserWindow, dialog, ipcMain, Menu, nativeImage, shell } from "electron";
-import { mkdir } from "node:fs/promises";
+import { app, BrowserWindow, dialog, ipcMain, Menu, nativeImage, Notification, shell } from "electron";
+import { appendFile, mkdir, rename, stat } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import type { Attachment, ThinkingLevel } from "../shared/types.js";
@@ -11,6 +11,31 @@ const projectRoot = path.resolve(currentDir, "..", "..");
 let mainWindow: BrowserWindow | null = null;
 let store: DataStore;
 let piManager: PiManager;
+let logPath = "";
+
+const hasSingleInstanceLock = app.requestSingleInstanceLock();
+if (!hasSingleInstanceLock) app.quit();
+
+app.on("second-instance", () => {
+  if (!mainWindow) return;
+  if (mainWindow.isMinimized()) mainWindow.restore();
+  mainWindow.show();
+  mainWindow.focus();
+});
+
+async function writeDiagnostic(scope: string, error: unknown): Promise<void> {
+  if (!logPath) return;
+  const message = error instanceof Error ? `${error.stack ?? error.message}` : String(error);
+  try {
+    const info = await stat(logPath).catch(() => undefined);
+    if (info && info.size > 5 * 1024 * 1024) {
+      await rename(logPath, `${logPath}.previous`).catch(() => undefined);
+    }
+    await appendFile(logPath, `${new Date().toISOString()} [${scope}] ${message}\n`, "utf8");
+  } catch {
+    // Diagnostics must never bring down the application.
+  }
+}
 
 function resolveDataDir(): string {
   const portableDir = process.env.PORTABLE_EXECUTABLE_DIR;
@@ -87,6 +112,9 @@ function registerIpc(): void {
   ipcMain.handle("desktop:refresh-project-sessions", (_event, projectId: string) =>
     store.refreshProjectSessions(projectId),
   );
+  ipcMain.handle("desktop:search-conversations", (_event, query: string) =>
+    store.searchConversations(query),
+  );
   ipcMain.handle("desktop:choose-attachments", async (): Promise<Attachment[]> => {
     const result = await dialog.showOpenDialog(mainWindow!, {
       title: "Добавить вложения",
@@ -106,7 +134,25 @@ function registerIpc(): void {
       };
     });
   });
-  ipcMain.handle("desktop:remove-project", (_event, projectId: string) => piManager.removeProject(projectId));
+  ipcMain.handle("desktop:remove-project", async (_event, projectId: string) => {
+    const project = store.getProject(projectId);
+    const result = await dialog.showMessageBox(mainWindow!, {
+      type: "question",
+      title: "Убрать проект?",
+      message: `Убрать проект «${project.name}» из Pi Desktop?`,
+      detail: "Папка и штатные сессии Pi останутся на диске. Удалится только запись проекта из приложения.",
+      buttons: ["Отмена", "Убрать"],
+      defaultId: 0,
+      cancelId: 0,
+      noLink: true,
+    });
+    if (result.response !== 1) return false;
+    await piManager.removeProject(projectId);
+    return true;
+  });
+  ipcMain.handle("desktop:rename-project", (_event, projectId: string, name: string) =>
+    piManager.renameProject(projectId, name),
+  );
   ipcMain.handle("desktop:create-conversation", (_event, projectId?: string) =>
     piManager.createConversation(projectId),
   );
@@ -154,6 +200,12 @@ function registerIpc(): void {
   ipcMain.handle("pi:set-thinking", (_event, conversationId: string, level: ThinkingLevel) =>
     piManager.setThinkingLevel(conversationId, level),
   );
+  ipcMain.handle("pi:set-editor-text", (_event, conversationId: string, text: string) =>
+    piManager.setHostEditorText(conversationId, text),
+  );
+  ipcMain.handle("pi:clear-queue", (_event, conversationId: string) =>
+    piManager.clearQueue(conversationId),
+  );
   ipcMain.handle("desktop:rename-conversation", (_event, conversationId: string, title: string) =>
     piManager.renameConversation(conversationId, title),
   );
@@ -165,16 +217,32 @@ function registerIpc(): void {
   ipcMain.handle("desktop:show-item", (_event, itemPath: string) => shell.showItemInFolder(itemPath));
 }
 
-app.whenReady().then(async () => {
+if (hasSingleInstanceLock) void app.whenReady().then(async () => {
   Menu.setApplicationMenu(null);
   const dataDir = resolveDataDir();
   await mkdir(dataDir, { recursive: true });
-  store = new DataStore(dataDir, projectRoot);
+  const logsDir = path.join(dataDir, "logs");
+  await mkdir(logsDir, { recursive: true });
+  logPath = path.join(logsDir, "pi-desktop.log");
+  store = new DataStore(dataDir, projectRoot, process.execPath);
   await store.initialize();
-  piManager = new PiManager(store, () => mainWindow);
+  piManager = new PiManager(store, () => mainWindow, (conversation) => {
+    if (!mainWindow?.isFocused() && Notification.isSupported()) {
+      new Notification({ title: "Pi Desktop", body: `Задача завершена: ${conversation.title}` }).show();
+    }
+  });
   registerIpc();
   await createWindow();
+}).catch(async (error) => {
+  await writeDiagnostic("startup", error);
+  dialog.showErrorBox("Не удалось запустить Pi Desktop", error instanceof Error ? error.message : String(error));
+  app.quit();
 });
+
+process.on("uncaughtException", (error) => {
+  void writeDiagnostic("uncaughtException", error).finally(() => app.exit(1));
+});
+process.on("unhandledRejection", (error) => void writeDiagnostic("unhandledRejection", error));
 
 app.on("window-all-closed", () => app.quit());
 app.on("before-quit", (event) => {

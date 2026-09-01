@@ -12,8 +12,10 @@ const api: PiDesktopApi = {
   chooseProjectFolders: () => ipcRenderer.invoke("desktop:choose-project-folders"),
   createProject: (name, paths) => ipcRenderer.invoke("desktop:create-project", name, paths),
   refreshProjectSessions: (projectId) => ipcRenderer.invoke("desktop:refresh-project-sessions", projectId),
+  searchConversations: (query) => ipcRenderer.invoke("desktop:search-conversations", query),
   chooseAttachments: () => ipcRenderer.invoke("desktop:choose-attachments"),
   removeProject: (projectId) => ipcRenderer.invoke("desktop:remove-project", projectId),
+  renameProject: (projectId, name) => ipcRenderer.invoke("desktop:rename-project", projectId, name),
   createConversation: (projectId) => ipcRenderer.invoke("desktop:create-conversation", projectId),
   openConversation: (conversationId) => ipcRenderer.invoke("desktop:open-conversation", conversationId),
   deleteConversation: (conversationId) => ipcRenderer.invoke("desktop:delete-conversation", conversationId),
@@ -26,6 +28,9 @@ const api: PiDesktopApi = {
     ipcRenderer.invoke("pi:set-model", conversationId, provider, modelId),
   setThinkingLevel: (conversationId, level) =>
     ipcRenderer.invoke("pi:set-thinking", conversationId, level),
+  setHostEditorText: (conversationId, text) =>
+    ipcRenderer.invoke("pi:set-editor-text", conversationId, text),
+  clearQueue: (conversationId) => ipcRenderer.invoke("pi:clear-queue", conversationId),
   renameConversation: (conversationId, title) =>
     ipcRenderer.invoke("desktop:rename-conversation", conversationId, title),
   respondToExtensionUi: (conversationId, response) =>

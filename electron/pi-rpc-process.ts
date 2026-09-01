@@ -22,6 +22,8 @@ export interface PiRpcProcessOptions {
   model?: string;
   thinkingLevel?: string;
   appendSystemPrompt?: string;
+  mcpEntryPath: string;
+  mcpDirectTools: string[];
   onEvent: (event: JsonObject) => void;
   onExtensionUi: (request: ExtensionUiRequest) => void;
   onExit: (error?: Error) => void;
@@ -63,7 +65,12 @@ export class PiRpcProcess {
         ...process.env,
         ELECTRON_RUN_AS_NODE: "1",
         PI_CODING_AGENT_DIR: this.options.agentDir,
+        PI_DESKTOP_EXECUTABLE: this.options.executablePath,
+        PI_DESKTOP_MCP_ENTRY: this.options.mcpEntryPath,
         NO_UPDATE_NOTIFIER: "1",
+        ...(this.options.mcpDirectTools.length
+          ? { MCP_DIRECT_TOOLS: this.options.mcpDirectTools.join(",") }
+          : {}),
       },
       stdio: ["pipe", "pipe", "pipe"],
       windowsHide: true,

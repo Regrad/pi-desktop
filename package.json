@@ -7,14 +7,16 @@
   "main": "dist-electron/electron/main.js",
   "scripts": {
     "dev": "concurrently -k -n renderer,electron -c cyan,magenta \"vite\" \"wait-on http://127.0.0.1:5173 && cross-env VITE_DEV_SERVER_URL=http://127.0.0.1:5173 npm run electron:build && electron .\"",
-    "electron:build": "tsc -p tsconfig.electron.json",
+    "bridge:apply": "node scripts/apply-rpc-bridge.mjs",
+    "electron:build": "npm run bridge:apply && tsc -p tsconfig.electron.json",
     "build": "tsc -p tsconfig.json --noEmit && vite build && npm run electron:build",
-    "start": "electron .",
+    "start": "npm run bridge:apply && electron .",
     "pack": "npm run build && electron-builder --win dir",
     "portable": "npm run build && electron-builder --win portable"
   },
   "dependencies": {
     "@earendil-works/pi-coding-agent": "0.84.2",
+    "@zavora-ai/computer-use-mcp": "7.1.0",
     "diff": "8.0.4",
     "lucide-react": "1.38.0",
     "pi-lens": "4.0.0",
@@ -34,7 +36,7 @@
     "@types/react": "19.2.14",
     "@types/react-dom": "19.2.3",
     "@vitejs/plugin-react": "6.1.1",
-    "concurrently": "9.2.1",
+    "concurrently": "9.2.4",
     "cross-env": "10.1.0",
     "electron": "44.1.0",
     "electron-builder": "26.15.3",
