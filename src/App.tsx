@@ -64,6 +64,7 @@ interface ToolActivity {
   id: string;
   name: string;
   args?: unknown;
+  partialArguments?: string;
   result?: unknown;
   running: boolean;
   preparing?: boolean;
@@ -366,6 +367,56 @@ function toolOutputText(result: unknown): string {
   return textFromResult(result).replace(/\r\n/g, "\n").trimEnd();
 }
 
+function partialJsonStringValues(source: string | undefined, field: string): string[] {
+  if (!source) return [];
+  const values: string[] = [];
+  const marker = new RegExp(`"${field}"\\s*:\\s*"`, "g");
+  let match: RegExpExecArray | null;
+  while ((match = marker.exec(source))) {
+    let value = "";
+    let index = match.index + match[0].length;
+    while (index < source.length) {
+      const character = source[index++];
+      if (character === '"') break;
+      if (character !== "\\") {
+        value += character;
+        continue;
+      }
+      if (index >= source.length) break;
+      const escaped = source[index++];
+      if (escaped === "n") value += "\n";
+      else if (escaped === "r") value += "\r";
+      else if (escaped === "t") value += "\t";
+      else if (escaped === "b") value += "\b";
+      else if (escaped === "f") value += "\f";
+      else if (escaped === "u") {
+        const hex = source.slice(index, index + 4);
+        if (!/^[0-9a-f]{4}$/i.test(hex)) break;
+        value += String.fromCharCode(Number.parseInt(hex, 16));
+        index += 4;
+      } else value += escaped;
+    }
+    values.push(value);
+    marker.lastIndex = Math.max(marker.lastIndex, index);
+  }
+  return values;
+}
+
+function toolCodeFragments(name: string, args: JsonObject, partialArguments?: string): string[] {
+  const normalized = name.toLocaleLowerCase();
+  if (normalized === "edit") {
+    const complete = Array.isArray(args.edits)
+      ? args.edits.map((edit: JsonObject) => edit?.newText).filter((value: unknown): value is string => typeof value === "string")
+      : typeof args.newText === "string" ? [args.newText] : [];
+    return complete.length > 0 ? complete : partialJsonStringValues(partialArguments, "newText");
+  }
+  if (normalized === "write") {
+    if (typeof args.content === "string") return [args.content];
+    return partialJsonStringValues(partialArguments, "content");
+  }
+  return [];
+}
+
 function compactLine(value: unknown, limit = 110): string {
   const text = String(value ?? "").replace(/\s+/g, " ").trim();
   return text.length > limit ? `${text.slice(0, limit - 1)}…` : text;
@@ -449,7 +500,8 @@ function ToolCard({ tool }: { tool: ToolActivity }) {
   const presentation = toolPresentation(tool.name, args);
   const [expanded, setExpanded] = useState(false);
   const output = tool.result === undefined ? "" : toolOutputText(tool.result);
-  const hasDetails = Boolean(presentation.command || presentation.showRawArgs && Object.keys(args).length || output || (tool.result as JsonObject | undefined)?.details?.diff);
+  const codeFragments = toolCodeFragments(tool.name, args, tool.partialArguments);
+  const hasDetails = Boolean(codeFragments.length || presentation.command || presentation.showRawArgs && Object.keys(args).length || output || (tool.result as JsonObject | undefined)?.details?.diff);
   return (
     <div className={`tool-card ${tool.preparing || tool.running ? "running" : "complete"} ${tool.error ? "error" : ""}`}>
       <button className="tool-card-head" disabled={!hasDetails} onClick={() => setExpanded((value) => !value)}>
@@ -460,6 +512,16 @@ function ToolCard({ tool }: { tool: ToolActivity }) {
       </button>
       {expanded && hasDetails && (
         <div className="tool-card-body">
+          {tool.result === undefined && codeFragments.length > 0 && (
+            <div className="tool-code-preview">
+              {codeFragments.map((fragment, index) => (
+                <div className="tool-code-fragment" key={`${index}-${fragment.length}`}>
+                  {codeFragments.length > 1 && <small>Фрагмент {index + 1}</small>}
+                  <pre>{fragment || " "}</pre>
+                </div>
+              ))}
+            </div>
+          )}
           {presentation.command && <pre className="tool-command">{presentation.command}</pre>}
           {presentation.showRawArgs && Object.keys(args).length > 0 && <details className="tool-arguments"><summary>Параметры</summary><pre>{JSON.stringify(args, null, 2)}</pre></details>}
           {tool.result !== undefined && <ToolResultContent result={tool.result} expanded />}
@@ -2417,6 +2479,7 @@ export default function App() {
       id,
       name: String(call.name && call.name !== "Инструмент" ? call.name : live?.name ?? persisted?.toolName ?? "Инструмент"),
       args: call.arguments ?? call.args ?? live?.args,
+      partialArguments: typeof call.partialArguments === "string" ? call.partialArguments : undefined,
       result: persisted ? resultMessagePayload(persisted) : live?.result,
       running: live?.running ?? false,
       preparing: !live && !persisted && working,

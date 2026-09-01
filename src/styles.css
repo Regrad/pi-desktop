@@ -144,6 +144,10 @@ button:not(:disabled) { cursor: pointer; }
 .tool-card-body { display: flex; flex-direction: column; gap: 8px; }
 .tool-card-preview pre, .tool-card-body pre { margin: 0; max-height: 360px; border: 0; border-radius: 6px; background: rgba(255, 255, 255, .42); box-shadow: none; }
 .tool-command { color: #343431; }
+.tool-code-preview { display: flex; flex-direction: column; gap: 8px; }
+.tool-code-fragment { min-width: 0; }
+.tool-code-fragment small { display: block; margin: 0 0 5px 2px; color: #777773; font-size: 11.5px; }
+.tool-code-fragment pre { color: #30302d; white-space: pre; overflow: auto; overflow-wrap: normal; }
 .tool-arguments { color: #777; font-size: 11.5px; }
 .tool-arguments summary { cursor: pointer; }
 .tool-arguments pre { margin-top: 7px; }
