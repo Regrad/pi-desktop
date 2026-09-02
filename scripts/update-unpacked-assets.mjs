@@ -86,6 +86,12 @@ for (const name of assetNames) {
   await replaceDirectory(source, target);
 }
 
+await cp(
+  path.join(projectRoot, "package.json"),
+  path.join(appRoot, "package.json"),
+  { force: true },
+);
+
 await replaceDirectory(
   path.join(projectRoot, "resources", "pi-loop-police"),
   path.join(appRoot, "resources", "pi-loop-police"),
@@ -100,10 +106,12 @@ for (const target of bridgeTargets) {
   await cp(bridgeSource, resolvedTarget, { force: true });
 }
 
-const retiredLoopPolice = path.resolve(appRoot, "node_modules", "pi-loop-police");
-if (!retiredLoopPolice.startsWith(`${path.resolve(appRoot, "node_modules")}${path.sep}`)) {
-  throw new Error(`Refusing to remove package outside bundled node_modules: ${retiredLoopPolice}`);
+for (const packageName of ["pi-loop-police", "pi-token-speed"]) {
+  const retiredPackage = path.resolve(appRoot, "node_modules", packageName);
+  if (!retiredPackage.startsWith(`${path.resolve(appRoot, "node_modules")}${path.sep}`)) {
+    throw new Error(`Refusing to remove package outside bundled node_modules: ${retiredPackage}`);
+  }
+  await rm(retiredPackage, { recursive: true, force: true });
 }
-await rm(retiredLoopPolice, { recursive: true, force: true });
 
 process.stdout.write(`Packaged application code updated: ${appRoot}\n`);
