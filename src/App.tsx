@@ -3083,8 +3083,9 @@ export default function App() {
               </div>
               {widgets.filter((widget) => widget.placement === "belowEditor").map((widget) => <div className="extension-widget below" key={widget.key}>{widget.lines.map((line, index) => <div key={`${index}-${line}`}>{line}</div>)}</div>)}
               <div className="status-line">
-                {Object.entries(statuses).map(([key, status]) => <span className="status-item" key={key} title={status}>{status}</span>)}
                 {snapshot?.state.contextUsage && <span className="status-item status-context"><Gauge size={14} /> Контекст: {snapshot.state.contextUsage.tokens === null ? "—" : formatTokens(snapshot.state.contextUsage.tokens)} / {formatTokens(snapshot.state.contextUsage.contextWindow)}{snapshot.state.contextUsage.percent === null ? "" : ` (${Math.round(snapshot.state.contextUsage.percent)}%)`}</span>}
+                {statuses.tokenSpeed && <span className="status-item" key="tokenSpeed" title={statuses.tokenSpeed}>{statuses.tokenSpeed}</span>}
+                {Object.entries(statuses).filter(([key]) => key !== "tokenSpeed").map(([key, status]) => <span className="status-item" key={key} title={status}>{status}</span>)}
                 {snapshot?.state.isCompacting && <span className="status-item compacting"><span className="spinner" /> Сжатие контекста</span>}
               </div>
             </div>
