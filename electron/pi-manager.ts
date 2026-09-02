@@ -56,9 +56,19 @@ function createEmptyExtensionState(): ExtensionState {
   };
 }
 
+const BUILTIN_COMMANDS: ConversationSnapshot["commands"] = [
+  { name: "compact", description: "Сжать контекст текущей сессии", source: "builtin" },
+  { name: "reload", description: "Перезагрузить расширения, навыки, промпты и настройки Pi", source: "builtin" },
+];
+
+function preserveKnownContextUsage(next: RuntimeState, previous?: RuntimeState["contextUsage"]): RuntimeState {
+  if (typeof next.contextUsage?.tokens === "number" || typeof previous?.tokens !== "number") return next;
+  return { ...next, contextUsage: previous };
+}
+
 export class PiManager {
   private readonly runtimes = new Map<string, RuntimeRecord>();
-  private cachedCommands: ConversationSnapshot["commands"] = [];
+  private cachedCommands: ConversationSnapshot["commands"] = structuredClone(BUILTIN_COMMANDS);
   private cachedExtensionState: ExtensionState = createEmptyExtensionState();
 
   constructor(
@@ -120,7 +130,11 @@ export class PiManager {
     if (runtime.snapshot) {
       this.getWindow()?.webContents.send("pi:event", {
         conversationId,
-        event: { type: "desktop_state", state: structuredClone(runtime.snapshot.state) },
+        event: {
+          type: "desktop_state",
+          state: structuredClone(runtime.snapshot.state),
+          commands: structuredClone(runtime.snapshot.commands),
+        },
       });
     }
     const conversation = this.store.getConversation(conversationId);
@@ -293,6 +307,7 @@ export class PiManager {
       await this.store.saveCompaction(conversationId, record);
       runtime.snapshot!.compactions = this.store.getCompactions(conversationId);
     }
+    this.applyEstimatedContextUsage(runtime, result.estimatedTokensAfter);
     return structuredClone(runtime.snapshot!);
   }
 
@@ -398,7 +413,7 @@ export class PiManager {
       queuedPrompts: this.store.getQueuedPrompts(conversation.id),
       models: configuration.models,
       thinkingLevels,
-      commands: structuredClone(this.cachedCommands),
+      commands: structuredClone(BUILTIN_COMMANDS),
       entries,
       compactions: this.store.getCompactions(conversation.id),
       extensionState: structuredClone(this.cachedExtensionState),
@@ -612,6 +627,7 @@ export class PiManager {
             durationMs: runtime.compactionStartedAt === undefined ? undefined : Date.now() - runtime.compactionStartedAt,
           });
           runtime.snapshot.compactions = this.store.getCompactions(conversationId);
+          this.applyEstimatedContextUsage(runtime, tokensAfter);
         }
       }
       runtime.compactionStartedAt = undefined;
@@ -695,7 +711,10 @@ export class PiManager {
   }
 
   private async refreshState(conversationId: string, runtime: RuntimeRecord): Promise<RuntimeState> {
-    const state = this.normalizeState(await runtime.rpc.request<JsonObject>("get_state"));
+    const state = preserveKnownContextUsage(
+      this.normalizeState(await runtime.rpc.request<JsonObject>("get_state")),
+      runtime.snapshot?.state.contextUsage,
+    );
     if (runtime.snapshot) runtime.snapshot.state = state;
     return state;
   }
@@ -708,13 +727,29 @@ export class PiManager {
       runtime.rpc.request<Omit<ExtensionState, "errors">>("get_extension_state"),
     ]);
     if (!runtime.snapshot) return;
-    runtime.snapshot.state = this.normalizeState(stateData);
+    runtime.snapshot.state = preserveKnownContextUsage(
+      this.normalizeState(stateData),
+      runtime.snapshot.state.contextUsage,
+    );
     runtime.snapshot.messages = messagesData.messages ?? [];
     runtime.snapshot.entries = entriesData.entries ?? [];
     runtime.snapshot.compactions = this.store.getCompactions(runtime.snapshot.conversation.id);
     runtime.snapshot.extensionState = { ...extensionData, errors: [...runtime.extensionErrors] };
     this.cachedExtensionState = structuredClone(runtime.snapshot.extensionState);
     runtime.snapshot.extensionUi = structuredClone(runtime.extensionUi);
+  }
+
+  private applyEstimatedContextUsage(runtime: RuntimeRecord, tokens: number): void {
+    if (!runtime.snapshot || !Number.isFinite(tokens)) return;
+    const contextWindow = runtime.snapshot.state.contextUsage?.contextWindow
+      ?? runtime.snapshot.state.model?.contextWindow
+      ?? 0;
+    if (contextWindow <= 0) return;
+    runtime.snapshot.state.contextUsage = {
+      tokens,
+      contextWindow,
+      percent: tokens / contextWindow * 100,
+    };
   }
 
   private normalizeState(value: JsonObject): RuntimeState {

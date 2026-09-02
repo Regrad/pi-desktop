@@ -1986,7 +1986,11 @@ export default function App() {
         setSnapshot((current) => current ? { ...current, state: event.state } : current);
       }
     } else if (event.type === "desktop_state" && event.state) {
-      setSnapshot((current) => current ? { ...current, state: event.state } : current);
+      setSnapshot((current) => current ? {
+        ...current,
+        state: event.state,
+        commands: Array.isArray(event.commands) ? event.commands : current.commands,
+      } : current);
     } else if (event.type === "tool_execution_start") {
       setTools((current) => ({
         ...current,
@@ -2906,7 +2910,7 @@ export default function App() {
           </div>
 
           {activeConversationId && (
-            <div className={`composer-wrap${modelMenuOpen || thinkingMenuOpen ? " dropdown-open" : ""}`}>
+            <div className={`composer-wrap${modelMenuOpen || thinkingMenuOpen || slashCommands.length > 0 ? " dropdown-open" : ""}`}>
               {slashCommands.length > 0 && <div className="slash-menu">
                 {slashCommands.map((command) => <button key={`${command.source}-${command.name}`} onClick={() => setInput(`/${command.name} `)}>
                   <span><strong>/{command.name}</strong><small>{command.description ?? command.source}</small></span>
