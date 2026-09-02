@@ -373,6 +373,17 @@ button.secondary.large { display: flex; align-items: center; gap: 8px; padding: 
 .module-update-notice { margin-top: 10px; padding: 9px 12px; border-radius: 9px; font-size: 11.5px; line-height: 1.45; }
 .module-update-notice.error { border: 1px solid #e7c4c2; background: #fff7f6; color: #a73f39; }
 .module-update-notice.success { border: 1px solid #c9ddcb; background: #f5fbf5; color: #47714d; }
+.builtin-module-list, .user-extension-list { overflow: hidden; }
+.builtin-module-row, .user-extension-row { min-height: 62px; display: flex; align-items: center; justify-content: space-between; gap: 20px; padding: 12px 16px; border-bottom: 1px solid #ebebe7; }
+.builtin-module-row:last-child, .user-extension-row:last-child { border-bottom: 0; }
+.builtin-module-row > span, .user-extension-row > span { min-width: 0; display: flex; flex-direction: column; gap: 4px; }
+.builtin-module-row strong, .user-extension-row strong { font-size: 12.5px; }
+.builtin-module-row small, .user-extension-row small { color: #85857f; font-size: 11px; line-height: 1.4; overflow-wrap: anywhere; }
+.builtin-module-row input { width: 34px; height: 18px; accent-color: #252523; cursor: pointer; }
+.builtin-module-row.dependency-disabled { opacity: .52; }
+.user-extension-toolbar { flex-wrap: wrap; }
+.user-extension-row button { display: flex; align-items: center; gap: 6px; padding: 7px 10px; border: 1px solid #e2cecc; border-radius: 8px; background: #fff; color: #a33d37; font-size: 11.5px; }
+.user-extension-row button:hover { background: #fff5f4; }
 .spinning { animation: spin .8s linear infinite; }
 @keyframes spin { to { transform: rotate(360deg); } }
 .module-tools-details { margin-top: 12px; padding: 10px 12px; border: 1px solid #e4e4df; border-radius: 12px; color: #666; font-size: 13px; }

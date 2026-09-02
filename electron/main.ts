@@ -2,7 +2,7 @@ import { app, BrowserWindow, dialog, ipcMain, Menu, nativeImage, Notification, s
 import { appendFile, mkdir, rename, stat } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import type { Attachment, ConfiguredModelUpdate, ModelServerDiscoveryInput, ThinkingLevel, UpdateComponentId, UpdateResult } from "../shared/types.js";
+import type { Attachment, BuiltinModuleId, ConfiguredModelUpdate, ModelServerDiscoveryInput, ThinkingLevel, UpdateComponentId, UpdateResult } from "../shared/types.js";
 import { DataStore } from "./data-store.js";
 import { PiManager } from "./pi-manager.js";
 import { UpdateManager } from "./update-manager.js";
@@ -307,6 +307,41 @@ function registerIpc(): void {
     if (result.response !== 1) return { status, updated: [], errors: [] };
     await piManager.prepareForRuntimeUpdate();
     return updateManager.updateAll();
+  });
+  ipcMain.handle("desktop:get-module-settings", () => store.getModuleSettings());
+  ipcMain.handle("desktop:set-builtin-module-enabled", async (_event, id: BuiltinModuleId, enabled: boolean) => {
+    await piManager.prepareForRuntimeUpdate();
+    return store.setBuiltinModuleEnabled(id, Boolean(enabled));
+  });
+  ipcMain.handle("desktop:add-user-extension", async (_event, kind: "file" | "directory") => {
+    const result = await dialog.showOpenDialog(mainWindow!, kind === "directory"
+      ? { title: "Добавить папку расширения Pi", properties: ["openDirectory"] }
+      : {
+          title: "Добавить файл расширения Pi",
+          properties: ["openFile"],
+          filters: [{ name: "Расширения Pi", extensions: ["ts", "js", "mjs", "cjs"] }],
+        });
+    if (result.canceled || !result.filePaths[0]) return null;
+    await piManager.prepareForRuntimeUpdate();
+    return store.addUserExtension(result.filePaths[0]);
+  });
+  ipcMain.handle("desktop:remove-user-extension", async (_event, name: string) => {
+    const settings = await store.getModuleSettings();
+    const extension = settings.userExtensions.find((item) => item.name === name);
+    if (!extension) return null;
+    const result = await dialog.showMessageBox(mainWindow!, {
+      type: "warning",
+      title: "Удалить пользовательское расширение?",
+      message: `Удалить «${extension.name}»?`,
+      detail: "Расширение будет удалено из пользовательской папки Pi Desktop. Встроенные модули эта операция не затрагивает.",
+      buttons: ["Отмена", "Удалить"],
+      defaultId: 0,
+      cancelId: 0,
+      noLink: true,
+    });
+    if (result.response !== 1) return null;
+    await piManager.prepareForRuntimeUpdate();
+    return store.removeUserExtension(extension.name);
   });
   ipcMain.handle("desktop:show-item", (_event, itemPath: string) => shell.showItemInFolder(itemPath));
 }

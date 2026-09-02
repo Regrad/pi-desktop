@@ -1,11 +1,12 @@
 import { randomUUID } from "node:crypto";
 import { existsSync } from "node:fs";
-import { copyFile, mkdir, readFile, rename, unlink, writeFile } from "node:fs/promises";
+import { copyFile, cp, mkdir, readFile, readdir, rename, rm, unlink, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import path from "node:path";
 import { SessionManager, type SessionInfo } from "@earendil-works/pi-coding-agent";
 import type {
   Attachment,
+  BuiltinModuleId,
   ConfiguredModelServer,
   ConfiguredModelUpdate,
   CompactionRecord,
@@ -14,6 +15,7 @@ import type {
   ModelInfo,
   ModelServerDiscoveryInput,
   ModelServerDiscoveryResult,
+  ModuleSettings,
   ProjectRecord,
   QueuedPrompt,
   ThinkingLevel,
@@ -58,13 +60,35 @@ const MANAGED_RESOURCE_NAMES = [
   "pi-loop-police",
 ];
 
+const BUILTIN_MODULES: Array<{
+  id: BuiltinModuleId;
+  name: string;
+  description: string;
+  kind: "package" | "resource";
+  dependsOn?: BuiltinModuleId;
+}> = [
+  { id: "pi-web-access", name: "Web Access", description: "Поиск и чтение веб-страниц.", kind: "package" },
+  { id: "pi-tool-repair", name: "Tool Repair", description: "Исправление некорректных вызовов инструментов.", kind: "package" },
+  { id: "pi-llama-cpp-stats", name: "llama.cpp Stats", description: "Прогресс обработки промпта llama.cpp.", kind: "package" },
+  { id: "pi-mcp-adapter", name: "MCP Adapter", description: "Подключение MCP-серверов и их инструментов.", kind: "package" },
+  { id: "pi-lens", name: "Pi Lens", description: "LSP, линтеры и анализ кода.", kind: "package" },
+  { id: "pi-lens-all-tools", name: "Lens All Tools", description: "Автоматически активирует инструменты Pi Lens.", kind: "resource", dependsOn: "pi-lens" },
+  { id: "pi-single-slot-guard", name: "Single Slot Guard", description: "Защищает KV-кэш сервера с одним слотом.", kind: "resource", dependsOn: "pi-web-access" },
+  { id: "pi-llama-generation-speed", name: "Generation Speed", description: "Текущая и средняя скорость генерации llama.cpp.", kind: "resource" },
+  { id: "pi-loop-police", name: "Loop Police", description: "Настроенная защита от реальных циклов модели.", kind: "resource" },
+];
+
+const DEFAULT_BUILTIN_MODULES = Object.fromEntries(BUILTIN_MODULES.map((module) => [module.id, true])) as Record<BuiltinModuleId, boolean>;
+
 export class DataStore {
   readonly dataDir: string;
   readonly agentDir: string;
   readonly sessionsDir: string;
   readonly runsDir: string;
   private readonly statePath: string;
+  private readonly moduleSettingsPath: string;
   private state: DesktopState = structuredClone(EMPTY_STATE);
+  private builtinModules: Record<BuiltinModuleId, boolean> = { ...DEFAULT_BUILTIN_MODULES };
   private writeQueue: Promise<void> = Promise.resolve();
 
   constructor(
@@ -77,12 +101,14 @@ export class DataStore {
     this.sessionsDir = resolveStandardSessionsDir();
     this.runsDir = path.join(dataDir, "runs");
     this.statePath = path.join(dataDir, "desktop-state.json");
+    this.moduleSettingsPath = path.join(dataDir, "builtin-modules.json");
   }
 
   async initialize(): Promise<void> {
     await mkdir(this.agentDir, { recursive: true });
     await mkdir(this.sessionsDir, { recursive: true });
     await mkdir(this.runsDir, { recursive: true });
+    await this.loadBuiltinModuleSettings();
     await this.initializeAgentDirectory();
     try {
       const parsed = JSON.parse(await readFile(this.statePath, "utf8")) as DesktopState;
@@ -170,11 +196,7 @@ export class DataStore {
 
     const extensionsDir = path.join(this.agentDir, "extensions");
     await mkdir(extensionsDir, { recursive: true });
-    const repairConfig = path.join(extensionsDir, "pi-tool-repair.json");
-    if (!existsSync(repairConfig)) {
-      await copyFile(path.join(templateDir, "pi-tool-repair.json"), repairConfig);
-    }
-    await this.migrateLegacyToolRepairConfig(repairConfig);
+    await this.moveManagedExtensionConfig(extensionsDir);
   }
 
   private async writeManagedPackageConfiguration(existingSettings?: Record<string, unknown>): Promise<void> {
@@ -183,10 +205,12 @@ export class DataStore {
     if (!settings) {
       settings = JSON.parse(await readFile(settingsPath, "utf8")) as Record<string, unknown>;
     }
-    const managedPackages = [
-      ...MANAGED_PACKAGE_NAMES.map((name) => this.getEffectivePackagePath(name)),
-      ...MANAGED_RESOURCE_NAMES.map((name) => path.join(this.appRoot, "resources", name)),
-    ];
+    const managedPackages = BUILTIN_MODULES
+      .filter((module) => this.builtinModules[module.id])
+      .filter((module) => !module.dependsOn || this.builtinModules[module.dependsOn])
+      .map((module) => module.kind === "package"
+        ? this.getEffectivePackagePath(module.id)
+        : path.join(this.appRoot, "resources", module.id));
     const configuredPackages = Array.isArray(settings.packages)
       ? settings.packages.filter((item): item is string => typeof item === "string")
       : [];
@@ -195,6 +219,82 @@ export class DataStore {
     );
     settings.packages = [...managedPackages, ...customPackages];
     await writeFile(settingsPath, `${JSON.stringify(settings, null, 2)}\n`, "utf8");
+  }
+
+  private async loadBuiltinModuleSettings(): Promise<void> {
+    try {
+      const parsed = JSON.parse(await readFile(this.moduleSettingsPath, "utf8")) as { enabled?: Record<string, unknown> };
+      for (const module of BUILTIN_MODULES) {
+        if (typeof parsed.enabled?.[module.id] === "boolean") this.builtinModules[module.id] = parsed.enabled[module.id] as boolean;
+      }
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+      await this.saveBuiltinModuleSettings();
+    }
+  }
+
+  private async saveBuiltinModuleSettings(): Promise<void> {
+    await writeFile(this.moduleSettingsPath, `${JSON.stringify({ version: 1, enabled: this.builtinModules }, null, 2)}\n`, "utf8");
+  }
+
+  private async moveManagedExtensionConfig(extensionsDir: string): Promise<void> {
+    const legacyConfig = path.join(extensionsDir, "pi-tool-repair.json");
+    if (!existsSync(legacyConfig)) return;
+    const builtinConfigDir = path.join(this.dataDir, "builtin-config");
+    await mkdir(builtinConfigDir, { recursive: true });
+    await copyFile(legacyConfig, path.join(builtinConfigDir, "pi-tool-repair.json"));
+    await unlink(legacyConfig);
+  }
+
+  async getModuleSettings(): Promise<ModuleSettings> {
+    const extensionsDir = path.join(this.agentDir, "extensions");
+    await mkdir(extensionsDir, { recursive: true });
+    const entries = await readdir(extensionsDir, { withFileTypes: true });
+    const userExtensions = entries
+      .filter((entry) => entry.isDirectory() || (entry.isFile() && /\.(?:[cm]?js|ts)$/i.test(entry.name)))
+      .map((entry) => ({
+        name: entry.name,
+        path: path.join(extensionsDir, entry.name),
+        kind: entry.isDirectory() ? "directory" as const : "file" as const,
+      }))
+      .sort((left, right) => left.name.localeCompare(right.name));
+    return {
+      builtins: BUILTIN_MODULES.map((module) => ({
+        id: module.id,
+        name: module.name,
+        description: module.description,
+        enabled: this.builtinModules[module.id],
+        ...(module.dependsOn ? { dependsOn: module.dependsOn } : {}),
+      })),
+      userExtensions,
+      userExtensionsDir: extensionsDir,
+    };
+  }
+
+  async setBuiltinModuleEnabled(id: BuiltinModuleId, enabled: boolean): Promise<ModuleSettings> {
+    if (!BUILTIN_MODULES.some((module) => module.id === id)) throw new Error("Неизвестный встроенный модуль");
+    this.builtinModules[id] = enabled;
+    await this.saveBuiltinModuleSettings();
+    await this.writeManagedPackageConfiguration();
+    return this.getModuleSettings();
+  }
+
+  async addUserExtension(sourcePath: string): Promise<ModuleSettings> {
+    const extensionsDir = path.resolve(this.agentDir, "extensions");
+    const source = path.resolve(sourcePath);
+    const destination = path.resolve(extensionsDir, path.basename(source));
+    if (path.dirname(destination) !== extensionsDir) throw new Error("Недопустимое имя расширения");
+    if (existsSync(destination)) throw new Error(`Расширение «${path.basename(source)}» уже существует`);
+    await cp(source, destination, { recursive: true, errorOnExist: true });
+    return this.getModuleSettings();
+  }
+
+  async removeUserExtension(name: string): Promise<ModuleSettings> {
+    const extensionsDir = path.resolve(this.agentDir, "extensions");
+    const target = path.resolve(extensionsDir, name);
+    if (path.dirname(target) !== extensionsDir || !existsSync(target)) throw new Error("Пользовательское расширение не найдено");
+    await rm(target, { recursive: true, force: false });
+    return this.getModuleSettings();
   }
 
   private async migrateManagedMcpServers(configPath: string): Promise<void> {

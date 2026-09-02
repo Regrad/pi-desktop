@@ -51,6 +51,7 @@ import type {
   ExtensionWidgetState,
   DiffHunk,
   ModelInfo,
+  ModuleSettings,
   ProjectRecord,
   QueuedPrompt,
   RunDiff,
@@ -1176,6 +1177,9 @@ function SettingsPage({
   const [updatingComponent, setUpdatingComponent] = useState<string>();
   const [updateMessage, setUpdateMessage] = useState("");
   const [updateError, setUpdateError] = useState(false);
+  const [moduleSettings, setModuleSettings] = useState<ModuleSettings>();
+  const [moduleSettingsLoading, setModuleSettingsLoading] = useState(false);
+  const [moduleSettingsMessage, setModuleSettingsMessage] = useState("");
   const sections: Array<{ id: SettingsSection; label: string; icon: typeof Settings }> = [
     { id: "general", label: "Общее", icon: Settings },
     { id: "models", label: "Модели", icon: Cpu },
@@ -1230,6 +1234,51 @@ function SettingsPage({
     if (section !== "modules" || updateStatus || updatesLoading) return;
     void loadUpdateStatus();
   }, [section, updateStatus, updatesLoading, loadUpdateStatus]);
+
+  useEffect(() => {
+    if (section !== "modules" || moduleSettings || moduleSettingsLoading) return;
+    setModuleSettingsLoading(true);
+    void window.piDesktop.getModuleSettings()
+      .then(setModuleSettings)
+      .catch((error) => setModuleSettingsMessage(error instanceof Error ? error.message : String(error)))
+      .finally(() => setModuleSettingsLoading(false));
+  }, [section, moduleSettings, moduleSettingsLoading]);
+
+  const toggleBuiltinModule = async (id: ModuleSettings["builtins"][number]["id"], enabled: boolean) => {
+    setModuleSettingsMessage("");
+    try {
+      setModuleSettings(await window.piDesktop.setBuiltinModuleEnabled(id, enabled));
+      setModuleSettingsMessage("Настройка сохранена. Открытые процессы Pi перезапущены; следующий запрос использует новый набор модулей.");
+    } catch (error) {
+      setModuleSettingsMessage(error instanceof Error ? error.message : String(error));
+    }
+  };
+
+  const addUserExtension = async (kind: "file" | "directory") => {
+    setModuleSettingsMessage("");
+    try {
+      const next = await window.piDesktop.addUserExtension(kind);
+      if (next) {
+        setModuleSettings(next);
+        setModuleSettingsMessage("Пользовательское расширение добавлено. Оно загрузится при следующем запросе.");
+      }
+    } catch (error) {
+      setModuleSettingsMessage(error instanceof Error ? error.message : String(error));
+    }
+  };
+
+  const removeUserExtension = async (name: string) => {
+    setModuleSettingsMessage("");
+    try {
+      const next = await window.piDesktop.removeUserExtension(name);
+      if (next) {
+        setModuleSettings(next);
+        setModuleSettingsMessage("Пользовательское расширение удалено. Встроенные модули не затронуты.");
+      }
+    } catch (error) {
+      setModuleSettingsMessage(error instanceof Error ? error.message : String(error));
+    }
+  };
 
   const installUpdate = async (id?: UpdateComponentId) => {
     setUpdatingComponent(id ?? "all");
@@ -1470,7 +1519,35 @@ function SettingsPage({
           {section === "modules" && (
             <>
               <h1>Модули</h1>
-              <p className="settings-lead">Обновления запускаются только вручную. Защищённые локальные модули не заменяются пакетами из npm.</p>
+              <p className="settings-lead">Встроенные функции хранятся внутри Pi Desktop. Пользовательская папка содержит только дополнения, которые добавил пользователь.</p>
+              <h2>Встроенные модули</h2>
+              <div className="settings-card builtin-module-list">
+                {moduleSettings?.builtins.length ? moduleSettings.builtins.map((module) => {
+                  const dependency = module.dependsOn && moduleSettings.builtins.find((item) => item.id === module.dependsOn);
+                  const dependencyDisabled = Boolean(dependency && !dependency.enabled);
+                  return <label className={`builtin-module-row${dependencyDisabled ? " dependency-disabled" : ""}`} key={module.id}>
+                    <span><strong>{module.name}</strong><small>{module.description}{dependency ? ` · зависит от ${dependency.name}` : ""}</small></span>
+                    <input type="checkbox" checked={module.enabled} disabled={dependencyDisabled} onChange={(event) => void toggleBuiltinModule(module.id, event.target.checked)} />
+                  </label>;
+                }) : <div className="settings-empty">{moduleSettingsLoading ? "Загрузка модулей…" : "Не удалось получить список модулей."}</div>}
+              </div>
+              <h2>Пользовательские дополнения</h2>
+              <div className="module-update-toolbar user-extension-toolbar">
+                <div><strong>Папка расширений Pi</strong><span>{moduleSettings?.userExtensionsDir ?? "Загрузка…"}</span></div>
+                {moduleSettings && <button onClick={() => void window.piDesktop.showItemInFolder(moduleSettings.userExtensionsDir)}><FolderOpen size={13} /> Открыть</button>}
+                <button onClick={() => void addUserExtension("file")}><Plus size={13} /> Добавить файл</button>
+                <button onClick={() => void addUserExtension("directory")}><Plus size={13} /> Добавить папку</button>
+              </div>
+              <div className="settings-card user-extension-list">
+                {moduleSettings?.userExtensions.length ? moduleSettings.userExtensions.map((extension) => (
+                  <div className="user-extension-row" key={extension.name}>
+                    <span><strong>{extension.name}</strong><small>{extension.path}</small></span>
+                    <button className="danger" onClick={() => void removeUserExtension(extension.name)}><Trash2 size={13} /> Удалить</button>
+                  </div>
+                )) : <div className="settings-empty">Пользовательских дополнений пока нет. Встроенные модули находятся отдельно.</div>}
+              </div>
+              {moduleSettingsMessage && <div className="module-update-notice success">{moduleSettingsMessage}</div>}
+              <h2>Обновления встроенных компонентов</h2>
               <div className="module-update-toolbar">
                 <div>
                   <strong>Pi и установленные дополнения</strong>
@@ -1498,7 +1575,7 @@ function SettingsPage({
               </div>
               {!updateStatus?.npmAvailable && updateStatus && <div className="module-update-notice error">npm не найден. Проверка версий работает, но установка обновлений требует Node.js/npm в PATH.</div>}
               {updateMessage && <div className={`module-update-notice ${updateError ? "error" : "success"}`}>{updateMessage}</div>}
-              <h2>Загруженные расширения</h2>
+              <h2>Состояние расширений текущего чата</h2>
               <div className="settings-card module-list">
                 {extensionState?.extensionPaths.length ? extensionState.extensionPaths.map((extensionPath) => {
                   const name = extensionName(extensionPath);

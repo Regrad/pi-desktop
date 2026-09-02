@@ -115,6 +115,37 @@ export interface UpdateResult {
   errors: string[];
 }
 
+export type BuiltinModuleId =
+  | "pi-web-access"
+  | "pi-tool-repair"
+  | "pi-llama-cpp-stats"
+  | "pi-mcp-adapter"
+  | "pi-lens"
+  | "pi-lens-all-tools"
+  | "pi-single-slot-guard"
+  | "pi-llama-generation-speed"
+  | "pi-loop-police";
+
+export interface BuiltinModuleInfo {
+  id: BuiltinModuleId;
+  name: string;
+  description: string;
+  enabled: boolean;
+  dependsOn?: BuiltinModuleId;
+}
+
+export interface UserExtensionInfo {
+  name: string;
+  path: string;
+  kind: "file" | "directory";
+}
+
+export interface ModuleSettings {
+  builtins: BuiltinModuleInfo[];
+  userExtensions: UserExtensionInfo[];
+  userExtensionsDir: string;
+}
+
 export interface Attachment {
   id: string;
   name: string;
@@ -330,6 +361,10 @@ export interface PiDesktopApi {
   getUpdateStatus(force?: boolean): Promise<UpdateStatus>;
   updateComponent(id: UpdateComponentId): Promise<UpdateResult>;
   updateAllComponents(): Promise<UpdateResult>;
+  getModuleSettings(): Promise<ModuleSettings>;
+  setBuiltinModuleEnabled(id: BuiltinModuleId, enabled: boolean): Promise<ModuleSettings>;
+  addUserExtension(kind: "file" | "directory"): Promise<ModuleSettings | null>;
+  removeUserExtension(name: string): Promise<ModuleSettings | null>;
   showItemInFolder(path: string): Promise<void>;
   onPiEvent(listener: (payload: { conversationId: string; event: Record<string, unknown> }) => void): () => void;
   onExtensionUi(listener: (payload: { conversationId: string; request: ExtensionUiRequest }) => void): () => void;
