@@ -10,6 +10,7 @@ import type {
   ExtensionState,
   ExtensionUiRequest,
   ExtensionUiState,
+  LiveToolActivity,
   ModelInfo,
   ProjectRecord,
   QueuedPrompt,
@@ -20,6 +21,7 @@ import { DataStore } from "./data-store.js";
 import { PiRpcProcess } from "./pi-rpc-process.js";
 import { RunDiffTracker } from "./run-diff-tracker.js";
 import { SessionManager } from "@earendil-works/pi-coding-agent";
+import { applyAssistantMessageDelta } from "../shared/live-message.js";
 
 type JsonObject = Record<string, unknown>;
 
@@ -32,6 +34,8 @@ interface RuntimeRecord {
   eventQueue: Promise<void>;
   activeRun?: ConversationRun;
   compactionStartedAt?: number;
+  liveMessage?: JsonObject;
+  liveTools: Record<string, LiveToolActivity>;
 }
 
 function createExtensionUiState(): ExtensionUiState {
@@ -88,7 +92,7 @@ export class PiManager {
     if (running?.snapshot) {
       if (running.snapshot.state.isStreaming) await this.refreshRuntimeSnapshot(running);
       running.snapshot.queuedPrompts = this.store.getQueuedPrompts(conversationId);
-      return structuredClone(running.snapshot);
+      return this.snapshotWithLiveState(running);
     }
     return this.previewConversation(this.store.getConversation(conversationId));
   }
@@ -487,6 +491,7 @@ export class PiManager {
       extensionErrors: [],
       eventQueue: Promise.resolve(),
       activeRun: await this.store.getConversationRun(conversation.id),
+      liveTools: {},
     };
     this.runtimes.set(conversation.id, record);
     try {
@@ -537,6 +542,8 @@ export class PiManager {
     const runtime = this.runtimes.get(conversationId);
     if (!runtime) return;
     if (event.type === "agent_start") {
+      runtime.liveMessage = undefined;
+      runtime.liveTools = {};
       if (!runtime.activeRun || runtime.activeRun.completedAt) {
         runtime.activeRun = { startedAt: new Date().toISOString() };
         await this.store.saveConversationRun(conversationId, runtime.activeRun);
@@ -593,14 +600,52 @@ export class PiManager {
           });
         }
       }
+      runtime.liveMessage = undefined;
+      runtime.liveTools = {};
       this.onConversationSettled?.(this.store.getConversation(conversationId));
       await this.sendNextQueuedPrompt(conversationId);
       return;
+    } else if (event.type === "message_start" && event.message && (event.message as JsonObject).role === "assistant") {
+      runtime.liveMessage = structuredClone(event.message as JsonObject);
+    } else if (event.type === "message_update" && event.assistantMessageEvent) {
+      runtime.liveMessage = applyAssistantMessageDelta(runtime.liveMessage, event.assistantMessageEvent as JsonObject);
     } else if (event.type === "message_end" && runtime.snapshot && event.message) {
       runtime.snapshot.messages.push(event.message);
       if ((event.message as JsonObject).role === "assistant") {
         event.state = await this.refreshState(conversationId, runtime);
+        runtime.liveMessage = undefined;
       }
+    } else if (event.type === "tool_execution_start" && typeof event.toolCallId === "string") {
+      runtime.liveTools[event.toolCallId] = {
+        id: event.toolCallId,
+        name: typeof event.toolName === "string" ? event.toolName : "Инструмент",
+        args: event.args,
+        running: true,
+        startedAt: Date.now(),
+      };
+    } else if (event.type === "tool_execution_update" && typeof event.toolCallId === "string") {
+      const current = runtime.liveTools[event.toolCallId];
+      runtime.liveTools[event.toolCallId] = {
+        ...(current ?? {
+          id: event.toolCallId,
+          name: typeof event.toolName === "string" ? event.toolName : "Инструмент",
+          running: true,
+          startedAt: Date.now(),
+        }),
+        result: event.partialResult,
+      };
+    } else if (event.type === "tool_execution_end" && typeof event.toolCallId === "string") {
+      const current = runtime.liveTools[event.toolCallId];
+      runtime.liveTools[event.toolCallId] = {
+        ...(current ?? {
+          id: event.toolCallId,
+          name: typeof event.toolName === "string" ? event.toolName : "Инструмент",
+          startedAt: Date.now(),
+        }),
+        result: event.result,
+        running: false,
+        error: Boolean(event.isError),
+      };
     } else if (event.type === "queue_update" && runtime.snapshot) {
       const steeringMessages = Array.isArray(event.steering) ? event.steering.map(String) : [];
       const followUpMessages = Array.isArray(event.followUp) ? event.followUp.map(String) : [];
@@ -750,6 +795,13 @@ export class PiManager {
       contextWindow,
       percent: tokens / contextWindow * 100,
     };
+  }
+
+  private snapshotWithLiveState(runtime: RuntimeRecord): ConversationSnapshot {
+    const snapshot = structuredClone(runtime.snapshot!);
+    snapshot.liveMessage = runtime.liveMessage ? structuredClone(runtime.liveMessage) : undefined;
+    snapshot.liveTools = structuredClone(runtime.liveTools);
+    return snapshot;
   }
 
   private normalizeState(value: JsonObject): RuntimeState {

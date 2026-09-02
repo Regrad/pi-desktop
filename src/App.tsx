@@ -37,6 +37,7 @@ import type { ReactNode, RefObject } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import type { Plugin } from "unified";
+import { applyAssistantMessageDelta } from "../shared/live-message";
 import type {
   Attachment,
   BootstrapPayload,
@@ -2025,33 +2026,7 @@ export default function App() {
     } else if (event.type === "message_update") {
       const delta = event.assistantMessageEvent;
       if (!delta) return;
-      setStreamingMessage((current) => {
-        const next = current ? structuredClone(current) : { role: "assistant", content: [] };
-        if (!Array.isArray(next.content)) next.content = [];
-        const index = Number(delta.contentIndex ?? 0);
-        while (next.content.length <= index) next.content.push({ type: "text", text: "" });
-        if (delta.type === "text_start") next.content[index] = { type: "text", text: "" };
-        if (delta.type === "thinking_start") next.content[index] = { type: "thinking", thinking: "" };
-        if (delta.type === "toolcall_start") next.content[index] = {
-          type: "toolCall",
-          id: delta.toolCall?.id,
-          name: delta.toolCall?.name ?? "Инструмент",
-          arguments: delta.toolCall?.arguments ?? {},
-          partialArguments: "",
-        };
-        if (delta.type === "text_delta") next.content[index].text = `${next.content[index].text ?? ""}${delta.delta ?? ""}`;
-        if (delta.type === "thinking_delta") next.content[index].thinking = `${next.content[index].thinking ?? ""}${delta.delta ?? ""}`;
-        if (delta.type === "toolcall_delta") {
-          next.content[index].partialArguments = `${next.content[index].partialArguments ?? ""}${delta.delta ?? ""}`;
-          if (delta.toolCall?.id) next.content[index].id = delta.toolCall.id;
-          if (delta.toolCall?.name) next.content[index].name = delta.toolCall.name;
-          if (delta.toolCall?.arguments && typeof delta.toolCall.arguments === "object") {
-            next.content[index].arguments = delta.toolCall.arguments;
-          }
-        }
-        if (delta.type === "toolcall_end" && delta.toolCall) next.content[index] = delta.toolCall;
-        return next;
-      });
+      setStreamingMessage((current) => applyAssistantMessageDelta(current ?? undefined, delta));
     } else if (event.type === "message_end" && event.message) {
       if (event.message.role === "assistant") {
         setMessages((current) => [...current, event.message]);
@@ -2190,6 +2165,8 @@ export default function App() {
       setSnapshot(next);
       setActiveProjectId(next.conversation.projectId);
       setMessages(next.messages as JsonObject[]);
+      setStreamingMessage(next.liveMessage ? structuredClone(next.liveMessage as JsonObject) : null);
+      setTools(next.liveTools ? structuredClone(next.liveTools) as Record<string, ToolActivity> : {});
       setWorking(next.state.isStreaming);
       setStatuses(next.extensionUi.statuses);
       setWorkingMessage(next.extensionUi.workingMessage ?? "");

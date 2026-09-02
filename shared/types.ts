@@ -276,6 +276,20 @@ export interface ConversationSnapshot {
   extensionState: ExtensionState;
   extensionUi: ExtensionUiState;
   run?: ConversationRun;
+  liveMessage?: unknown;
+  liveTools?: Record<string, LiveToolActivity>;
+}
+
+export interface LiveToolActivity {
+  id: string;
+  name: string;
+  args?: unknown;
+  partialArguments?: string;
+  result?: unknown;
+  running: boolean;
+  preparing?: boolean;
+  error?: boolean;
+  startedAt: number;
 }
 
 export interface CompactionRecord {
