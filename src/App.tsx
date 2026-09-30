@@ -26,18 +26,36 @@ import {
   Settings,
   RefreshCw,
   SquareTerminal,
+  Target,
   Pencil,
   Trash2,
   Wrench,
   X,
   Zap,
 } from "lucide-react";
-import { Fragment, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import {
+  Fragment,
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import type { ReactNode, RefObject } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import type { Plugin } from "unified";
 import { applyAssistantMessageDelta } from "../shared/live-message";
+import { GoalPanel } from "./GoalPanel";
+import { ComfySettingsPanel } from "./ComfySettings";
+import { collectComfyMedia, collectAnswerMedia, answerCanPublishMedia } from "./comfy-images";
+import { ComfyMedia } from "./ComfyMedia";
+import { PreviewImage } from "./ImagePreview";
+import { MaskEditor } from "./MaskEditor";
+import { mergeAttachments } from "./drop-attachments";
+import { visibleGoalText } from "../shared/goal";
+import { visibleImageAttachmentText } from "../shared/image-attachments";
 import type {
   Attachment,
   BootstrapPayload,
@@ -53,6 +71,7 @@ import type {
   DiffHunk,
   ModelInfo,
   ModuleSettings,
+  ProjectInstructions,
   ProjectRecord,
   QueuedPrompt,
   RunDiff,
@@ -81,7 +100,16 @@ interface Notice {
   type: "info" | "warning" | "error";
 }
 
-type SettingsSection = "general" | "models" | "modules" | "customization" | "configuration" | "shortcuts" | "archive" | "about";
+type SettingsSection =
+  | "general"
+  | "comfyui"
+  | "models"
+  | "modules"
+  | "customization"
+  | "configuration"
+  | "shortcuts"
+  | "archive"
+  | "about";
 
 interface ConversationMenuState {
   conversationId: string;
@@ -96,9 +124,43 @@ interface ProjectMenuState {
 }
 
 type TranscriptTimelineItem =
-  | { kind: "message"; message: JsonObject; sourceIndex: number; timestamp: number; order: number }
-  | { kind: "extension"; entry: ConversationSnapshot["entries"][number]; sourceIndex: number; timestamp: number; order: number }
-  | { kind: "compaction"; entry: ConversationSnapshot["entries"][number]; record?: CompactionRecord; sourceIndex: number; timestamp: number; order: number };
+  | {
+      kind: "message";
+      message: JsonObject;
+      sourceIndex: number;
+      timestamp: number;
+      order: number;
+    }
+  | {
+      kind: "extension";
+      entry: ConversationSnapshot["entries"][number];
+      sourceIndex: number;
+      timestamp: number;
+      order: number;
+    }
+  | {
+      kind: "compaction";
+      entry: ConversationSnapshot["entries"][number];
+      record?: CompactionRecord;
+      sourceIndex: number;
+      timestamp: number;
+      order: number;
+    };
+
+/**
+ * Timeline as displayed: everything the model produced between the previous
+ * answer and the current one (thinking, tool calls and results, intermediate
+ * texts, extension output) is collapsed into a single expandable fold above
+ * that answer. The answer itself stays visible.
+ */
+type TranscriptDisplayItem =
+  | { display: "single"; item: TranscriptTimelineItem }
+  | {
+      display: "fold";
+      key: string;
+      process: TranscriptTimelineItem[];
+      answer: TranscriptTimelineItem;
+    };
 
 const THINKING_LABELS: Record<ThinkingLevel, string> = {
   off: "Без рассуждений",
@@ -124,11 +186,18 @@ function transcriptTimestamp(value: unknown, fallback: number): number {
 }
 
 function messageText(message: JsonObject): string {
-  if (typeof message.content === "string") return message.content;
+  if (typeof message.content === "string")
+    return message.role === "user"
+      ? visibleImageAttachmentText(visibleGoalText(message.content))
+      : message.content;
   if (!Array.isArray(message.content)) return "";
   return message.content
     .filter((part: JsonObject) => part?.type === "text")
-    .map((part: JsonObject) => String(part.text ?? ""))
+    .map((part: JsonObject) =>
+      message.role === "user"
+        ? visibleImageAttachmentText(visibleGoalText(String(part.text ?? "")))
+        : String(part.text ?? ""),
+    )
     .join("\n");
 }
 
@@ -139,10 +208,14 @@ function textFromResult(result: unknown): string {
     return content
       .map((item) => {
         if (item?.type === "text") return String(item.text ?? "");
-        if (item?.type === "image") return `[Изображение: ${String(item.mimeType ?? "image")}]`;
-        if (item?.type === "audio") return `[Аудио: ${String(item.mimeType ?? "audio")}]`;
-        if (item?.type === "resource_link") return `[Ресурс: ${String(item.title ?? item.name ?? item.uri ?? "ссылка")}]`;
-        if (item?.type === "resource") return `[Встроенный ресурс: ${String(item.resource?.uri ?? "данные")}]`;
+        if (item?.type === "image")
+          return `[Изображение: ${String(item.mimeType ?? "image")}]`;
+        if (item?.type === "audio")
+          return `[Аудио: ${String(item.mimeType ?? "audio")}]`;
+        if (item?.type === "resource_link")
+          return `[Ресурс: ${String(item.title ?? item.name ?? item.uri ?? "ссылка")}]`;
+        if (item?.type === "resource")
+          return `[Встроенный ресурс: ${String(item.resource?.uri ?? "данные")}]`;
         return `[${String(item?.type ?? "данные")}]`;
       })
       .filter(Boolean)
@@ -161,26 +234,62 @@ function mediaSource(part: JsonObject): string | undefined {
 }
 
 function ContentParts({ content }: { content: JsonObject[] }) {
-  return <>{content.map((part, index) => {
-    if (part.type === "text") return <Markdown key={index} text={String(part.text ?? "")} />;
-    if (part.type === "image") {
-      const src = mediaSource(part);
-      return src ? <img className="content-image" key={index} src={src} alt="Изображение" /> : <div className="muted" key={index}>Изображение недоступно</div>;
-    }
-    if (part.type === "audio") {
-      const src = mediaSource(part);
-      return src ? <audio className="content-audio" key={index} src={src} controls /> : <div className="muted" key={index}>Аудио недоступно</div>;
-    }
-    if (part.type === "resource_link") {
-      const href = String(part.uri ?? "");
-      return <a className="resource-link" key={index} href={href} target="_blank" rel="noreferrer">{String(part.title ?? part.name ?? href)}</a>;
-    }
-    if (part.type === "resource") {
-      const resource = part.resource as JsonObject | undefined;
-      return <pre className="embedded-resource" key={index}>{String(resource?.text ?? `[${resource?.uri ?? "Ресурс"}]`)}</pre>;
-    }
-    return null;
-  })}</>;
+  return (
+    <>
+      {content.map((part, index) => {
+        if (part.type === "text")
+          return <Markdown key={index} text={String(part.text ?? "")} />;
+        if (part.type === "image") {
+          const src = mediaSource(part);
+          return src ? (
+            <PreviewImage
+              className="content-image"
+              key={index}
+              src={src}
+              alt="Изображение"
+            />
+          ) : (
+            <div className="muted" key={index}>
+              Изображение недоступно
+            </div>
+          );
+        }
+        if (part.type === "audio") {
+          const src = mediaSource(part);
+          return src ? (
+            <audio className="content-audio" key={index} src={src} controls />
+          ) : (
+            <div className="muted" key={index}>
+              Аудио недоступно
+            </div>
+          );
+        }
+        if (part.type === "resource_link") {
+          const href = String(part.uri ?? "");
+          return (
+            <a
+              className="resource-link"
+              key={index}
+              href={href}
+              target="_blank"
+              rel="noreferrer"
+            >
+              {String(part.title ?? part.name ?? href)}
+            </a>
+          );
+        }
+        if (part.type === "resource") {
+          const resource = part.resource as JsonObject | undefined;
+          return (
+            <pre className="embedded-resource" key={index}>
+              {String(resource?.text ?? `[${resource?.uri ?? "Ресурс"}]`)}
+            </pre>
+          );
+        }
+        return null;
+      })}
+    </>
+  );
 }
 
 interface MarkdownTreeNode {
@@ -203,6 +312,12 @@ interface VirtualFilmLayout {
   totalHeight: number;
 }
 
+interface VirtualFilmAnchor {
+  key: string;
+  offset: number;
+  stickToBottom: boolean;
+}
+
 function VirtualFilm<T>({
   items,
   itemKey,
@@ -217,17 +332,37 @@ function VirtualFilm<T>({
   scrollRef: RefObject<HTMLDivElement | null>;
 }) {
   const filmRef = useRef<HTMLDivElement>(null);
-  const layoutRef = useRef<VirtualFilmLayout>({ resetKey: "", keys: [], heights: [], offsets: [], totalHeight: 0 });
+  const layoutRef = useRef<VirtualFilmLayout>({
+    resetKey: "",
+    keys: [],
+    heights: [],
+    offsets: [],
+    totalHeight: 0,
+  });
+  const resizeAnchorRef = useRef<VirtualFilmAnchor | null>(null);
   const [calibrating, setCalibrating] = useState(true);
   const [layoutRevision, setLayoutRevision] = useState(0);
   const [range, setRange] = useState({ start: 0, end: items.length });
 
   if (layoutRef.current.resetKey !== resetKey) {
-    layoutRef.current = { resetKey, keys: [], heights: [], offsets: [], totalHeight: 0 };
+    layoutRef.current = {
+      resetKey,
+      keys: [],
+      heights: [],
+      offsets: [],
+      totalHeight: 0,
+    };
   }
 
   useLayoutEffect(() => {
-    layoutRef.current = { resetKey, keys: [], heights: [], offsets: [], totalHeight: 0 };
+    layoutRef.current = {
+      resetKey,
+      keys: [],
+      heights: [],
+      offsets: [],
+      totalHeight: 0,
+    };
+    resizeAnchorRef.current = null;
     setCalibrating(true);
     setRange({ start: 0, end: items.length });
   }, [resetKey]);
@@ -236,7 +371,9 @@ function VirtualFilm<T>({
     if (!calibrating) return;
     const film = filmRef.current;
     if (!film) return;
-    const rows = [...film.querySelectorAll<HTMLElement>("[data-virtual-film-row]")];
+    const rows = [
+      ...film.querySelectorAll<HTMLElement>("[data-virtual-film-row]"),
+    ];
     const keys = items.map(itemKey);
     const heights = rows.map((row) => row.getBoundingClientRect().height);
     const offsets: number[] = [];
@@ -253,14 +390,24 @@ function VirtualFilm<T>({
   const layout = layoutRef.current;
   if (!calibrating && layout.resetKey === resetKey) {
     const previousCount = layout.keys.length;
-    if (items.length > previousCount && (previousCount === 0 || itemKey(items[previousCount - 1], previousCount - 1) === layout.keys[previousCount - 1])) {
+    if (
+      items.length > previousCount &&
+      (previousCount === 0 ||
+        itemKey(items[previousCount - 1], previousCount - 1) ===
+          layout.keys[previousCount - 1])
+    ) {
       for (let index = previousCount; index < items.length; index += 1) {
         layout.keys.push(itemKey(items[index], index));
         layout.offsets.push(layout.totalHeight);
         layout.heights.push(120);
         layout.totalHeight += 120;
       }
-    } else if (items.length !== previousCount || (items.length > 0 && itemKey(items[items.length - 1], items.length - 1) !== layout.keys[items.length - 1])) {
+    } else if (
+      items.length !== previousCount ||
+      (items.length > 0 &&
+        itemKey(items[items.length - 1], items.length - 1) !==
+          layout.keys[items.length - 1])
+    ) {
       layout.keys = items.map(itemKey);
       layout.heights = items.map((_, index) => layout.heights[index] ?? 120);
       layout.offsets = [];
@@ -278,14 +425,19 @@ function VirtualFilm<T>({
     const film = filmRef.current;
     if (!scroll || !film || items.length === 0) return;
     const overscan = Math.max(700, scroll.clientHeight);
-    const viewportTop = Math.max(0, scroll.scrollTop - film.offsetTop - overscan);
-    const viewportBottom = scroll.scrollTop - film.offsetTop + scroll.clientHeight + overscan;
+    const viewportTop = Math.max(
+      0,
+      scroll.scrollTop - film.offsetTop - overscan,
+    );
+    const viewportBottom =
+      scroll.scrollTop - film.offsetTop + scroll.clientHeight + overscan;
     const current = layoutRef.current;
     let low = 0;
     let high = current.offsets.length;
     while (low < high) {
       const middle = (low + high) >> 1;
-      if (current.offsets[middle] + current.heights[middle] < viewportTop) low = middle + 1;
+      if (current.offsets[middle] + current.heights[middle] < viewportTop)
+        low = middle + 1;
       else high = middle;
     }
     const start = low;
@@ -297,8 +449,37 @@ function VirtualFilm<T>({
       else high = middle;
     }
     const end = Math.max(start, low);
-    setRange((value) => value.start === start && value.end === end ? value : { start, end });
+    setRange((value) =>
+      value.start === start && value.end === end ? value : { start, end },
+    );
   }, [calibrating, items.length, scrollRef]);
+
+  useLayoutEffect(() => {
+    if (calibrating) return;
+    const anchor = resizeAnchorRef.current;
+    if (!anchor) return;
+    const scroll = scrollRef.current;
+    const film = filmRef.current;
+    if (!scroll || !film) return;
+    const current = layoutRef.current;
+    if (anchor.stickToBottom) {
+      scroll.scrollTop = scroll.scrollHeight;
+    } else {
+      const index = current.keys.indexOf(anchor.key);
+      if (index >= 0) {
+        const offset = Math.min(
+          anchor.offset,
+          Math.max(0, current.heights[index] - 1),
+        );
+        scroll.scrollTop = Math.max(
+          0,
+          film.offsetTop + current.offsets[index] + offset,
+        );
+      }
+    }
+    resizeAnchorRef.current = null;
+    updateRange();
+  }, [calibrating, layoutRevision, scrollRef, updateRange]);
 
   useLayoutEffect(() => {
     if (calibrating) return;
@@ -315,6 +496,31 @@ function VirtualFilm<T>({
     const observer = new ResizeObserver(() => {
       if (Math.abs(scroll.clientWidth - measuredWidth) > 1) {
         measuredWidth = scroll.clientWidth;
+        const film = filmRef.current;
+        const current = layoutRef.current;
+        if (film && current.keys.length > 0) {
+          const viewportOffset = Math.max(0, scroll.scrollTop - film.offsetTop);
+          let low = 0;
+          let high = current.offsets.length;
+          while (low < high) {
+            const middle = (low + high) >> 1;
+            if (
+              current.offsets[middle] + current.heights[middle] <=
+              viewportOffset
+            )
+              low = middle + 1;
+            else high = middle;
+          }
+          const index = Math.min(low, current.keys.length - 1);
+          resizeAnchorRef.current = {
+            key: current.keys[index],
+            offset: Math.max(0, viewportOffset - current.offsets[index]),
+            stickToBottom:
+              scroll.scrollHeight - scroll.scrollTop - scroll.clientHeight <=
+              24,
+          };
+        }
+        setRange({ start: 0, end: items.length });
         setCalibrating(true);
         return;
       }
@@ -334,34 +540,78 @@ function VirtualFilm<T>({
     if (!film) return;
     const observer = new ResizeObserver((entries) => {
       let changed = false;
+      const scroll = scrollRef.current;
+      const current = layoutRef.current;
+      let anchor: VirtualFilmAnchor | null = null;
+      if (scroll && current.keys.length > 0) {
+        const viewportOffset = Math.max(0, scroll.scrollTop - film.offsetTop);
+        let low = 0;
+        let high = current.offsets.length;
+        while (low < high) {
+          const middle = (low + high) >> 1;
+          if (
+            current.offsets[middle] + current.heights[middle] <=
+            viewportOffset
+          )
+            low = middle + 1;
+          else high = middle;
+        }
+        const index = Math.min(low, current.keys.length - 1);
+        anchor = {
+          key: current.keys[index],
+          offset: Math.max(0, viewportOffset - current.offsets[index]),
+          stickToBottom:
+            scroll.scrollHeight - scroll.scrollTop - scroll.clientHeight <= 24,
+        };
+      }
       for (const entry of entries) {
         const row = entry.target as HTMLElement;
         const index = Number(row.dataset.virtualIndex);
-        const nextHeight = entry.borderBoxSize?.[0]?.blockSize ?? row.getBoundingClientRect().height;
-        const current = layoutRef.current;
-        if (!Number.isInteger(index) || index < 0 || Math.abs((current.heights[index] ?? 0) - nextHeight) < 0.5) continue;
+        const nextHeight =
+          entry.borderBoxSize?.[0]?.blockSize ??
+          row.getBoundingClientRect().height;
+        if (
+          !Number.isInteger(index) ||
+          index < 0 ||
+          Math.abs((current.heights[index] ?? 0) - nextHeight) < 0.5
+        )
+          continue;
         const difference = nextHeight - current.heights[index];
         current.heights[index] = nextHeight;
         current.totalHeight += difference;
-        for (let next = index + 1; next < current.offsets.length; next += 1) current.offsets[next] += difference;
+        for (let next = index + 1; next < current.offsets.length; next += 1)
+          current.offsets[next] += difference;
         changed = true;
       }
-      if (changed) setLayoutRevision((value) => value + 1);
+      if (changed) {
+        resizeAnchorRef.current = anchor;
+        setLayoutRevision((value) => value + 1);
+      }
     });
-    film.querySelectorAll<HTMLElement>("[data-virtual-index]").forEach((row) => observer.observe(row));
+    film
+      .querySelectorAll<HTMLElement>("[data-virtual-index]")
+      .forEach((row) => observer.observe(row));
     return () => observer.disconnect();
-  }, [calibrating, range.start, range.end]);
+  }, [calibrating, range.start, range.end, scrollRef]);
 
   if (calibrating) {
     return (
       <div className="virtual-film-calibration" ref={filmRef}>
-        {items.map((item, index) => <div data-virtual-film-row key={itemKey(item, index)}>{renderItem(item, index)}</div>)}
+        {items.map((item, index) => (
+          <div data-virtual-film-row key={itemKey(item, index)}>
+            {renderItem(item, index)}
+          </div>
+        ))}
       </div>
     );
   }
 
   const visible: ReactNode[] = [];
-  for (let index = range.start; index < Math.min(range.end, items.length); index += 1) {
+  for (
+    let index = range.start;
+    index < Math.min(range.end, items.length);
+    index += 1
+  ) {
     visible.push(
       <div
         className="virtual-film-frame"
@@ -373,7 +623,15 @@ function VirtualFilm<T>({
       </div>,
     );
   }
-  return <div className="virtual-film" ref={filmRef} style={{ height: `${layout.totalHeight}px` }}>{visible}</div>;
+  return (
+    <div
+      className="virtual-film"
+      ref={filmRef}
+      style={{ height: `${layout.totalHeight}px` }}
+    >
+      {visible}
+    </div>
+  );
 }
 
 function createRevealTailPlugin(revealFrom: number): Plugin {
@@ -384,10 +642,19 @@ function createRevealTailPlugin(revealFrom: number): Plugin {
       const nextChildren: MarkdownTreeNode[] = [];
       for (const child of parent.children) {
         const end = child.position?.end?.offset;
-        if (child.type === "text" && child.value && typeof end === "number" && end > revealFrom) {
+        if (
+          child.type === "text" &&
+          child.value &&
+          typeof end === "number" &&
+          end > revealFrom
+        ) {
           const freshLength = Math.min(child.value.length, end - revealFrom);
           const splitAt = child.value.length - freshLength;
-          if (splitAt > 0) nextChildren.push({ ...child, value: child.value.slice(0, splitAt) });
+          if (splitAt > 0)
+            nextChildren.push({
+              ...child,
+              value: child.value.slice(0, splitAt),
+            });
           const freshText = child.value.slice(splitAt);
           for (const segment of freshText.match(/\s+|[^\s]+/g) ?? []) {
             if (!segment.trim()) {
@@ -399,7 +666,12 @@ function createRevealTailPlugin(revealFrom: number): Plugin {
             nextChildren.push({
               type: "element",
               tagName: "span",
-              properties: { className: ["stream-reveal-fragment", `stream-reveal-delay-${delayStep}`] },
+              properties: {
+                className: [
+                  "stream-reveal-fragment",
+                  `stream-reveal-delay-${delayStep}`,
+                ],
+              },
               children: [{ type: "text", value: segment }],
             });
           }
@@ -416,8 +688,13 @@ function createRevealTailPlugin(revealFrom: number): Plugin {
 
 function StreamingMarkdown({ text }: { text: string }) {
   const previousTextRef = useRef("");
-  const revealFrom = text.startsWith(previousTextRef.current) ? previousTextRef.current.length : 0;
-  const revealTailPlugin = useMemo(() => createRevealTailPlugin(revealFrom), [revealFrom]);
+  const revealFrom = text.startsWith(previousTextRef.current)
+    ? previousTextRef.current.length
+    : 0;
+  const revealTailPlugin = useMemo(
+    () => createRevealTailPlugin(revealFrom),
+    [revealFrom],
+  );
 
   useEffect(() => {
     previousTextRef.current = text;
@@ -428,8 +705,20 @@ function StreamingMarkdown({ text }: { text: string }) {
       remarkPlugins={[remarkGfm]}
       rehypePlugins={[revealTailPlugin]}
       components={{
-        a: ({ href, children }) => <a href={href} target="_blank" rel="noreferrer">{children}</a>,
-        code: ({ children, className }) => <code className={className}>{children}</code>,
+        img: ({ src, alt, title }) => <PreviewImage className="content-image" src={src} alt={alt} title={title} />,
+        a: ({ href, children }) => (
+          <a href={href} target="_blank" rel="noreferrer">
+            {children}
+          </a>
+        ),
+        code: ({ children, className }) => (
+          <code className={className}>{children}</code>
+        ),
+        table: ({ children }) => (
+          <div className="markdown-table-wrap">
+            <table>{children}</table>
+          </div>
+        ),
       }}
     >
       {text}
@@ -446,16 +735,58 @@ function MessageContent({
   assistant?: boolean;
   streaming?: boolean;
 }) {
-  const content = message.content;
+  const content =
+    message.role === "user"
+      ? typeof message.content === "string"
+        ? visibleImageAttachmentText(visibleGoalText(message.content))
+        : Array.isArray(message.content)
+          ? message.content.map((part: JsonObject) =>
+              part?.type === "text"
+                ? { ...part, text: visibleImageAttachmentText(visibleGoalText(String(part.text ?? ""))) }
+                : part,
+            )
+          : message.content
+      : message.content;
   if (typeof content === "string") {
     return (
       <>
-        {assistant
-          ? <div className="assistant-final">{streaming ? <StreamingMarkdown text={content} /> : <Markdown text={content} />}</div>
-          : <Markdown text={content} />}
+        {assistant ? (
+          <div className="assistant-final">
+            {streaming ? (
+              <StreamingMarkdown text={content} />
+            ) : (
+              <Markdown text={content} />
+            )}
+          </div>
+        ) : (
+          <Markdown text={content} />
+        )}
+        {Array.isArray(message.images) && message.images.length > 0 && (
+          <div className="message-images">
+            {message.images.map(
+              (
+                image: { name: string; mimeType: string; data: string },
+                index: number,
+              ) => (
+                <PreviewImage
+                  key={`${image.name}-${index}`}
+                  className="message-image-thumb"
+                  src={`data:${image.mimeType};base64,${image.data}`}
+                  alt={image.name}
+                  title={image.name}
+                />
+              ),
+            )}
+          </div>
+        )}
         {Array.isArray(message.attachments) && (
           <div className="message-attachments">
-            {message.attachments.map((name: string) => <span key={name}><Paperclip size={12} />{name}</span>)}
+            {message.attachments.map((name: string) => (
+              <span key={name}>
+                <Paperclip size={12} />
+                {name}
+              </span>
+            ))}
           </div>
         )}
       </>
@@ -465,25 +796,50 @@ function MessageContent({
   return (
     <>
       {content.map((part: JsonObject, index: number) => {
-        if (["text", "image", "audio", "resource", "resource_link"].includes(String(part.type))) {
+        if (
+          ["text", "image", "audio", "resource", "resource_link"].includes(
+            String(part.type),
+          )
+        ) {
           const rendered = <ContentParts content={[part]} />;
-          return assistant && part.type === "text"
-            ? <div className="assistant-final" key={index}>{streaming ? <StreamingMarkdown text={String(part.text ?? "")} /> : rendered}</div>
-            : <Fragment key={index}>{rendered}</Fragment>;
+          return assistant && part.type === "text" ? (
+            <div className="assistant-final" key={index}>
+              {streaming ? (
+                <StreamingMarkdown text={String(part.text ?? "")} />
+              ) : (
+                rendered
+              )}
+            </div>
+          ) : (
+            <Fragment key={index}>{rendered}</Fragment>
+          );
         }
         if (part.type === "thinking") {
           if (index > 0 && content[index - 1]?.type === "thinking") return null;
           let thinkingEnd = index;
-          while (thinkingEnd < content.length && content[thinkingEnd]?.type === "thinking") thinkingEnd += 1;
+          while (
+            thinkingEnd < content.length &&
+            content[thinkingEnd]?.type === "thinking"
+          )
+            thinkingEnd += 1;
           const text = content
             .slice(index, thinkingEnd)
-            .map((candidate: JsonObject) => String(candidate.thinking ?? candidate.text ?? "").trim())
+            .map((candidate: JsonObject) =>
+              String(candidate.thinking ?? candidate.text ?? "").trim(),
+            )
             .filter(Boolean)
             .join("\n\n");
           if (!text) return null;
           return (
-            <div className={`thinking-block ${streaming ? "streaming" : ""}`} key={index}>
-              {streaming ? <StreamingMarkdown text={text} /> : <Markdown text={text} />}
+            <div
+              className={`thinking-block ${streaming ? "streaming" : ""}`}
+              key={index}
+            >
+              {streaming ? (
+                <StreamingMarkdown text={text} />
+              ) : (
+                <Markdown text={text} />
+              )}
             </div>
           );
         }
@@ -495,21 +851,39 @@ function MessageContent({
 
 function Markdown({ text }: { text: string }) {
   return (
-    <ReactMarkdown remarkPlugins={[remarkGfm]} components={{
-      a: ({ href, children }) => <a href={href} target="_blank" rel="noreferrer">{children}</a>,
-      code: ({ children, className }) => <code className={className}>{children}</code>,
-    }}>
+    <ReactMarkdown
+      remarkPlugins={[remarkGfm]}
+      components={{
+        img: ({ src, alt, title }) => <PreviewImage className="content-image" src={src} alt={alt} title={title} />,
+        a: ({ href, children }) => (
+          <a href={href} target="_blank" rel="noreferrer">
+            {children}
+          </a>
+        ),
+        code: ({ children, className }) => (
+          <code className={className}>{children}</code>
+        ),
+        table: ({ children }) => (
+          <div className="markdown-table-wrap">
+            <table>{children}</table>
+          </div>
+        ),
+      }}
+    >
       {text}
     </ReactMarkdown>
   );
 }
 
 function parsedToolArguments(value: unknown): JsonObject {
-  if (value && typeof value === "object" && !Array.isArray(value)) return value as JsonObject;
+  if (value && typeof value === "object" && !Array.isArray(value))
+    return value as JsonObject;
   if (typeof value !== "string" || !value.trim()) return {};
   try {
     const parsed = JSON.parse(value);
-    return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed as JsonObject : {};
+    return parsed && typeof parsed === "object" && !Array.isArray(parsed)
+      ? (parsed as JsonObject)
+      : {};
   } catch {
     return { input: value };
   }
@@ -517,7 +891,10 @@ function parsedToolArguments(value: unknown): JsonObject {
 
 function toolCallParts(message: JsonObject): JsonObject[] {
   if (!Array.isArray(message.content)) return [];
-  return message.content.filter((part: JsonObject) => part?.type === "toolCall" || part?.type === "tool_call");
+  return message.content.filter(
+    (part: JsonObject) =>
+      part?.type === "toolCall" || part?.type === "tool_call",
+  );
 }
 
 function toolCallIdentifier(call: JsonObject, fallback: string): string {
@@ -531,8 +908,113 @@ function toolResultIdentifier(message: JsonObject): string | undefined {
 
 function messageWithoutToolCalls(message: JsonObject): JsonObject | undefined {
   if (!Array.isArray(message.content)) return message;
-  const content = message.content.filter((part: JsonObject) => part?.type !== "toolCall" && part?.type !== "tool_call");
+  const content = message.content.filter(
+    (part: JsonObject) =>
+      part?.type !== "toolCall" && part?.type !== "tool_call",
+  );
   return content.length ? { ...message, content } : undefined;
+}
+
+function hasAnswerText(message: JsonObject): boolean {
+  if (!Array.isArray(message.content)) return false;
+  return message.content.some(
+    (part: JsonObject) =>
+      part?.type === "text" && String(part.text ?? "").trim(),
+  );
+}
+
+function splitThinkingFromAnswer(
+  item: TranscriptTimelineItem,
+  keepWhole?: JsonObject | null,
+): {
+  item: TranscriptTimelineItem;
+  thinking?: TranscriptTimelineItem;
+} {
+  if (item.kind !== "message" || item.message === keepWhole) return { item };
+  const content: JsonObject[] = Array.isArray(item.message.content)
+    ? item.message.content
+    : [];
+  const thinking = content.filter(
+    (part) =>
+      part?.type === "thinking" &&
+      String(part.thinking ?? part.text ?? "").trim(),
+  );
+  if (!thinking.length) return { item };
+  const rest = content.filter((part) => part?.type !== "thinking");
+  return {
+    item: { ...item, message: { ...item.message, content: rest } },
+    thinking: { ...item, message: { ...item.message, content: thinking } },
+  };
+}
+
+function buildTranscriptDisplay(
+  items: TranscriptTimelineItem[],
+  streamingMsg?: JsonObject | null,
+): TranscriptDisplayItem[] {
+  const result: TranscriptDisplayItem[] = [];
+  let buffer: TranscriptTimelineItem[] = [];
+  let foldIndex = -1;
+  const flush = () => {
+    for (const item of buffer) result.push({ display: "single", item });
+    buffer = [];
+  };
+  for (const item of items) {
+    if (item.kind === "compaction") {
+      flush();
+      result.push({ display: "single", item });
+      foldIndex = -1;
+      continue;
+    }
+    if (item.kind === "extension") {
+      buffer.push(item);
+      continue;
+    }
+    const role = String(item.message.role ?? "");
+    if (role !== "assistant") {
+      if (role === "toolResult" || role === "tool") {
+        buffer.push(item);
+        continue;
+      }
+      flush();
+      result.push({ display: "single", item });
+      foldIndex = -1;
+      continue;
+    }
+    if (!hasAnswerText(item.message)) {
+      buffer.push(item);
+      continue;
+    }
+    // Thinking attached to the answer message itself is still kitchen: split
+    // it out so only the final text stays visible. The live streaming message
+    // keeps its shape until committed.
+    const split = splitThinkingFromAnswer(item, streamingMsg);
+    if (split.thinking) buffer.push(split.thinking);
+    const answer = split.item;
+    const key = messageKey(item.message, item.sourceIndex);
+    const previous = foldIndex >= 0 ? result[foldIndex] : undefined;
+    if (previous?.display === "fold") {
+      // A newer answer supersedes the previous one: it becomes process too.
+      result[foldIndex] = {
+        display: "fold",
+        key,
+        process: [...previous.process, previous.answer, ...buffer],
+        answer,
+      };
+    } else if (buffer.length) {
+      result.push({
+        display: "fold",
+        key,
+        process: buffer.slice(),
+        answer,
+      });
+      foldIndex = result.length - 1;
+    } else {
+      result.push({ display: "single", item: answer });
+    }
+    buffer = [];
+  }
+  flush();
+  return result;
 }
 
 function resultMessagePayload(message: JsonObject): JsonObject {
@@ -551,7 +1033,10 @@ function toolOutputText(result: unknown): string {
   return textFromResult(result).replace(/\r\n/g, "\n").trimEnd();
 }
 
-function partialJsonStringValues(source: string | undefined, field: string): string[] {
+function partialJsonStringValues(
+  source: string | undefined,
+  field: string,
+): string[] {
   if (!source) return [];
   const values: string[] = [];
   const marker = new RegExp(`"${field}"\\s*:\\s*"`, "g");
@@ -586,13 +1071,25 @@ function partialJsonStringValues(source: string | undefined, field: string): str
   return values;
 }
 
-function toolCodeFragments(name: string, args: JsonObject, partialArguments?: string): string[] {
+function toolCodeFragments(
+  name: string,
+  args: JsonObject,
+  partialArguments?: string,
+): string[] {
   const normalized = name.toLocaleLowerCase();
   if (normalized === "edit") {
     const complete = Array.isArray(args.edits)
-      ? args.edits.map((edit: JsonObject) => edit?.newText).filter((value: unknown): value is string => typeof value === "string")
-      : typeof args.newText === "string" ? [args.newText] : [];
-    return complete.length > 0 ? complete : partialJsonStringValues(partialArguments, "newText");
+      ? args.edits
+          .map((edit: JsonObject) => edit?.newText)
+          .filter(
+            (value: unknown): value is string => typeof value === "string",
+          )
+      : typeof args.newText === "string"
+        ? [args.newText]
+        : [];
+    return complete.length > 0
+      ? complete
+      : partialJsonStringValues(partialArguments, "newText");
   }
   if (normalized === "write") {
     if (typeof args.content === "string") return [args.content];
@@ -602,11 +1099,16 @@ function toolCodeFragments(name: string, args: JsonObject, partialArguments?: st
 }
 
 function compactLine(value: unknown, limit = 110): string {
-  const text = String(value ?? "").replace(/\s+/g, " ").trim();
+  const text = String(value ?? "")
+    .replace(/\s+/g, " ")
+    .trim();
   return text.length > limit ? `${text.slice(0, limit - 1)}…` : text;
 }
 
-function toolPresentation(name: string, args: JsonObject): {
+function toolPresentation(
+  name: string,
+  args: JsonObject,
+): {
   icon: "terminal" | "file" | "search" | "folder" | "mcp" | "tool";
   label: string;
   summary?: string;
@@ -615,29 +1117,98 @@ function toolPresentation(name: string, args: JsonObject): {
 } {
   const normalized = name.toLocaleLowerCase();
   const path = args.path ?? args.file ?? args.filePath;
-  if (normalized === "bash" || normalized === "shell" || normalized === "exec") {
+  if (normalized.startsWith("comfyui_") || normalized === "desktop_show_image" || normalized === "desktop_get_image_path") {
+    const labels: Record<string, string> = {
+      desktop_show_image: "Показать изображение",
+      desktop_get_image_path: "Путь к изображению из чата",
+      comfyui_list_attachments: "Изображения из чата",
+      comfyui_status: "Подключение ComfyUI",
+      comfyui_generate_image: "Генерация изображения",
+      comfyui_edit_image: "Редактирование изображения",
+      comfyui_remove_background: "Удаление фона",
+      comfyui_generate_music: "Генерация музыки YuE2",
+      comfyui_generate_instrumental_music: "Инструментальная музыка YuE2",
+      comfyui_cover_music: "Кавер YuE2",
+      comfyui_plan_music: "Нотный план YuE2",
+      comfyui_edit_vocals: "Убрать вокал из нот YuE2",
+      comfyui_generate_3d: "Генерация 3D-модели",
+      comfyui_compose_image: "Композиция из референсов",
+      comfyui_inpaint_image: "Редактирование по маске",
+      comfyui_create_mask: "Выделение объекта SAM 3.1",
+      comfyui_outpaint_image: "Расширение холста",
+      comfyui_extract_subject: "Извлечение объекта Qwen",
+    };
+    return { icon: "tool", label: labels[normalized] ?? "ComfyUI", summary: compactLine(args.prompt ?? ""), showRawArgs: true };
+  }
+  if (
+    normalized === "bash" ||
+    normalized === "shell" ||
+    normalized === "exec"
+  ) {
     const command = String(args.command ?? args.cmd ?? args.input ?? "");
-    return { icon: "terminal", label: "Команда", summary: compactLine(command), command };
+    return {
+      icon: "terminal",
+      label: "Команда",
+      summary: compactLine(command),
+      command,
+    };
   }
   if (normalized === "read") {
     const offset = Number(args.offset ?? 0);
     const limit = Number(args.limit ?? 0);
-    const range = offset > 0 ? `:${offset}${limit > 0 ? `–${offset + limit - 1}` : ""}` : "";
-    return { icon: "file", label: "Чтение", summary: `${String(path ?? "файл")}${range}` };
+    const range =
+      offset > 0
+        ? `:${offset}${limit > 0 ? `–${offset + limit - 1}` : ""}`
+        : "";
+    return {
+      icon: "file",
+      label: "Чтение",
+      summary: `${String(path ?? "файл")}${range}`,
+    };
   }
-  if (normalized === "edit") return { icon: "file", label: "Изменение", summary: String(path ?? "файл") };
-  if (normalized === "write") return { icon: "file", label: "Запись", summary: String(path ?? "файл") };
-  if (normalized === "grep") return { icon: "search", label: "Поиск", summary: `${compactLine(args.pattern ?? "")} · ${String(path ?? ".")}` };
-  if (normalized === "find") return { icon: "search", label: "Поиск файлов", summary: `${compactLine(args.pattern ?? "")} · ${String(path ?? ".")}` };
-  if (normalized === "ls") return { icon: "folder", label: "Список файлов", summary: String(path ?? ".") };
+  if (normalized === "edit")
+    return {
+      icon: "file",
+      label: "Изменение",
+      summary: String(path ?? "файл"),
+    };
+  if (normalized === "write")
+    return { icon: "file", label: "Запись", summary: String(path ?? "файл") };
+  if (normalized === "grep")
+    return {
+      icon: "search",
+      label: "Поиск",
+      summary: `${compactLine(args.pattern ?? "")} · ${String(path ?? ".")}`,
+    };
+  if (normalized === "find")
+    return {
+      icon: "search",
+      label: "Поиск файлов",
+      summary: `${compactLine(args.pattern ?? "")} · ${String(path ?? ".")}`,
+    };
+  if (normalized === "ls")
+    return {
+      icon: "folder",
+      label: "Список файлов",
+      summary: String(path ?? "."),
+    };
   if (normalized.startsWith("mcp__") || normalized.startsWith("mcp_")) {
     const parts = name.split("__");
-    return { icon: "mcp", label: parts.at(-1)?.replace(/[-_]/g, " ") || name, summary: parts.length > 2 ? parts[1] : "MCP", showRawArgs: true };
+    return {
+      icon: "mcp",
+      label: parts.at(-1)?.replace(/[-_]/g, " ") || name,
+      summary: parts.length > 2 ? parts[1] : "MCP",
+      showRawArgs: true,
+    };
   }
   return { icon: "tool", label: name, showRawArgs: true };
 }
 
-function ToolIcon({ kind }: { kind: ReturnType<typeof toolPresentation>["icon"] }) {
+function ToolIcon({
+  kind,
+}: {
+  kind: ReturnType<typeof toolPresentation>["icon"];
+}) {
   if (kind === "terminal") return <SquareTerminal size={15} />;
   if (kind === "file") return <FileText size={15} />;
   if (kind === "search") return <Search size={15} />;
@@ -646,85 +1217,195 @@ function ToolIcon({ kind }: { kind: ReturnType<typeof toolPresentation>["icon"] 
   return <Wrench size={15} />;
 }
 
-function ToolDiffPreview({ diff, expanded }: { diff: string; expanded: boolean }) {
+function ToolDiffPreview({
+  diff,
+  expanded,
+}: {
+  diff: string;
+  expanded: boolean;
+}) {
   const lines = diff.replace(/\r\n/g, "\n").split("\n");
   const visible = expanded ? lines : lines.slice(0, 10);
   return (
     <pre className="tool-diff-output">
-      {visible.map((line, index) => <span className={line.startsWith("+") && !line.startsWith("+++") ? "added" : line.startsWith("-") && !line.startsWith("---") ? "removed" : ""} key={`${index}-${line}`}>{line || " "}</span>)}
-      {!expanded && lines.length > visible.length && <em>… ещё {lines.length - visible.length} строк</em>}
+      {visible.map((line, index) => (
+        <span
+          className={
+            line.startsWith("+") && !line.startsWith("+++")
+              ? "added"
+              : line.startsWith("-") && !line.startsWith("---")
+                ? "removed"
+                : ""
+          }
+          key={`${index}-${line}`}
+        >
+          {line || " "}
+        </span>
+      ))}
+      {!expanded && lines.length > visible.length && (
+        <em>… ещё {lines.length - visible.length} строк</em>
+      )}
     </pre>
   );
 }
 
-function ToolTextOutput({ text, expanded }: { text: string; expanded: boolean }) {
+function ToolTextOutput({
+  text,
+  expanded,
+}: {
+  text: string;
+  expanded: boolean;
+}) {
   const lines = text.split("\n");
   const visible = expanded ? lines : lines.slice(0, 8);
   return (
     <pre className="tool-text-output">
       {visible.join("\n")}
-      {!expanded && lines.length > visible.length ? `\n… ещё ${lines.length - visible.length} строк` : ""}
+      {!expanded && lines.length > visible.length
+        ? `\n… ещё ${lines.length - visible.length} строк`
+        : ""}
     </pre>
   );
 }
 
-function ToolResultContent({ result, expanded }: { result: unknown; expanded: boolean }) {
-  const object = result && typeof result === "object" ? result as JsonObject : undefined;
-  const diff = typeof object?.details?.diff === "string" ? object.details.diff : undefined;
+function ToolResultContent({
+  result,
+  expanded,
+  name,
+  hideMedia = false,
+}: {
+  result: unknown;
+  expanded: boolean;
+  name?: string;
+  hideMedia?: boolean;
+}) {
+  const object =
+    result && typeof result === "object" ? (result as JsonObject) : undefined;
+  const diff =
+    typeof object?.details?.diff === "string" ? object.details.diff : undefined;
   if (diff) return <ToolDiffPreview diff={diff} expanded={expanded} />;
   const text = toolOutputText(result);
+  const generated = collectComfyMedia([{ id: "result", name: name ?? "", result }]);
   const media = Array.isArray(object?.content)
-    ? object.content.filter((part: JsonObject) => part?.type !== "text") as JsonObject[]
+    ? (object.content.filter(
+        (part: JsonObject) => part?.type !== "text",
+      ) as JsonObject[])
     : [];
-  return <>{text && <ToolTextOutput text={text} expanded={expanded} />}{media.length > 0 && <ContentParts content={media} />}</>;
+  return (
+    <>
+      {text && <ToolTextOutput text={text} expanded={expanded} />}
+      {!hideMedia && (generated.length > 0 ? <ComfyMedia parts={generated} /> : media.length > 0 && <ContentParts content={media} />)}
+    </>
+  );
 }
 
-function ToolCard({ tool }: { tool: ToolActivity }) {
+function ToolCard({ tool, hideMedia = false }: { tool: ToolActivity; hideMedia?: boolean }) {
   const args = parsedToolArguments(tool.args);
   const presentation = toolPresentation(tool.name, args);
   const [expanded, setExpanded] = useState(false);
   const output = tool.result === undefined ? "" : toolOutputText(tool.result);
-  const codeFragments = toolCodeFragments(tool.name, args, tool.partialArguments);
-  const hasDetails = Boolean(codeFragments.length || presentation.command || presentation.showRawArgs && Object.keys(args).length || output || (tool.result as JsonObject | undefined)?.details?.diff);
+  const codeFragments = toolCodeFragments(
+    tool.name,
+    args,
+    tool.partialArguments,
+  );
+  const hasDetails = Boolean(
+    codeFragments.length ||
+      presentation.command ||
+      (presentation.showRawArgs && Object.keys(args).length) ||
+      output ||
+      (tool.result as JsonObject | undefined)?.content?.some?.((part: JsonObject) => part?.type !== "text") ||
+      (tool.result as JsonObject | undefined)?.details?.diff,
+  );
   return (
-    <div className={`tool-card ${tool.preparing || tool.running ? "running" : "complete"} ${tool.error ? "error" : ""}`}>
-      <button className="tool-card-head" disabled={!hasDetails} onClick={() => setExpanded((value) => !value)}>
-        {hasDetails ? expanded ? <ChevronDown size={15} /> : <ChevronRight size={15} /> : <span className="tool-chevron-space" />}
+    <div
+      className={`tool-card ${tool.preparing || tool.running ? "running" : "complete"} ${tool.error ? "error" : ""}`}
+    >
+      <button
+        className="tool-card-head"
+        disabled={!hasDetails}
+        onClick={() => setExpanded((value) => !value)}
+      >
+        {hasDetails ? (
+          expanded ? (
+            <ChevronDown size={15} />
+          ) : (
+            <ChevronRight size={15} />
+          )
+        ) : (
+          <span className="tool-chevron-space" />
+        )}
         <ToolIcon kind={presentation.icon} />
-        <span className="tool-heading"><strong>{presentation.label}</strong>{presentation.summary && <small>{presentation.summary}</small>}</span>
-        <span className="tool-state">{tool.preparing ? "Формируется…" : tool.running ? "Выполняется…" : tool.error ? "Ошибка" : "Готово"}</span>
+        <span className="tool-heading">
+          <strong>{presentation.label}</strong>
+          {presentation.summary && <small>{presentation.summary}</small>}
+        </span>
+        <span className="tool-state">
+          {tool.preparing
+            ? "Формируется…"
+            : tool.running
+              ? "Выполняется…"
+              : tool.error
+                ? "Ошибка"
+                : "Готово"}
+        </span>
       </button>
       {expanded && hasDetails && (
         <div className="tool-card-body">
           {tool.result === undefined && codeFragments.length > 0 && (
             <div className="tool-code-preview">
               {codeFragments.map((fragment, index) => (
-                <div className="tool-code-fragment" key={`${index}-${fragment.length}`}>
-                  {codeFragments.length > 1 && <small>Фрагмент {index + 1}</small>}
+                <div
+                  className="tool-code-fragment"
+                  key={`${index}-${fragment.length}`}
+                >
+                  {codeFragments.length > 1 && (
+                    <small>Фрагмент {index + 1}</small>
+                  )}
                   <pre>{fragment || " "}</pre>
                 </div>
               ))}
             </div>
           )}
-          {presentation.command && <pre className="tool-command">{presentation.command}</pre>}
-          {presentation.showRawArgs && Object.keys(args).length > 0 && <details className="tool-arguments"><summary>Параметры</summary><pre>{JSON.stringify(args, null, 2)}</pre></details>}
-          {tool.result !== undefined && <ToolResultContent result={tool.result} expanded />}
+          {presentation.command && (
+            <pre className="tool-command">{presentation.command}</pre>
+          )}
+          {presentation.showRawArgs && Object.keys(args).length > 0 && (
+            <details className="tool-arguments">
+              <summary>Параметры</summary>
+              <pre>{JSON.stringify(args, null, 2)}</pre>
+            </details>
+          )}
+          {tool.result !== undefined && (
+            <ToolResultContent result={tool.result} name={tool.name} expanded hideMedia={hideMedia} />
+          )}
         </div>
       )}
     </div>
   );
 }
 
-function WorkingIndicator({ indicator }: { indicator?: { frames?: string[]; intervalMs?: number } }) {
+function WorkingIndicator({
+  indicator,
+}: {
+  indicator?: { frames?: string[]; intervalMs?: number };
+}) {
   const frames = indicator?.frames?.filter(Boolean) ?? [];
   const [index, setIndex] = useState(0);
   useEffect(() => {
     setIndex(0);
     if (frames.length < 2) return;
-    const timer = setInterval(() => setIndex((value) => (value + 1) % frames.length), Math.max(60, indicator?.intervalMs ?? 100));
+    const timer = setInterval(
+      () => setIndex((value) => (value + 1) % frames.length),
+      Math.max(60, indicator?.intervalMs ?? 100),
+    );
     return () => clearInterval(timer);
   }, [frames.join("\u0000"), indicator?.intervalMs]);
-  return frames.length ? <span className="working-frame">{frames[index] ?? frames[0]}</span> : <span className="spinner" />;
+  return frames.length ? (
+    <span className="working-frame">{frames[index] ?? frames[0]}</span>
+  ) : (
+    <span className="spinner" />
+  );
 }
 
 function DiffHunkView({ hunk }: { hunk: DiffHunk }) {
@@ -732,7 +1413,9 @@ function DiffHunkView({ hunk }: { hunk: DiffHunk }) {
   let newLine = hunk.newStart;
   return (
     <div className="diff-hunk">
-      <div className="diff-hunk-header">@@ −{hunk.oldStart},{hunk.oldLines} +{hunk.newStart},{hunk.newLines} @@</div>
+      <div className="diff-hunk-header">
+        @@ −{hunk.oldStart},{hunk.oldLines} +{hunk.newStart},{hunk.newLines} @@
+      </div>
       {hunk.lines.map((line, index) => {
         const marker = line[0] ?? " ";
         const isAdded = marker === "+";
@@ -740,8 +1423,13 @@ function DiffHunkView({ hunk }: { hunk: DiffHunk }) {
         const oldNumber = isAdded ? "" : oldLine++;
         const newNumber = isRemoved ? "" : newLine++;
         return (
-          <div className={`diff-line ${isAdded ? "added" : isRemoved ? "removed" : "context"}`} key={`${index}-${line}`}>
-            <span>{oldNumber}</span><span>{newNumber}</span><code>{line}</code>
+          <div
+            className={`diff-line ${isAdded ? "added" : isRemoved ? "removed" : "context"}`}
+            key={`${index}-${line}`}
+          >
+            <span>{oldNumber}</span>
+            <span>{newNumber}</span>
+            <code>{line}</code>
           </div>
         );
       })}
@@ -752,23 +1440,44 @@ function DiffHunkView({ hunk }: { hunk: DiffHunk }) {
 function DiffPanel({ diff, onClose }: { diff: RunDiff; onClose: () => void }) {
   return (
     <aside className="diff-panel">
-      <header className="diff-panel-title"><strong>Изменения за прогон</strong><button className="icon-button" onClick={onClose}><X size={17} /></button></header>
+      <header className="diff-panel-title">
+        <strong>Изменения за прогон</strong>
+        <button className="icon-button" onClick={onClose}>
+          <X size={17} />
+        </button>
+      </header>
       <div className="diff-panel-summary">
-        <span>{diff.files.length} {pluralFiles(diff.files.length)}</span>
+        <span>
+          {diff.files.length} {pluralFiles(diff.files.length)}
+        </span>
         <span className="diff-add">+{diff.additions}</span>
         <span className="diff-remove">−{diff.deletions}</span>
       </div>
-      {diff.incomplete && <div className="diff-warning">Некоторые большие или двоичные файлы изменились и не показаны.</div>}
+      {diff.incomplete && (
+        <div className="diff-warning">
+          Некоторые большие или двоичные файлы изменились и не показаны.
+        </div>
+      )}
       <div className="diff-files">
         {diff.files.map((file) => (
           <section className="diff-file" key={file.path}>
             <div className="diff-file-head" title={file.path}>
-              <FileText size={14} /><span>{file.relativePath}</span><small className="diff-add">+{file.additions}</small><small className="diff-remove">−{file.deletions}</small>
+              <FileText size={14} />
+              <span>{file.relativePath}</span>
+              <small className="diff-add">+{file.additions}</small>
+              <small className="diff-remove">−{file.deletions}</small>
             </div>
-            {file.hunks.map((hunk, index) => <DiffHunkView hunk={hunk} key={`${hunk.oldStart}-${hunk.newStart}-${index}`} />)}
+            {file.hunks.map((hunk, index) => (
+              <DiffHunkView
+                hunk={hunk}
+                key={`${hunk.oldStart}-${hunk.newStart}-${index}`}
+              />
+            ))}
           </section>
         ))}
-        {!diff.files.length && <div className="diff-empty">Текстовые файлы не изменялись.</div>}
+        {!diff.files.length && (
+          <div className="diff-empty">Текстовые файлы не изменялись.</div>
+        )}
       </div>
     </aside>
   );
@@ -784,7 +1493,10 @@ function ExtensionDialog({
   const { conversationId, request } = item;
   const [value, setValue] = useState(request.prefill ?? "");
   const respond = async (payload: Record<string, unknown>) => {
-    await window.piDesktop.respondToExtensionUi(conversationId, { id: request.id, ...payload });
+    await window.piDesktop.respondToExtensionUi(conversationId, {
+      id: request.id,
+      ...payload,
+    });
     if (typeof payload.customInput !== "string") onClose();
   };
 
@@ -806,30 +1518,69 @@ function ExtensionDialog({
       <div className="modal-card">
         <div className="modal-head">
           <strong>{request.title ?? "Расширение Pi"}</strong>
-          <button className="icon-button" onClick={() => void respond({ cancelled: true })}><X size={17} /></button>
+          <button
+            className="icon-button"
+            onClick={() => void respond({ cancelled: true })}
+          >
+            <X size={17} />
+          </button>
         </div>
         {request.message && <p>{request.message}</p>}
         {request.method === "custom" && (
-          <pre className="extension-custom-frame">{(request.customLines ?? []).join("\n")}</pre>
+          <pre className="extension-custom-frame">
+            {(request.customLines ?? []).join("\n")}
+          </pre>
         )}
         {request.method === "select" && (
           <div className="select-list">
             {(request.options ?? []).map((option) => (
-              <button key={option} onClick={() => void respond({ value: option })}>{option}</button>
+              <button
+                key={option}
+                onClick={() => void respond({ value: option })}
+              >
+                {option}
+              </button>
             ))}
           </div>
         )}
-        {(request.method === "input" || request.method === "editor") && (
-          request.method === "editor"
-            ? <textarea className="modal-editor" value={value} onChange={(event) => setValue(event.target.value)} autoFocus />
-            : <input className="modal-input" value={value} placeholder={request.placeholder} onChange={(event) => setValue(event.target.value)} autoFocus />
-        )}
+        {(request.method === "input" || request.method === "editor") &&
+          (request.method === "editor" ? (
+            <textarea
+              className="modal-editor"
+              value={value}
+              onChange={(event) => setValue(event.target.value)}
+              autoFocus
+            />
+          ) : (
+            <input
+              className="modal-input"
+              value={value}
+              placeholder={request.placeholder}
+              onChange={(event) => setValue(event.target.value)}
+              autoFocus
+            />
+          ))}
         <div className="modal-actions">
-          <button onClick={() => void respond({ cancelled: true })}>{request.method === "custom" ? "Закрыть" : "Отмена"}</button>
-          {request.method === "confirm" && <button onClick={() => void respond({ confirmed: false })}>Нет</button>}
-          {request.method === "confirm" && <button className="primary" onClick={() => void respond({ confirmed: true })}>Да</button>}
+          <button onClick={() => void respond({ cancelled: true })}>
+            {request.method === "custom" ? "Закрыть" : "Отмена"}
+          </button>
+          {request.method === "confirm" && (
+            <button onClick={() => void respond({ confirmed: false })}>
+              Нет
+            </button>
+          )}
+          {request.method === "confirm" && (
+            <button
+              className="primary"
+              onClick={() => void respond({ confirmed: true })}
+            >
+              Да
+            </button>
+          )}
           {(request.method === "input" || request.method === "editor") && (
-            <button className="primary" onClick={() => void respond({ value })}>Готово</button>
+            <button className="primary" onClick={() => void respond({ value })}>
+              Готово
+            </button>
           )}
         </div>
       </div>
@@ -858,7 +1609,8 @@ function terminalInputFromKeyboard(event: KeyboardEvent): string | undefined {
     PageDown: "\u001b[6~",
   };
   if (special[event.key]) return special[event.key];
-  if (!event.altKey && !event.metaKey && event.key.length === 1) return event.key;
+  if (!event.altKey && !event.metaKey && event.key.length === 1)
+    return event.key;
   return undefined;
 }
 
@@ -878,7 +1630,10 @@ function ProjectDialog({
   const addFolders = async () => {
     const selected = await window.piDesktop.chooseProjectFolders();
     if (!selected.length) return;
-    setFolders((current) => [...current, ...selected.filter((item) => !current.includes(item))]);
+    setFolders((current) => [
+      ...current,
+      ...selected.filter((item) => !current.includes(item)),
+    ]);
     if (!name.trim()) {
       const suggested = selected[0].split(/[\\/]/).filter(Boolean).at(-1);
       if (suggested) setName(suggested);
@@ -903,25 +1658,57 @@ function ProjectDialog({
       <div className="modal-card project-dialog">
         <div className="modal-head">
           <strong>Создать проект</strong>
-          <button className="icon-button" onClick={onClose}><X size={17} /></button>
+          <button className="icon-button" onClick={onClose}>
+            <X size={17} />
+          </button>
         </div>
         <label className="project-name-field">
           <span>Название</span>
-          <input value={name} onChange={(event) => setName(event.target.value)} placeholder="Название проекта" autoFocus />
+          <input
+            value={name}
+            onChange={(event) => setName(event.target.value)}
+            placeholder="Название проекта"
+            autoFocus
+          />
         </label>
-        <div className="project-folders-head"><strong>Рабочие папки</strong><span>Первая папка будет основной</span></div>
+        <div className="project-folders-head">
+          <strong>Рабочие папки</strong>
+          <span>Первая папка будет основной</span>
+        </div>
         <div className="project-folders">
           {folders.map((folder, index) => (
             <div className="project-folder-chip" key={folder}>
-              <Folder size={15} /><span>{folder}</span>{index === 0 && <small>Основная</small>}
-              <button title="Убрать папку" onClick={() => setFolders((current) => current.filter((item) => item !== folder))}><X size={14} /></button>
+              <Folder size={15} />
+              <span>{folder}</span>
+              {index === 0 && <small>Основная</small>}
+              <button
+                title="Убрать папку"
+                onClick={() =>
+                  setFolders((current) =>
+                    current.filter((item) => item !== folder),
+                  )
+                }
+              >
+                <X size={14} />
+              </button>
             </div>
           ))}
-          <button className="add-folders-button" onClick={() => void addFolders()}><Plus size={16} /> Добавить папки</button>
+          <button
+            className="add-folders-button"
+            onClick={() => void addFolders()}
+          >
+            <Plus size={16} /> Добавить папки
+          </button>
         </div>
         <div className="modal-actions">
           <button onClick={onClose}>Отмена</button>
-          <button className="primary" disabled={!folders.length || saving} onClick={() => void create()}>{saving ? "Создание…" : "Создать проект"}</button>
+          <button
+            className="primary"
+            disabled={!folders.length || saving}
+            onClick={() => void create()}
+          >
+            {saving ? "Создание…" : "Создать проект"}
+          </button>
         </div>
       </div>
     </div>
@@ -942,18 +1729,157 @@ function RenameConversationDialog({
   const [value, setValue] = useState(title);
   return (
     <div className="modal-backdrop">
-      <form className="modal-card rename-dialog" onSubmit={(event) => {
-        event.preventDefault();
-        const normalized = value.trim();
-        if (normalized) onSave(normalized);
-      }}>
-        <div className="modal-head"><strong>{heading}</strong><button type="button" className="icon-button" onClick={onClose}><X size={17} /></button></div>
-        <input className="modal-input" value={value} onChange={(event) => setValue(event.target.value)} autoFocus />
+      <form
+        className="modal-card rename-dialog"
+        onSubmit={(event) => {
+          event.preventDefault();
+          const normalized = value.trim();
+          if (normalized) onSave(normalized);
+        }}
+      >
+        <div className="modal-head">
+          <strong>{heading}</strong>
+          <button type="button" className="icon-button" onClick={onClose}>
+            <X size={17} />
+          </button>
+        </div>
+        <input
+          className="modal-input"
+          value={value}
+          onChange={(event) => setValue(event.target.value)}
+          autoFocus
+        />
         <div className="modal-actions">
-          <button type="button" onClick={onClose}>Отмена</button>
-          <button className="primary" type="submit" disabled={!value.trim()}>Сохранить</button>
+          <button type="button" onClick={onClose}>
+            Отмена
+          </button>
+          <button className="primary" type="submit" disabled={!value.trim()}>
+            Сохранить
+          </button>
         </div>
       </form>
+    </div>
+  );
+}
+
+function ProjectInstructionsDialog({
+  project,
+  onClose,
+}: {
+  project: ProjectRecord;
+  onClose: () => void;
+}) {
+  const [instructions, setInstructions] = useState<ProjectInstructions>();
+  const [value, setValue] = useState("");
+  const [savedValue, setSavedValue] = useState("");
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+  const [status, setStatus] = useState("");
+
+  useEffect(() => {
+    let cancelled = false;
+    void window.piDesktop
+      .getProjectInstructions(project.id)
+      .then((result) => {
+        if (cancelled) return;
+        setInstructions(result);
+        setValue(result.content);
+        setSavedValue(result.content);
+      })
+      .catch((error) => {
+        if (!cancelled)
+          setStatus(error instanceof Error ? error.message : String(error));
+      })
+      .finally(() => {
+        if (!cancelled) setLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [project.id]);
+
+  const save = async () => {
+    if (saving) return;
+    setSaving(true);
+    setStatus("");
+    try {
+      const result = await window.piDesktop.saveProjectInstructions(
+        project.id,
+        value,
+      );
+      setInstructions(result);
+      setValue(result.content);
+      setSavedValue(result.content);
+      setStatus(
+        "Сохранено. Чаты проекта применят инструкции перед следующим запросом.",
+      );
+    } catch (error) {
+      setStatus(error instanceof Error ? error.message : String(error));
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <div className="modal-backdrop">
+      <div className="modal-card project-instructions-dialog">
+        <div className="modal-head">
+          <strong>Инструкции проекта «{project.name}»</strong>
+          <button type="button" className="icon-button" onClick={onClose}>
+            <X size={17} />
+          </button>
+        </div>
+        <p>
+          Pi автоматически добавляет этот файл к системному промпту для проекта.
+        </p>
+        <textarea
+          className="modal-editor"
+          value={value}
+          onChange={(event) => {
+            setValue(event.target.value);
+            setStatus("");
+          }}
+          onKeyDown={(event) => {
+            if (
+              (event.ctrlKey || event.metaKey) &&
+              event.key.toLocaleLowerCase() === "s"
+            ) {
+              event.preventDefault();
+              if (!loading && !saving) void save();
+            }
+          }}
+          disabled={loading}
+          placeholder={loading ? "Загрузка…" : "Введите инструкции для модели…"}
+          spellCheck
+          autoFocus
+        />
+        <div className="project-instructions-info">
+          <span>
+            {instructions?.filePath ?? `${project.path}\\AGENTS.md`} · UTF-8
+          </span>
+          {!loading && instructions && !instructions.exists && (
+            <small>Файл будет создан при сохранении.</small>
+          )}
+          {status && <strong>{status}</strong>}
+        </div>
+        <div className="modal-actions">
+          <button type="button" onClick={onClose}>
+            Закрыть
+          </button>
+          <button
+            type="button"
+            className="primary"
+            disabled={
+              loading ||
+              saving ||
+              (instructions?.exists && value === savedValue)
+            }
+            onClick={() => void save()}
+          >
+            {saving ? "Сохранение…" : "Сохранить"}
+          </button>
+        </div>
+      </div>
     </div>
   );
 }
@@ -975,40 +1901,129 @@ function CommandPalette({
 }) {
   const [query, setQuery] = useState("");
   const normalized = query.trim().toLocaleLowerCase();
-  const textCommands = commands.filter((command) =>
-    !["compact", "reload"].includes(command.name)
-    && (!normalized || command.name.toLocaleLowerCase().includes(normalized) || command.description?.toLocaleLowerCase().includes(normalized))
+  const textCommands = commands.filter(
+    (command) =>
+      !["compact", "reload"].includes(command.name) &&
+      (!normalized ||
+        command.name.toLocaleLowerCase().includes(normalized) ||
+        command.description?.toLocaleLowerCase().includes(normalized)),
   );
   return (
     <div className="modal-backdrop">
       <div className="modal-card command-palette">
-        <div className="modal-head"><strong>Команды Pi</strong><button className="icon-button" onClick={onClose}><X size={17} /></button></div>
-        <div className="command-search"><Search size={15} /><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Найти команду…" autoFocus /></div>
+        <div className="modal-head">
+          <strong>Команды Pi</strong>
+          <button className="icon-button" onClick={onClose}>
+            <X size={17} />
+          </button>
+        </div>
+        <div className="command-search">
+          <Search size={15} />
+          <input
+            value={query}
+            onChange={(event) => setQuery(event.target.value)}
+            placeholder="Найти команду…"
+            autoFocus
+          />
+        </div>
         <div className="command-section-title">Действия приложения</div>
         <div className="command-list">
-          <button disabled={busy} onClick={onCompact}><span><strong>Сжать контекст</strong><small>Штатная команда Pi `/compact`; можно добавить инструкции для сводки.</small></span><code>/compact</code></button>
-          <button disabled={busy} onClick={onReload}><span><strong>Перезагрузить ресурсы Pi</strong><small>Расширения, навыки, промпты, настройки и файлы контекста.</small></span><code>/reload</code></button>
+          <button disabled={busy} onClick={onCompact}>
+            <span>
+              <strong>Сжать контекст</strong>
+              <small>
+                Штатная команда Pi `/compact`; можно добавить инструкции для
+                сводки.
+              </small>
+            </span>
+            <code>/compact</code>
+          </button>
+          <button disabled={busy} onClick={onReload}>
+            <span>
+              <strong>Перезагрузить ресурсы Pi</strong>
+              <small>
+                Расширения, навыки, промпты, настройки и файлы контекста.
+              </small>
+            </span>
+            <code>/reload</code>
+          </button>
         </div>
-        <div className="command-section-title">Команды расширений, шаблоны и навыки</div>
+        <div className="command-section-title">
+          Команды расширений, шаблоны и навыки
+        </div>
         <div className="command-list command-dynamic-list">
-          {textCommands.map((command) => <button key={`${command.source}-${command.name}`} onClick={() => onInsert(command.name)}><span><strong>/{command.name}</strong><small>{command.description || "Описание не предоставлено"}</small></span><em>{command.source === "extension" ? "Модуль" : command.source === "skill" ? "Навык" : "Шаблон"}</em></button>)}
-          {!textCommands.length && <div className="command-empty">Подходящих команд нет.</div>}
+          {textCommands.map((command) => (
+            <button
+              key={`${command.source}-${command.name}`}
+              onClick={() => onInsert(command.name)}
+            >
+              <span>
+                <strong>/{command.name}</strong>
+                <small>
+                  {command.description || "Описание не предоставлено"}
+                </small>
+              </span>
+              <em>
+                {command.source === "extension"
+                  ? "Модуль"
+                  : command.source === "skill"
+                    ? "Навык"
+                    : "Шаблон"}
+              </em>
+            </button>
+          ))}
+          {!textCommands.length && (
+            <div className="command-empty">Подходящих команд нет.</div>
+          )}
         </div>
-        <div className="command-palette-note">Выбор команды расширения помещает её в поле ввода — аргументы можно дописать перед отправкой.</div>
+        <div className="command-palette-note">
+          Выбор команды расширения помещает её в поле ввода — аргументы можно
+          дописать перед отправкой.
+        </div>
       </div>
     </div>
   );
 }
 
-function CompactDialog({ onClose, onCompact }: { onClose: () => void; onCompact: (instructions?: string) => void }) {
+function CompactDialog({
+  onClose,
+  onCompact,
+}: {
+  onClose: () => void;
+  onCompact: (instructions?: string) => void;
+}) {
   const [instructions, setInstructions] = useState("");
   return (
     <div className="modal-backdrop">
       <div className="modal-card compact-dialog">
-        <div className="modal-head"><strong>Сжать контекст</strong><button className="icon-button" onClick={onClose}><X size={17} /></button></div>
-        <p>Pi создаст сводку предыдущего контекста и сохранит последние сообщения без изменений.</p>
-        <label><span>Дополнительные инструкции для сводки</span><textarea value={instructions} onChange={(event) => setInstructions(event.target.value)} placeholder="Необязательно" autoFocus /></label>
-        <div className="modal-actions"><button onClick={onClose}>Отмена</button><button className="primary" onClick={() => onCompact(instructions.trim() || undefined)}>Сжать</button></div>
+        <div className="modal-head">
+          <strong>Сжать контекст</strong>
+          <button className="icon-button" onClick={onClose}>
+            <X size={17} />
+          </button>
+        </div>
+        <p>
+          Pi создаст сводку предыдущего контекста и сохранит последние сообщения
+          без изменений.
+        </p>
+        <label>
+          <span>Дополнительные инструкции для сводки</span>
+          <textarea
+            value={instructions}
+            onChange={(event) => setInstructions(event.target.value)}
+            placeholder="Необязательно"
+            autoFocus
+          />
+        </label>
+        <div className="modal-actions">
+          <button onClick={onClose}>Отмена</button>
+          <button
+            className="primary"
+            onClick={() => onCompact(instructions.trim() || undefined)}
+          >
+            Сжать
+          </button>
+        </div>
       </div>
     </div>
   );
@@ -1027,32 +2042,53 @@ function ModelSettingsDialog({
 }) {
   const [id, setId] = useState(model.id);
   const [name, setName] = useState(model.name ?? "");
-  const [contextWindow, setContextWindow] = useState(model.contextWindow?.toString() ?? "");
+  const [contextWindow, setContextWindow] = useState(
+    model.contextWindow?.toString() ?? "",
+  );
   const [maxTokens, setMaxTokens] = useState(model.maxTokens?.toString() ?? "");
   const [reasoning, setReasoning] = useState(model.reasoning);
   const [vision, setVision] = useState(model.input.includes("image"));
   const [levels, setLevels] = useState<ThinkingLevel[]>(model.thinkingLevels);
-  const [samplingParams, setSamplingParams] = useState(model.samplingParams ? JSON.stringify(model.samplingParams, null, 2) : "{}");
+  const [samplingParams, setSamplingParams] = useState(
+    model.samplingParams ? JSON.stringify(model.samplingParams, null, 2) : "{}",
+  );
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
-  const toggleLevel = (level: ThinkingLevel) => setLevels((current) => current.includes(level) ? current.filter((item) => item !== level) : [...current, level]);
+  const toggleLevel = (level: ThinkingLevel) =>
+    setLevels((current) =>
+      current.includes(level)
+        ? current.filter((item) => item !== level)
+        : [...current, level],
+    );
   const save = async () => {
     setError("");
     let parsedSampling: Record<string, number | boolean | string> | undefined;
     try {
       const parsed = samplingParams.trim() ? JSON.parse(samplingParams) : {};
-      if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) throw new Error("Параметры семплирования должны быть объектом JSON");
-      const invalid = Object.entries(parsed).find(([, value]) => !["number", "boolean", "string"].includes(typeof value));
-      if (invalid) throw new Error(`Параметр «${invalid[0]}» должен быть числом, строкой или логическим значением`);
+      if (!parsed || typeof parsed !== "object" || Array.isArray(parsed))
+        throw new Error("Параметры семплирования должны быть объектом JSON");
+      const invalid = Object.entries(parsed).find(
+        ([, value]) => !["number", "boolean", "string"].includes(typeof value),
+      );
+      if (invalid)
+        throw new Error(
+          `Параметр «${invalid[0]}» должен быть числом, строкой или логическим значением`,
+        );
       parsedSampling = parsed as Record<string, number | boolean | string>;
     } catch (parseError) {
-      setError(parseError instanceof Error ? parseError.message : String(parseError));
+      setError(
+        parseError instanceof Error ? parseError.message : String(parseError),
+      );
       return;
     }
-    const parseOptionalInteger = (value: string, label: string): number | undefined => {
+    const parseOptionalInteger = (
+      value: string,
+      label: string,
+    ): number | undefined => {
       if (!value.trim()) return undefined;
       const parsed = Number(value);
-      if (!Number.isInteger(parsed) || parsed <= 0) throw new Error(`${label} должен быть положительным целым числом`);
+      if (!Number.isInteger(parsed) || parsed <= 0)
+        throw new Error(`${label} должен быть положительным целым числом`);
       return parsed;
     };
     try {
@@ -1071,7 +2107,9 @@ function ModelSettingsDialog({
       });
       onClose();
     } catch (saveError) {
-      setError(saveError instanceof Error ? saveError.message : String(saveError));
+      setError(
+        saveError instanceof Error ? saveError.message : String(saveError),
+      );
     } finally {
       setSaving(false);
     }
@@ -1079,26 +2117,106 @@ function ModelSettingsDialog({
   return (
     <div className="modal-backdrop">
       <div className="modal-card model-settings-dialog">
-        <div className="modal-head"><strong>Настройки модели</strong><button className="icon-button" onClick={onClose}><X size={17} /></button></div>
+        <div className="modal-head">
+          <strong>Настройки модели</strong>
+          <button className="icon-button" onClick={onClose}>
+            <X size={17} />
+          </button>
+        </div>
         <div className="model-settings-scroll">
           <div className="model-field-grid">
-            <label><span>ID модели</span><input value={id} onChange={(event) => setId(event.target.value)} /></label>
-            <label><span>Название в интерфейсе</span><input value={name} onChange={(event) => setName(event.target.value)} placeholder="Необязательно" /></label>
-            <label><span>Размер контекста</span><input value={contextWindow} onChange={(event) => setContextWindow(event.target.value)} inputMode="numeric" placeholder="Автоматически" /></label>
-            <label><span>Максимум токенов ответа</span><input value={maxTokens} onChange={(event) => setMaxTokens(event.target.value)} inputMode="numeric" placeholder="Автоматически" /></label>
+            <label>
+              <span>ID модели</span>
+              <input
+                value={id}
+                onChange={(event) => setId(event.target.value)}
+              />
+            </label>
+            <label>
+              <span>Название в интерфейсе</span>
+              <input
+                value={name}
+                onChange={(event) => setName(event.target.value)}
+                placeholder="Необязательно"
+              />
+            </label>
+            <label>
+              <span>Размер контекста</span>
+              <input
+                value={contextWindow}
+                onChange={(event) => setContextWindow(event.target.value)}
+                inputMode="numeric"
+                placeholder="Автоматически"
+              />
+            </label>
+            <label>
+              <span>Максимум токенов ответа</span>
+              <input
+                value={maxTokens}
+                onChange={(event) => setMaxTokens(event.target.value)}
+                inputMode="numeric"
+                placeholder="Автоматически"
+              />
+            </label>
           </div>
           <div className="model-toggle-row">
-            <label><input type="checkbox" checked={reasoning} onChange={(event) => setReasoning(event.target.checked)} /> Модель поддерживает рассуждения</label>
-            <label><input type="checkbox" checked={vision} onChange={(event) => setVision(event.target.checked)} /> Модель принимает изображения</label>
+            <label>
+              <input
+                type="checkbox"
+                checked={reasoning}
+                onChange={(event) => setReasoning(event.target.checked)}
+              />{" "}
+              Модель поддерживает рассуждения
+            </label>
+            <label>
+              <input
+                type="checkbox"
+                checked={vision}
+                onChange={(event) => setVision(event.target.checked)}
+              />{" "}
+              Модель принимает изображения
+            </label>
           </div>
-          <div className={`thinking-level-editor ${reasoning ? "" : "disabled"}`}>
+          <div
+            className={`thinking-level-editor ${reasoning ? "" : "disabled"}`}
+          >
             <strong>Доступные уровни рассуждений</strong>
-            <div>{(Object.keys(THINKING_LABELS) as ThinkingLevel[]).map((level) => <label key={level}><input type="checkbox" disabled={!reasoning} checked={levels.includes(level)} onChange={() => toggleLevel(level)} />{THINKING_LABELS[level]}</label>)}</div>
+            <div>
+              {(Object.keys(THINKING_LABELS) as ThinkingLevel[]).map(
+                (level) => (
+                  <label key={level}>
+                    <input
+                      type="checkbox"
+                      disabled={!reasoning}
+                      checked={levels.includes(level)}
+                      onChange={() => toggleLevel(level)}
+                    />
+                    {THINKING_LABELS[level]}
+                  </label>
+                ),
+              )}
+            </div>
           </div>
-          <label className="sampling-editor"><span>Параметры семплирования, JSON</span><textarea value={samplingParams} onChange={(event) => setSamplingParams(event.target.value)} spellCheck={false} /></label>
+          <label className="sampling-editor">
+            <span>Параметры семплирования, JSON</span>
+            <textarea
+              value={samplingParams}
+              onChange={(event) => setSamplingParams(event.target.value)}
+              spellCheck={false}
+            />
+          </label>
           {error && <div className="model-settings-error">{error}</div>}
         </div>
-        <div className="modal-actions"><button onClick={onClose}>Отмена</button><button className="primary" disabled={saving || !id.trim()} onClick={() => void save()}>{saving ? "Сохранение…" : "Сохранить"}</button></div>
+        <div className="modal-actions">
+          <button onClick={onClose}>Отмена</button>
+          <button
+            className="primary"
+            disabled={saving || !id.trim()}
+            onClick={() => void save()}
+          >
+            {saving ? "Сохранение…" : "Сохранить"}
+          </button>
+        </div>
       </div>
     </div>
   );
@@ -1117,7 +2235,10 @@ function SettingRow({
 }) {
   return (
     <div className="setting-row">
-      <div><strong>{title}</strong><p>{description}</p></div>
+      <div>
+        <strong>{title}</strong>
+        <p>{description}</p>
+      </div>
       <div className="setting-row-control">
         {value && <span className="setting-value">{value}</span>}
         {action && <button onClick={action.onClick}>{action.label}</button>}
@@ -1172,7 +2293,10 @@ function SettingsPage({
   const [serverDiscoveryStatus, setServerDiscoveryStatus] = useState("");
   const [serverDiscoveryError, setServerDiscoveryError] = useState(false);
   const [editingServerId, setEditingServerId] = useState<string>();
-  const [editingModel, setEditingModel] = useState<{ providerId: string; model: ConfiguredModelInfo }>();
+  const [editingModel, setEditingModel] = useState<{
+    providerId: string;
+    model: ConfiguredModelInfo;
+  }>();
   const [updateStatus, setUpdateStatus] = useState<UpdateStatus>();
   const [updatesLoading, setUpdatesLoading] = useState(false);
   const [updatingComponent, setUpdatingComponent] = useState<string>();
@@ -1181,9 +2305,14 @@ function SettingsPage({
   const [moduleSettings, setModuleSettings] = useState<ModuleSettings>();
   const [moduleSettingsLoading, setModuleSettingsLoading] = useState(false);
   const [moduleSettingsMessage, setModuleSettingsMessage] = useState("");
-  const sections: Array<{ id: SettingsSection; label: string; icon: typeof Settings }> = [
+  const sections: Array<{
+    id: SettingsSection;
+    label: string;
+    icon: typeof Settings;
+  }> = [
     { id: "general", label: "Общее", icon: Settings },
     { id: "models", label: "Модели", icon: Cpu },
+    { id: "comfyui", label: "ComfyUI", icon: Boxes },
     { id: "modules", label: "Модули", icon: Boxes },
     { id: "customization", label: "Кастомизация", icon: Pencil },
     { id: "configuration", label: "Конфигурация Pi", icon: FileText },
@@ -1191,12 +2320,20 @@ function SettingsPage({
     { id: "archive", label: "Архивированные чаты", icon: Archive },
     { id: "about", label: "О программе", icon: Bot },
   ];
-  const visibleSections = sections.filter((item) => item.label.toLocaleLowerCase().includes(query.toLocaleLowerCase()));
+  const visibleSections = sections.filter((item) =>
+    item.label.toLocaleLowerCase().includes(query.toLocaleLowerCase()),
+  );
   const showDataFolder = () => {
     if (dataDir) void window.piDesktop.showItemInFolder(dataDir);
   };
   const showSessionsFolder = () => {
     if (sessionsDir) void window.piDesktop.showItemInFolder(sessionsDir);
+  };
+  const globalPromptPath = dataDir
+    ? `${dataDir.replace(/[\\/]$/, "")}\\agent\\APPEND_SYSTEM.md`
+    : "data\\agent\\APPEND_SYSTEM.md";
+  const showGlobalPromptFile = () => {
+    if (dataDir) void window.piDesktop.showItemInFolder(globalPromptPath);
   };
 
   useEffect(() => {
@@ -1204,17 +2341,26 @@ function SettingsPage({
     let cancelled = false;
     setGlobalPromptLoading(true);
     setGlobalPromptStatus("");
-    void window.piDesktop.getGlobalPrompt().then((prompt) => {
-      if (cancelled) return;
-      setGlobalPrompt(prompt);
-      setSavedGlobalPrompt(prompt);
-      setGlobalPromptLoaded(true);
-    }).catch((error) => {
-      if (!cancelled) setGlobalPromptStatus(error instanceof Error ? error.message : String(error));
-    }).finally(() => {
-      if (!cancelled) setGlobalPromptLoading(false);
-    });
-    return () => { cancelled = true; };
+    void window.piDesktop
+      .getGlobalPrompt()
+      .then((prompt) => {
+        if (cancelled) return;
+        setGlobalPrompt(prompt);
+        setSavedGlobalPrompt(prompt);
+        setGlobalPromptLoaded(true);
+      })
+      .catch((error) => {
+        if (!cancelled)
+          setGlobalPromptStatus(
+            error instanceof Error ? error.message : String(error),
+          );
+      })
+      .finally(() => {
+        if (!cancelled) setGlobalPromptLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
   }, [section, globalPromptLoaded]);
 
   const loadUpdateStatus = useCallback(async (force = false) => {
@@ -1237,21 +2383,36 @@ function SettingsPage({
   }, [section, updateStatus, updatesLoading, loadUpdateStatus]);
 
   useEffect(() => {
-    if (section !== "modules" || moduleSettings || moduleSettingsLoading) return;
+    if (section !== "modules" || moduleSettings || moduleSettingsLoading)
+      return;
     setModuleSettingsLoading(true);
-    void window.piDesktop.getModuleSettings()
+    void window.piDesktop
+      .getModuleSettings()
       .then(setModuleSettings)
-      .catch((error) => setModuleSettingsMessage(error instanceof Error ? error.message : String(error)))
+      .catch((error) =>
+        setModuleSettingsMessage(
+          error instanceof Error ? error.message : String(error),
+        ),
+      )
       .finally(() => setModuleSettingsLoading(false));
   }, [section, moduleSettings, moduleSettingsLoading]);
 
-  const toggleBuiltinModule = async (id: ModuleSettings["builtins"][number]["id"], enabled: boolean) => {
+  const toggleBuiltinModule = async (
+    id: ModuleSettings["builtins"][number]["id"],
+    enabled: boolean,
+  ) => {
     setModuleSettingsMessage("");
     try {
-      setModuleSettings(await window.piDesktop.setBuiltinModuleEnabled(id, enabled));
-      setModuleSettingsMessage("Настройка сохранена. Открытые процессы Pi перезапущены; следующий запрос использует новый набор модулей.");
+      setModuleSettings(
+        await window.piDesktop.setBuiltinModuleEnabled(id, enabled),
+      );
+      setModuleSettingsMessage(
+        "Настройка сохранена. Открытые процессы Pi перезапущены; следующий запрос использует новый набор модулей.",
+      );
     } catch (error) {
-      setModuleSettingsMessage(error instanceof Error ? error.message : String(error));
+      setModuleSettingsMessage(
+        error instanceof Error ? error.message : String(error),
+      );
     }
   };
 
@@ -1261,10 +2422,14 @@ function SettingsPage({
       const next = await window.piDesktop.addUserExtension(kind);
       if (next) {
         setModuleSettings(next);
-        setModuleSettingsMessage("Пользовательское расширение добавлено. Оно загрузится при следующем запросе.");
+        setModuleSettingsMessage(
+          "Пользовательское расширение добавлено. Оно загрузится при следующем запросе.",
+        );
       }
     } catch (error) {
-      setModuleSettingsMessage(error instanceof Error ? error.message : String(error));
+      setModuleSettingsMessage(
+        error instanceof Error ? error.message : String(error),
+      );
     }
   };
 
@@ -1274,10 +2439,14 @@ function SettingsPage({
       const next = await window.piDesktop.removeUserExtension(name);
       if (next) {
         setModuleSettings(next);
-        setModuleSettingsMessage("Пользовательское расширение удалено. Встроенные модули не затронуты.");
+        setModuleSettingsMessage(
+          "Пользовательское расширение удалено. Встроенные модули не затронуты.",
+        );
       }
     } catch (error) {
-      setModuleSettingsMessage(error instanceof Error ? error.message : String(error));
+      setModuleSettingsMessage(
+        error instanceof Error ? error.message : String(error),
+      );
     }
   };
 
@@ -1294,7 +2463,9 @@ function SettingsPage({
         setUpdateError(true);
         setUpdateMessage(result.errors.join(" · "));
       } else if (result.updated.length) {
-        setUpdateMessage(`Обновлено: ${result.updated.join(", ")}. Новые процессы Pi используют новые версии.`);
+        setUpdateMessage(
+          `Обновлено: ${result.updated.join(", ")}. Новые процессы Pi используют новые версии.`,
+        );
       }
     } catch (error) {
       setUpdateError(true);
@@ -1311,9 +2482,13 @@ function SettingsPage({
       const saved = await window.piDesktop.saveGlobalPrompt(globalPrompt);
       setGlobalPrompt(saved);
       setSavedGlobalPrompt(saved);
-      setGlobalPromptStatus("Сохранено. Новые процессы Pi подхватят изменения автоматически.");
+      setGlobalPromptStatus(
+        "Сохранено. Все чаты применят правила перед следующим запросом.",
+      );
     } catch (error) {
-      setGlobalPromptStatus(error instanceof Error ? error.message : String(error));
+      setGlobalPromptStatus(
+        error instanceof Error ? error.message : String(error),
+      );
     } finally {
       setGlobalPromptSaving(false);
     }
@@ -1323,29 +2498,39 @@ function SettingsPage({
     if (section !== "models" || modelServersLoaded) return;
     let cancelled = false;
     setModelServersLoading(true);
-    void window.piDesktop.getModelServers().then((servers) => {
-      if (cancelled) return;
-      setModelServers(servers);
-      setModelServersLoaded(true);
-      if (!serverAddress && servers[0]?.baseUrl) {
-        try {
-          const url = new URL(servers[0].baseUrl);
-          const basePath = url.pathname.replace(/\/v1\/?$/i, "");
-          setServerAddress(`${url.protocol}//${url.hostname}${basePath}`);
-          setServerPort(url.port || (url.protocol === "https:" ? "443" : "80"));
-        } catch {
-          // Keep the fields empty when a legacy URL cannot be parsed.
+    void window.piDesktop
+      .getModelServers()
+      .then((servers) => {
+        if (cancelled) return;
+        setModelServers(servers);
+        setModelServersLoaded(true);
+        if (!serverAddress && servers[0]?.baseUrl) {
+          try {
+            const url = new URL(servers[0].baseUrl);
+            const basePath = url.pathname.replace(/\/v1\/?$/i, "");
+            setServerAddress(`${url.protocol}//${url.hostname}${basePath}`);
+            setServerPort(
+              url.port || (url.protocol === "https:" ? "443" : "80"),
+            );
+          } catch {
+            // Keep the fields empty when a legacy URL cannot be parsed.
+          }
         }
-      }
-    }).catch((error) => {
-      if (!cancelled) {
-        setServerDiscoveryError(true);
-        setServerDiscoveryStatus(error instanceof Error ? error.message : String(error));
-      }
-    }).finally(() => {
-      if (!cancelled) setModelServersLoading(false);
-    });
-    return () => { cancelled = true; };
+      })
+      .catch((error) => {
+        if (!cancelled) {
+          setServerDiscoveryError(true);
+          setServerDiscoveryStatus(
+            error instanceof Error ? error.message : String(error),
+          );
+        }
+      })
+      .finally(() => {
+        if (!cancelled) setModelServersLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
   }, [section, modelServersLoaded]);
 
   const discoverModelServer = async () => {
@@ -1359,17 +2544,26 @@ function SettingsPage({
         ...(serverApiKey.trim() ? { apiKey: serverApiKey.trim() } : {}),
         ...(editingServerId ? { providerId: editingServerId } : {}),
       });
-      setModelServers((current) => [result.server, ...current.filter((server) => server.id !== result.server.id)]);
+      setModelServers((current) => [
+        result.server,
+        ...current.filter((server) => server.id !== result.server.id),
+      ]);
       const changes = [
         result.addedModels ? `добавлено моделей: ${result.addedModels}` : "",
         result.updatedModels ? `обновлено: ${result.updatedModels}` : "",
-      ].filter(Boolean).join(", ");
-      setServerDiscoveryStatus(`${result.serverKind}${result.buildInfo ? ` ${result.buildInfo}` : ""}: ${changes || "конфигурация актуальна"}.`);
+      ]
+        .filter(Boolean)
+        .join(", ");
+      setServerDiscoveryStatus(
+        `${result.serverKind}${result.buildInfo ? ` ${result.buildInfo}` : ""}: ${changes || "конфигурация актуальна"}.`,
+      );
       setEditingServerId(undefined);
       setServerApiKey("");
     } catch (error) {
       setServerDiscoveryError(true);
-      setServerDiscoveryStatus(error instanceof Error ? error.message : String(error));
+      setServerDiscoveryStatus(
+        error instanceof Error ? error.message : String(error),
+      );
     } finally {
       setServerDiscovering(false);
     }
@@ -1384,11 +2578,19 @@ function SettingsPage({
       setServerApiKey("");
       setEditingServerId(server.id);
       setServerDiscoveryError(false);
-      setServerDiscoveryStatus(`Редактируется сервер «${server.id}». Укажите новый адрес и выполните автонастройку.`);
-      requestAnimationFrame(() => document.querySelector(".server-discovery-card")?.scrollIntoView({ behavior: "smooth", block: "center" }));
+      setServerDiscoveryStatus(
+        `Редактируется сервер «${server.id}». Укажите новый адрес и выполните автонастройку.`,
+      );
+      requestAnimationFrame(() =>
+        document
+          .querySelector(".server-discovery-card")
+          ?.scrollIntoView({ behavior: "smooth", block: "center" }),
+      );
     } catch (error) {
       setServerDiscoveryError(true);
-      setServerDiscoveryStatus(error instanceof Error ? error.message : String(error));
+      setServerDiscoveryStatus(
+        error instanceof Error ? error.message : String(error),
+      );
     }
   };
 
@@ -1403,58 +2605,119 @@ function SettingsPage({
     try {
       const deleted = await window.piDesktop.deleteModelServer(providerId);
       if (!deleted) return;
-      setModelServers((current) => current.filter((server) => server.id !== providerId));
+      setModelServers((current) =>
+        current.filter((server) => server.id !== providerId),
+      );
       if (editingServerId === providerId) cancelServerEdit();
     } catch (error) {
       setServerDiscoveryError(true);
-      setServerDiscoveryStatus(error instanceof Error ? error.message : String(error));
+      setServerDiscoveryStatus(
+        error instanceof Error ? error.message : String(error),
+      );
     }
   };
 
   const saveConfiguredModel = async (input: ConfiguredModelUpdate) => {
     const updated = await window.piDesktop.updateConfiguredModel(input);
-    setModelServers((current) => current.map((server) => server.id === updated.id ? updated : server));
+    setModelServers((current) =>
+      current.map((server) => (server.id === updated.id ? updated : server)),
+    );
   };
 
   const deleteConfiguredModel = async (providerId: string, modelId: string) => {
     try {
-      const updated = await window.piDesktop.deleteConfiguredModel(providerId, modelId);
-      if (updated) setModelServers((current) => current.map((server) => server.id === updated.id ? updated : server));
+      const updated = await window.piDesktop.deleteConfiguredModel(
+        providerId,
+        modelId,
+      );
+      if (updated)
+        setModelServers((current) =>
+          current.map((server) =>
+            server.id === updated.id ? updated : server,
+          ),
+        );
     } catch (error) {
       setServerDiscoveryError(true);
-      setServerDiscoveryStatus(error instanceof Error ? error.message : String(error));
+      setServerDiscoveryStatus(
+        error instanceof Error ? error.message : String(error),
+      );
     }
   };
 
   return (
     <div className="settings-page">
       <aside className="settings-sidebar">
-        <button className="settings-back" onClick={onBack}><ArrowLeft size={15} /> Вернуться в приложение</button>
-        <div className="settings-search"><Search size={14} /><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Поиск настроек…" /></div>
+        <button className="settings-back" onClick={onBack}>
+          <ArrowLeft size={15} /> Вернуться в приложение
+        </button>
+        <div className="settings-search">
+          <Search size={14} />
+          <input
+            value={query}
+            onChange={(event) => setQuery(event.target.value)}
+            placeholder="Поиск настроек…"
+          />
+        </div>
         <div className="settings-group-title">Настройки Pi Desktop</div>
         <nav className="settings-nav">
           {visibleSections.map((item) => {
             const Icon = item.icon;
-            return <button key={item.id} className={section === item.id ? "selected" : ""} onClick={() => onSectionChange(item.id)}><Icon size={15} />{item.label}</button>;
+            return (
+              <button
+                key={item.id}
+                className={section === item.id ? "selected" : ""}
+                onClick={() => onSectionChange(item.id)}
+              >
+                <Icon size={15} />
+                {item.label}
+              </button>
+            );
           })}
         </nav>
       </aside>
       <main className="settings-content">
         <div className="settings-inner">
+          {section === "comfyui" && <ComfySettingsPanel />}
           {section === "general" && (
             <>
               <h1>Общее</h1>
               <h2>Портативность</h2>
               <div className="settings-card">
-                <SettingRow title="Папка данных приложения" description="Здесь находятся список проектов, настройки интерфейса и портативная конфигурация Pi." value={dataDir} action={{ label: "Показать", onClick: showDataFolder }} />
-                <SettingRow title="История сессий Pi" description="Общее штатное хранилище, используемое обычным Pi и Pi Desktop без копирования сессий." value={sessionsDir} action={{ label: "Показать", onClick: showSessionsFolder }} />
-                <SettingRow title="Обновления Pi и модулей" description="Обновления запускаются вручную во вкладке «Модули» и хранятся в переносимой папке data." value="Только вручную" />
-                <SettingRow title="Таймаут запроса" description="Максимальное ожидание ответа модели и RPC-команд." value="24 часа" />
+                <SettingRow
+                  title="Папка данных приложения"
+                  description="Здесь находятся список проектов, настройки интерфейса и портативная конфигурация Pi."
+                  value={dataDir}
+                  action={{ label: "Показать", onClick: showDataFolder }}
+                />
+                <SettingRow
+                  title="История сессий Pi"
+                  description="Общее штатное хранилище, используемое обычным Pi и Pi Desktop без копирования сессий."
+                  value={sessionsDir}
+                  action={{ label: "Показать", onClick: showSessionsFolder }}
+                />
+                <SettingRow
+                  title="Обновления Pi и модулей"
+                  description="Обновления запускаются вручную во вкладке «Модули» и хранятся в переносимой папке data."
+                  value="Только вручную"
+                />
+                <SettingRow
+                  title="Таймаут запроса"
+                  description="Максимальное ожидание ответа модели и RPC-команд."
+                  value="24 часа"
+                />
               </div>
               <h2>Доступ</h2>
               <div className="settings-card">
-                <SettingRow title="Режим Pi" description="Pi запущен с разрешением на штатные инструменты и подтверждённые расширения." value="Полный доступ" />
-                <SettingRow title="Хранение" description="История хранится локально в исходном формате Pi и доступна обоим интерфейсам." value="Общее с Pi" />
+                <SettingRow
+                  title="Режим Pi"
+                  description="Pi запущен с разрешением на штатные инструменты и подтверждённые расширения."
+                  value="Полный доступ"
+                />
+                <SettingRow
+                  title="Хранение"
+                  description="История хранится локально в исходном формате Pi и доступна обоим интерфейсам."
+                  value="Общее с Pi"
+                />
               </div>
             </>
           )}
@@ -1463,152 +2726,490 @@ function SettingsPage({
               <h1>Модели</h1>
               <h2>Текущий чат</h2>
               <div className="settings-card">
-                <SettingRow title="Активная модель" description="Модель меняется непосредственно в нижней панели чата." value={currentModel?.name ?? currentModel?.id ?? "Чат не открыт"} />
-                <SettingRow title="Доступные уровни рассуждений" description="Набор зависит от выбранной модели." value={thinkingLevels.length ? thinkingLevels.map((level) => THINKING_LABELS[level]).join(", ") : "Чат не открыт"} />
+                <SettingRow
+                  title="Активная модель"
+                  description="Модель меняется непосредственно в нижней панели чата."
+                  value={
+                    currentModel?.name ?? currentModel?.id ?? "Чат не открыт"
+                  }
+                />
+                <SettingRow
+                  title="Доступные уровни рассуждений"
+                  description="Набор зависит от выбранной модели."
+                  value={
+                    thinkingLevels.length
+                      ? thinkingLevels
+                          .map((level) => THINKING_LABELS[level])
+                          .join(", ")
+                      : "Чат не открыт"
+                  }
+                />
               </div>
               <h2>Добавить сервер автоматически</h2>
               <div className="settings-card server-discovery-card">
                 <div className="server-fields">
-                  <label className="server-address-field"><span>Адрес сервера</span><input value={serverAddress} onChange={(event) => setServerAddress(event.target.value)} placeholder="192.168.31.194 или http://localhost" /></label>
-                  <label className="server-port-field"><span>Порт</span><input value={serverPort} onChange={(event) => setServerPort(event.target.value)} inputMode="numeric" placeholder="1234" /></label>
-                  <label className="server-key-field"><span>API-ключ, если требуется</span><input type="password" value={serverApiKey} onChange={(event) => setServerApiKey(event.target.value)} placeholder="Необязательно" /></label>
+                  <label className="server-address-field">
+                    <span>Адрес сервера</span>
+                    <input
+                      value={serverAddress}
+                      onChange={(event) => setServerAddress(event.target.value)}
+                      placeholder="192.168.31.194 или http://localhost"
+                    />
+                  </label>
+                  <label className="server-port-field">
+                    <span>Порт</span>
+                    <input
+                      value={serverPort}
+                      onChange={(event) => setServerPort(event.target.value)}
+                      inputMode="numeric"
+                      placeholder="1234"
+                    />
+                  </label>
+                  <label className="server-key-field">
+                    <span>API-ключ, если требуется</span>
+                    <input
+                      type="password"
+                      value={serverApiKey}
+                      onChange={(event) => setServerApiKey(event.target.value)}
+                      placeholder="Необязательно"
+                    />
+                  </label>
                 </div>
                 <div className="server-discovery-footer">
                   <div>
-                    <span>Проверяются только служебные endpoints `/v1/models`, `/props` и `/health`.</span>
-                    <small>Повторное добавление того же адреса обновляет найденные модели, не удаляя остальные.</small>
-                    {serverDiscoveryStatus && <strong className={serverDiscoveryError ? "error" : ""}>{serverDiscoveryStatus}</strong>}
+                    <span>
+                      Проверяются только служебные endpoints `/v1/models`,
+                      `/props` и `/health`.
+                    </span>
+                    <small>
+                      Повторное добавление того же адреса обновляет найденные
+                      модели, не удаляя остальные.
+                    </small>
+                    {serverDiscoveryStatus && (
+                      <strong className={serverDiscoveryError ? "error" : ""}>
+                        {serverDiscoveryStatus}
+                      </strong>
+                    )}
                   </div>
                   <div className="server-discovery-actions">
-                    {editingServerId && <button onClick={cancelServerEdit}>Отмена</button>}
-                    <button className="primary" disabled={!serverAddress.trim() || !serverPort.trim() || serverDiscovering} onClick={() => void discoverModelServer()}>{serverDiscovering ? "Подключение…" : editingServerId ? "Обновить автоматически" : "Добавить автоматически"}</button>
+                    {editingServerId && (
+                      <button onClick={cancelServerEdit}>Отмена</button>
+                    )}
+                    <button
+                      className="primary"
+                      disabled={
+                        !serverAddress.trim() ||
+                        !serverPort.trim() ||
+                        serverDiscovering
+                      }
+                      onClick={() => void discoverModelServer()}
+                    >
+                      {serverDiscovering
+                        ? "Подключение…"
+                        : editingServerId
+                          ? "Обновить автоматически"
+                          : "Добавить автоматически"}
+                    </button>
                   </div>
                 </div>
               </div>
               <h2>Настроенные серверы</h2>
               <div className="configured-servers">
-                {modelServersLoading ? <div className="settings-card settings-empty">Загрузка конфигурации…</div> : modelServers.length ? modelServers.map((server) => (
-                  <div className="settings-card configured-server" key={server.id}>
-                    <div className="configured-server-head">
-                      <div><strong>{server.id}</strong><span>{server.baseUrl}</span><small>{server.api} · {server.models.length} {pluralModels(server.models.length)}</small></div>
-                      <div className="configured-server-actions"><button onClick={() => editModelServer(server)}><Pencil size={13} /> Изменить</button><button className="danger" onClick={() => void deleteModelServer(server.id)}><Trash2 size={13} /> Удалить</button></div>
-                    </div>
-                    <div className="configured-model-list">
-                      {server.models.map((model) => (
-                        <div className="configured-model" key={model.id}>
-                          <div><strong>{model.name ?? model.id}</strong><span>{model.id}</span></div>
-                          <p>
-                            {model.contextWindow ? `Контекст ${model.contextWindow.toLocaleString("ru-RU")}` : "Контекст не указан"}
-                            {model.maxTokens ? ` · ответ до ${model.maxTokens.toLocaleString("ru-RU")}` : ""}
-                            {model.reasoning ? ` · рассуждения: ${model.thinkingLevels.map((level) => THINKING_LABELS[level]).join(", ")}` : " · без рассуждений"}
-                            {model.input.length > 1 ? ` · вход: ${model.input.join(", ")}` : ""}
-                          </p>
-                          {model.samplingParams && <small>{Object.entries(model.samplingParams).map(([key, value]) => `${key}=${value}`).join(" · ")}</small>}
-                          <div className="configured-model-actions"><button onClick={() => setEditingModel({ providerId: server.id, model })}><Pencil size={12} /> Изменить</button><button className="danger" onClick={() => void deleteConfiguredModel(server.id, model.id)}><Trash2 size={12} /> Удалить</button></div>
-                        </div>
-                      ))}
-                    </div>
+                {modelServersLoading ? (
+                  <div className="settings-card settings-empty">
+                    Загрузка конфигурации…
                   </div>
-                )) : <div className="settings-card settings-empty">Настроенных локальных серверов пока нет.</div>}
+                ) : modelServers.length ? (
+                  modelServers.map((server) => (
+                    <div
+                      className="settings-card configured-server"
+                      key={server.id}
+                    >
+                      <div className="configured-server-head">
+                        <div>
+                          <strong>{server.id}</strong>
+                          <span>{server.baseUrl}</span>
+                          <small>
+                            {server.api} · {server.models.length}{" "}
+                            {pluralModels(server.models.length)}
+                          </small>
+                        </div>
+                        <div className="configured-server-actions">
+                          <button onClick={() => editModelServer(server)}>
+                            <Pencil size={13} /> Изменить
+                          </button>
+                          <button
+                            className="danger"
+                            onClick={() => void deleteModelServer(server.id)}
+                          >
+                            <Trash2 size={13} /> Удалить
+                          </button>
+                        </div>
+                      </div>
+                      <div className="configured-model-list">
+                        {server.models.map((model) => (
+                          <div className="configured-model" key={model.id}>
+                            <div>
+                              <strong>{model.name ?? model.id}</strong>
+                              <span>{model.id}</span>
+                            </div>
+                            <p>
+                              {model.contextWindow
+                                ? `Контекст ${model.contextWindow.toLocaleString("ru-RU")}`
+                                : "Контекст не указан"}
+                              {model.maxTokens
+                                ? ` · ответ до ${model.maxTokens.toLocaleString("ru-RU")}`
+                                : ""}
+                              {model.reasoning
+                                ? ` · рассуждения: ${model.thinkingLevels.map((level) => THINKING_LABELS[level]).join(", ")}`
+                                : " · без рассуждений"}
+                              {model.input.length > 1
+                                ? ` · вход: ${model.input.join(", ")}`
+                                : ""}
+                            </p>
+                            {model.samplingParams && (
+                              <small>
+                                {Object.entries(model.samplingParams)
+                                  .map(([key, value]) => `${key}=${value}`)
+                                  .join(" · ")}
+                              </small>
+                            )}
+                            <div className="configured-model-actions">
+                              <button
+                                onClick={() =>
+                                  setEditingModel({
+                                    providerId: server.id,
+                                    model,
+                                  })
+                                }
+                              >
+                                <Pencil size={12} /> Изменить
+                              </button>
+                              <button
+                                className="danger"
+                                onClick={() =>
+                                  void deleteConfiguredModel(
+                                    server.id,
+                                    model.id,
+                                  )
+                                }
+                              >
+                                <Trash2 size={12} /> Удалить
+                              </button>
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  ))
+                ) : (
+                  <div className="settings-card settings-empty">
+                    Настроенных локальных серверов пока нет.
+                  </div>
+                )}
               </div>
               <h2>Доступные модели</h2>
               <div className="settings-card model-settings-list">
-                {models.length ? models.map((model) => <SettingRow key={`${model.provider}/${model.id}`} title={model.name ?? model.id} description={`${model.provider} · контекст ${model.contextWindow ? `${Math.round(model.contextWindow / 1000)}k` : "не указан"}`} value={model.reasoning ? "Рассуждения" : "Обычная"} />) : <div className="settings-empty">Откройте чат, чтобы Pi загрузил список моделей.</div>}
+                {models.length ? (
+                  models.map((model) => (
+                    <SettingRow
+                      key={`${model.provider}/${model.id}`}
+                      title={model.name ?? model.id}
+                      description={`${model.provider} · контекст ${model.contextWindow ? `${Math.round(model.contextWindow / 1000)}k` : "не указан"}`}
+                      value={model.reasoning ? "Рассуждения" : "Обычная"}
+                    />
+                  ))
+                ) : (
+                  <div className="settings-empty">
+                    Откройте чат, чтобы Pi загрузил список моделей.
+                  </div>
+                )}
               </div>
             </>
           )}
           {section === "modules" && (
             <>
               <h1>Модули</h1>
-              <p className="settings-lead">Встроенные функции хранятся внутри Pi Desktop. Пользовательская папка содержит только дополнения, которые добавил пользователь.</p>
+              <p className="settings-lead">
+                Встроенные функции хранятся внутри Pi Desktop. Пользовательская
+                папка содержит только дополнения, которые добавил пользователь.
+              </p>
               <h2>Встроенные модули</h2>
               <div className="settings-card builtin-module-list">
-                {moduleSettings?.builtins.length ? moduleSettings.builtins.map((module) => {
-                  const dependency = module.dependsOn && moduleSettings.builtins.find((item) => item.id === module.dependsOn);
-                  const dependencyDisabled = Boolean(dependency && !dependency.enabled);
-                  return <label className={`builtin-module-row${dependencyDisabled ? " dependency-disabled" : ""}`} key={module.id}>
-                    <span><strong>{module.name}</strong><small>{module.description}{dependency ? ` · зависит от ${dependency.name}` : ""}</small></span>
-                    <input type="checkbox" checked={module.enabled} disabled={dependencyDisabled} onChange={(event) => void toggleBuiltinModule(module.id, event.target.checked)} />
-                  </label>;
-                }) : <div className="settings-empty">{moduleSettingsLoading ? "Загрузка модулей…" : "Не удалось получить список модулей."}</div>}
+                {moduleSettings?.builtins.length ? (
+                  moduleSettings.builtins.map((module) => {
+                    const dependency =
+                      module.dependsOn &&
+                      moduleSettings.builtins.find(
+                        (item) => item.id === module.dependsOn,
+                      );
+                    const dependencyDisabled = Boolean(
+                      dependency && !dependency.enabled,
+                    );
+                    return (
+                      <label
+                        className={`builtin-module-row${dependencyDisabled ? " dependency-disabled" : ""}`}
+                        key={module.id}
+                      >
+                        <span>
+                          <strong>{module.name}</strong>
+                          <small>
+                            {module.description}
+                            {dependency
+                              ? ` · зависит от ${dependency.name}`
+                              : ""}
+                          </small>
+                        </span>
+                        <input
+                          type="checkbox"
+                          checked={module.enabled}
+                          disabled={dependencyDisabled}
+                          onChange={(event) =>
+                            void toggleBuiltinModule(
+                              module.id,
+                              event.target.checked,
+                            )
+                          }
+                        />
+                      </label>
+                    );
+                  })
+                ) : (
+                  <div className="settings-empty">
+                    {moduleSettingsLoading
+                      ? "Загрузка модулей…"
+                      : "Не удалось получить список модулей."}
+                  </div>
+                )}
               </div>
               <h2>Пользовательские дополнения</h2>
               <div className="module-update-toolbar user-extension-toolbar">
-                <div><strong>Папка расширений Pi</strong><span>{moduleSettings?.userExtensionsDir ?? "Загрузка…"}</span></div>
-                {moduleSettings && <button onClick={() => void window.piDesktop.showItemInFolder(moduleSettings.userExtensionsDir)}><FolderOpen size={13} /> Открыть</button>}
-                <button onClick={() => void addUserExtension("file")}><Plus size={13} /> Добавить файл</button>
-                <button onClick={() => void addUserExtension("directory")}><Plus size={13} /> Добавить папку</button>
+                <div>
+                  <strong>Папка расширений Pi</strong>
+                  <span>
+                    {moduleSettings?.userExtensionsDir ?? "Загрузка…"}
+                  </span>
+                </div>
+                {moduleSettings && (
+                  <button
+                    onClick={() =>
+                      void window.piDesktop.showItemInFolder(
+                        moduleSettings.userExtensionsDir,
+                      )
+                    }
+                  >
+                    <FolderOpen size={13} /> Открыть
+                  </button>
+                )}
+                <button onClick={() => void addUserExtension("file")}>
+                  <Plus size={13} /> Добавить файл
+                </button>
+                <button onClick={() => void addUserExtension("directory")}>
+                  <Plus size={13} /> Добавить папку
+                </button>
               </div>
               <div className="settings-card user-extension-list">
-                {moduleSettings?.userExtensions.length ? moduleSettings.userExtensions.map((extension) => (
-                  <div className="user-extension-row" key={extension.name}>
-                    <span><strong>{extension.name}</strong><small>{extension.path}</small></span>
-                    <button className="danger" onClick={() => void removeUserExtension(extension.name)}><Trash2 size={13} /> Удалить</button>
+                {moduleSettings?.userExtensions.length ? (
+                  moduleSettings.userExtensions.map((extension) => (
+                    <div className="user-extension-row" key={extension.name}>
+                      <span>
+                        <strong>{extension.name}</strong>
+                        <small>{extension.path}</small>
+                      </span>
+                      <button
+                        className="danger"
+                        onClick={() => void removeUserExtension(extension.name)}
+                      >
+                        <Trash2 size={13} /> Удалить
+                      </button>
+                    </div>
+                  ))
+                ) : (
+                  <div className="settings-empty">
+                    Пользовательских дополнений пока нет. Встроенные модули
+                    находятся отдельно.
                   </div>
-                )) : <div className="settings-empty">Пользовательских дополнений пока нет. Встроенные модули находятся отдельно.</div>}
+                )}
               </div>
-              {moduleSettingsMessage && <div className="module-update-notice success">{moduleSettingsMessage}</div>}
+              {moduleSettingsMessage && (
+                <div className="module-update-notice success">
+                  {moduleSettingsMessage}
+                </div>
+              )}
               <h2>Обновления встроенных компонентов</h2>
               <div className="module-update-toolbar">
                 <div>
                   <strong>Pi и установленные дополнения</strong>
-                  <span>{updateStatus?.checkedAt ? `Проверено ${new Date(updateStatus.checkedAt).toLocaleString("ru-RU")}` : "Обновления ещё не проверялись"}</span>
+                  <span>
+                    {updateStatus?.checkedAt
+                      ? `Проверено ${new Date(updateStatus.checkedAt).toLocaleString("ru-RU")}`
+                      : "Обновления ещё не проверялись"}
+                  </span>
                 </div>
-                <button disabled={updatesLoading || Boolean(updatingComponent)} onClick={() => void loadUpdateStatus(true)}><RefreshCw size={13} className={updatesLoading ? "spinning" : ""} />{updatesLoading ? "Проверка…" : "Проверить"}</button>
-                <button className="primary" disabled={updatesLoading || Boolean(updatingComponent) || !updateStatus?.components.some((item) => item.updateable && item.updateAvailable)} onClick={() => void installUpdate()}>{updatingComponent === "all" ? "Обновление…" : "Обновить всё"}</button>
+                <button
+                  disabled={updatesLoading || Boolean(updatingComponent)}
+                  onClick={() => void loadUpdateStatus(true)}
+                >
+                  <RefreshCw
+                    size={13}
+                    className={updatesLoading ? "spinning" : ""}
+                  />
+                  {updatesLoading ? "Проверка…" : "Проверить"}
+                </button>
+                <button
+                  className="primary"
+                  disabled={
+                    updatesLoading ||
+                    Boolean(updatingComponent) ||
+                    !updateStatus?.components.some(
+                      (item) => item.updateable && item.updateAvailable,
+                    )
+                  }
+                  onClick={() => void installUpdate()}
+                >
+                  {updatingComponent === "all" ? "Обновление…" : "Обновить всё"}
+                </button>
               </div>
               <div className="settings-card module-update-list">
-                {updateStatus?.components.length ? updateStatus.components.map((component) => (
-                  <div className="module-update-row" key={component.id}>
-                    <div>
-                      <strong>{component.name}</strong>
-                      <p>{component.description}</p>
-                      {component.error && <small className="error">Не удалось проверить: {component.error}</small>}
+                {updateStatus?.components.length ? (
+                  updateStatus.components.map((component) => (
+                    <div className="module-update-row" key={component.id}>
+                      <div>
+                        <strong>{component.name}</strong>
+                        <p>{component.description}</p>
+                        {component.error && (
+                          <small className="error">
+                            Не удалось проверить: {component.error}
+                          </small>
+                        )}
+                      </div>
+                      <div className="module-update-control">
+                        <span>
+                          {component.source === "local"
+                            ? "Локальный"
+                            : component.latestVersion &&
+                                component.currentVersion !==
+                                  component.latestVersion
+                              ? `${component.currentVersion ?? "?"} → ${component.latestVersion}`
+                              : (component.currentVersion ??
+                                "Версия неизвестна")}
+                        </span>
+                        {component.updateAvailable && component.updateable ? (
+                          <button
+                            disabled={Boolean(updatingComponent)}
+                            onClick={() =>
+                              void installUpdate(
+                                component.id as UpdateComponentId,
+                              )
+                            }
+                          >
+                            {updatingComponent === component.id
+                              ? "Обновление…"
+                              : "Обновить"}
+                          </button>
+                        ) : (
+                          <em>
+                            {component.source === "local"
+                              ? "Защищён"
+                              : component.error
+                                ? "Нет данных"
+                                : "Актуально"}
+                          </em>
+                        )}
+                      </div>
                     </div>
-                    <div className="module-update-control">
-                      <span>{component.source === "local" ? "Локальный" : component.latestVersion && component.currentVersion !== component.latestVersion ? `${component.currentVersion ?? "?"} → ${component.latestVersion}` : component.currentVersion ?? "Версия неизвестна"}</span>
-                      {component.updateAvailable && component.updateable
-                        ? <button disabled={Boolean(updatingComponent)} onClick={() => void installUpdate(component.id as UpdateComponentId)}>{updatingComponent === component.id ? "Обновление…" : "Обновить"}</button>
-                        : <em>{component.source === "local" ? "Защищён" : component.error ? "Нет данных" : "Актуально"}</em>}
-                    </div>
+                  ))
+                ) : (
+                  <div className="settings-empty">
+                    {updatesLoading
+                      ? "Проверка npm…"
+                      : "Нет данных об обновлениях."}
                   </div>
-                )) : <div className="settings-empty">{updatesLoading ? "Проверка npm…" : "Нет данных об обновлениях."}</div>}
+                )}
               </div>
-              {!updateStatus?.npmAvailable && updateStatus && <div className="module-update-notice error">npm не найден. Проверка версий работает, но установка обновлений требует Node.js/npm в PATH.</div>}
-              {updateMessage && <div className={`module-update-notice ${updateError ? "error" : "success"}`}>{updateMessage}</div>}
+              {!updateStatus?.npmAvailable && updateStatus && (
+                <div className="module-update-notice error">
+                  npm не найден. Проверка версий работает, но установка
+                  обновлений требует Node.js/npm в PATH.
+                </div>
+              )}
+              {updateMessage && (
+                <div
+                  className={`module-update-notice ${updateError ? "error" : "success"}`}
+                >
+                  {updateMessage}
+                </div>
+              )}
               <h2>Состояние расширений текущего чата</h2>
               <div className="settings-card module-list">
-                {extensionState?.extensionPaths.length ? extensionState.extensionPaths.map((extensionPath) => {
-                  const name = extensionName(extensionPath);
-                  const normalizedName = `/${name}/`;
-                  const tools = extensionState.tools.filter((tool) => tool.source?.replace(/\\/g, "/").includes(normalizedName));
-                  const activeTools = tools.filter((tool) => tool.active).length;
-                  const errors = extensionState.errors.filter((error) => error.extensionPath?.replace(/\\/g, "/").includes(normalizedName));
-                  return <SettingRow
-                    key={extensionPath}
-                    title={name}
-                    description={`${extensionPath}${tools.length ? ` · инструменты ${activeTools}/${tools.length}` : ""}${errors.length ? ` · ошибок ${errors.length}` : ""}`}
-                    value={errors.length ? "Есть ошибки" : "Загружен"}
-                  />;
-                }) : <div className="settings-empty">Откройте чат, чтобы получить состояние расширений непосредственно из Pi.</div>}
+                {extensionState?.extensionPaths.length ? (
+                  extensionState.extensionPaths.map((extensionPath) => {
+                    const name = extensionName(extensionPath);
+                    const normalizedName = `/${name}/`;
+                    const tools = extensionState.tools.filter((tool) =>
+                      tool.source?.replace(/\\/g, "/").includes(normalizedName),
+                    );
+                    const activeTools = tools.filter(
+                      (tool) => tool.active,
+                    ).length;
+                    const errors = extensionState.errors.filter((error) =>
+                      error.extensionPath
+                        ?.replace(/\\/g, "/")
+                        .includes(normalizedName),
+                    );
+                    return (
+                      <SettingRow
+                        key={extensionPath}
+                        title={name}
+                        description={`${extensionPath}${tools.length ? ` · инструменты ${activeTools}/${tools.length}` : ""}${errors.length ? ` · ошибок ${errors.length}` : ""}`}
+                        value={errors.length ? "Есть ошибки" : "Загружен"}
+                      />
+                    );
+                  })
+                ) : (
+                  <div className="settings-empty">
+                    Откройте чат, чтобы получить состояние расширений
+                    непосредственно из Pi.
+                  </div>
+                )}
               </div>
-              {extensionState && <>
-                <h2>Инструменты</h2>
-                <div className="settings-card module-list">
-                  <SettingRow title="Активные инструменты" description="Именно этот набор сейчас передаётся модели." value={`${extensionState.activeTools.length} из ${extensionState.tools.length}`} />
-                  {extensionState.errors.map((error, index) => <SettingRow key={`${error.extensionPath}-${index}`} title="Ошибка расширения" description={`${error.extensionPath ?? "Неизвестный модуль"}: ${error.error}`} value={error.event ?? "runtime"} />)}
-                </div>
-                <details className="module-tools-details">
-                  <summary>Показать активные инструменты</summary>
-                  <div>{extensionState.activeTools.map((tool) => <code key={tool}>{tool}</code>)}</div>
-                </details>
-              </>}
+              {extensionState && (
+                <>
+                  <h2>Инструменты</h2>
+                  <div className="settings-card module-list">
+                    <SettingRow
+                      title="Активные инструменты"
+                      description="Именно этот набор сейчас передаётся модели."
+                      value={`${extensionState.activeTools.length} из ${extensionState.tools.length}`}
+                    />
+                    {extensionState.errors.map((error, index) => (
+                      <SettingRow
+                        key={`${error.extensionPath}-${index}`}
+                        title="Ошибка расширения"
+                        description={`${error.extensionPath ?? "Неизвестный модуль"}: ${error.error}`}
+                        value={error.event ?? "runtime"}
+                      />
+                    ))}
+                  </div>
+                  <details className="module-tools-details">
+                    <summary>Показать активные инструменты</summary>
+                    <div>
+                      {extensionState.activeTools.map((tool) => (
+                        <code key={tool}>{tool}</code>
+                      ))}
+                    </div>
+                  </details>
+                </>
+              )}
             </>
           )}
           {section === "customization" && (
             <>
               <h1>Кастомизация</h1>
-              <p className="settings-lead">Глобальные пользовательские инструкции, которые Pi добавляет к своему стандартному системному промпту во всех проектах.</p>
+              <p className="settings-lead">
+                Глобальные пользовательские инструкции, которые Pi добавляет к
+                своему стандартному системному промпту во всех проектах.
+              </p>
               <h2>Глобальный пользовательский промпт</h2>
               <div className="settings-card prompt-editor-card">
                 <textarea
@@ -1618,24 +3219,50 @@ function SettingsPage({
                     setGlobalPromptStatus("");
                   }}
                   onKeyDown={(event) => {
-                    if ((event.ctrlKey || event.metaKey) && event.key.toLocaleLowerCase() === "s") {
+                    if (
+                      (event.ctrlKey || event.metaKey) &&
+                      event.key.toLocaleLowerCase() === "s"
+                    ) {
                       event.preventDefault();
                       if (!globalPromptSaving) void saveGlobalPrompt();
                     }
                   }}
                   disabled={globalPromptLoading}
-                  placeholder={globalPromptLoading ? "Загрузка…" : "Введите общие правила поведения для Pi…"}
+                  placeholder={
+                    globalPromptLoading
+                      ? "Загрузка…"
+                      : "Введите общие правила поведения для Pi…"
+                  }
                   spellCheck
                 />
                 <div className="prompt-editor-footer">
-                  <div>
-                    <span>data\agent\APPEND_SYSTEM.md · UTF-8</span>
-                    <small>Активные процессы не перезагружаются, чтобы не сбрасывать кэш.</small>
-                    {globalPromptStatus && <strong>{globalPromptStatus}</strong>}
+                  <div className="prompt-editor-info">
+                    <span title={globalPromptPath}>
+                      {globalPromptPath} · UTF-8
+                    </span>
+                    <small>
+                      Открытые чаты перечитают правила перед следующим запросом.
+                    </small>
+                    {globalPromptStatus && (
+                      <strong>{globalPromptStatus}</strong>
+                    )}
                   </div>
-                  <button className="primary" disabled={globalPromptLoading || globalPromptSaving || globalPrompt === savedGlobalPrompt} onClick={() => void saveGlobalPrompt()}>
-                    {globalPromptSaving ? "Сохранение…" : "Сохранить"}
-                  </button>
+                  <div className="prompt-editor-buttons">
+                    <button disabled={!dataDir} onClick={showGlobalPromptFile}>
+                      <FolderOpen size={13} /> Открыть файл
+                    </button>
+                    <button
+                      className="primary"
+                      disabled={
+                        globalPromptLoading ||
+                        globalPromptSaving ||
+                        globalPrompt === savedGlobalPrompt
+                      }
+                      onClick={() => void saveGlobalPrompt()}
+                    >
+                      {globalPromptSaving ? "Сохранение…" : "Сохранить"}
+                    </button>
+                  </div>
                 </div>
               </div>
             </>
@@ -1644,10 +3271,30 @@ function SettingsPage({
             <>
               <h1>Конфигурация Pi</h1>
               <div className="settings-card">
-                <SettingRow title="Модели" description="Конфигурация провайдеров и локальных моделей." value="data\\agent\\models.json" action={{ label: "Показать", onClick: showDataFolder }} />
-                <SettingRow title="MCP" description="Подключения Godot AI и управления компьютером." value="data\\agent\\mcp.json" action={{ label: "Показать", onClick: showDataFolder }} />
-                <SettingRow title="Глобальный промпт" description="Общие правила поведения моделей во всех проектах." value="data\\agent\\APPEND_SYSTEM.md" action={{ label: "Показать", onClick: showDataFolder }} />
-                <SettingRow title="Настройки ядра" description="Параметры Pi, модулей, таймаутов и инструментов." value="data\\agent\\settings.json" action={{ label: "Показать", onClick: showDataFolder }} />
+                <SettingRow
+                  title="Модели"
+                  description="Конфигурация провайдеров и локальных моделей."
+                  value="data\\agent\\models.json"
+                  action={{ label: "Показать", onClick: showDataFolder }}
+                />
+                <SettingRow
+                  title="MCP"
+                  description="Подключения Godot AI и управления компьютером."
+                  value="data\\agent\\mcp.json"
+                  action={{ label: "Показать", onClick: showDataFolder }}
+                />
+                <SettingRow
+                  title="Глобальный промпт"
+                  description="Общие правила поведения моделей во всех проектах."
+                  value={globalPromptPath}
+                  action={{ label: "Показать", onClick: showGlobalPromptFile }}
+                />
+                <SettingRow
+                  title="Настройки ядра"
+                  description="Параметры Pi, модулей, таймаутов и инструментов."
+                  value="data\\agent\\settings.json"
+                  action={{ label: "Показать", onClick: showDataFolder }}
+                />
               </div>
             </>
           )}
@@ -1655,9 +3302,21 @@ function SettingsPage({
             <>
               <h1>О программе</h1>
               <div className="settings-card">
-                <SettingRow title="Pi Desktop" description="Портативный настольный интерфейс для Pi." value="0.1.0" />
-                <SettingRow title="Pi Core" description="Встроенное ядро агента." value="0.84.2" />
-                <SettingRow title="Интерфейс расширений" description="Инструменты, статусы, уведомления и диалоги работают через RPC." value="Активен" />
+                <SettingRow
+                  title="Pi Desktop"
+                  description="Портативный настольный интерфейс для Pi."
+                  value="0.1.0"
+                />
+                <SettingRow
+                  title="Pi Core"
+                  description="Встроенное ядро агента."
+                  value="0.84.2"
+                />
+                <SettingRow
+                  title="Интерфейс расширений"
+                  description="Инструменты, статусы, уведомления и диалоги работают через RPC."
+                  value="Активен"
+                />
               </div>
             </>
           )}
@@ -1665,39 +3324,90 @@ function SettingsPage({
             <>
               <h1>Сочетания клавиш</h1>
               <div className="settings-card">
-                <SettingRow title="Новый самостоятельный чат" description="Создать чат без привязки к проекту." value="Ctrl+N" />
-                <SettingRow title="Настройки" description="Открыть настройки Pi Desktop." value="Ctrl+," />
-                <SettingRow title="Команды Pi" description="Открыть палитру встроенных действий и команд расширений." value="Ctrl+Shift+P" />
-                <SettingRow title="Боковая панель" description="Показать или скрыть проекты и чаты." value="Ctrl+B" />
-                <SettingRow title="Отправить сообщение" description="Обычная отправка; во время работы сообщение встанет в очередь." value="Enter" />
-                <SettingRow title="Отправить в текущую работу" description="Во время работы немедленно передать корректировку модели." value="Ctrl+Enter" />
+                <SettingRow
+                  title="Новый самостоятельный чат"
+                  description="Создать чат без привязки к проекту."
+                  value="Ctrl+N"
+                />
+                <SettingRow
+                  title="Настройки"
+                  description="Открыть настройки Pi Desktop."
+                  value="Ctrl+,"
+                />
+                <SettingRow
+                  title="Команды Pi"
+                  description="Открыть палитру встроенных действий и команд расширений."
+                  value="Ctrl+Shift+P"
+                />
+                <SettingRow
+                  title="Боковая панель"
+                  description="Показать или скрыть проекты и чаты."
+                  value="Ctrl+B"
+                />
+                <SettingRow
+                  title="Отправить сообщение"
+                  description="Обычная отправка; во время работы сообщение встанет в очередь."
+                  value="Enter"
+                />
+                <SettingRow
+                  title="Отправить в текущую работу"
+                  description="Во время работы немедленно передать корректировку модели."
+                  value="Ctrl+Enter"
+                />
               </div>
             </>
           )}
           {section === "archive" && (
             <>
               <h1>Архивированные чаты</h1>
-              <p className="settings-lead">Архив скрывает чат, но сохраняет исходную сессию Pi.</p>
+              <p className="settings-lead">
+                Архив скрывает чат, но сохраняет исходную сессию Pi.
+              </p>
               <div className="settings-card archived-chat-list">
                 {archivedConversations.map((conversation) => (
                   <div className="archived-chat-row" key={conversation.id}>
                     <div>
                       <strong>{conversation.title}</strong>
-                      <p>{conversation.projectId ? projects.find((project) => project.id === conversation.projectId)?.name ?? "Проект" : "Самостоятельный чат"}</p>
+                      <p>
+                        {conversation.projectId
+                          ? (projects.find(
+                              (project) =>
+                                project.id === conversation.projectId,
+                            )?.name ?? "Проект")
+                          : "Самостоятельный чат"}
+                      </p>
                     </div>
                     <div className="archived-chat-actions">
-                      <button onClick={() => onRestoreConversation(conversation.id)}><ArchiveRestore size={14} /> Восстановить</button>
-                      <button className="danger" onClick={() => onDeleteConversation(conversation.id)}><Trash2 size={14} /> Удалить</button>
+                      <button
+                        onClick={() => onRestoreConversation(conversation.id)}
+                      >
+                        <ArchiveRestore size={14} /> Восстановить
+                      </button>
+                      <button
+                        className="danger"
+                        onClick={() => onDeleteConversation(conversation.id)}
+                      >
+                        <Trash2 size={14} /> Удалить
+                      </button>
                     </div>
                   </div>
                 ))}
-                {!archivedConversations.length && <div className="settings-empty">Архив пуст.</div>}
+                {!archivedConversations.length && (
+                  <div className="settings-empty">Архив пуст.</div>
+                )}
               </div>
             </>
           )}
         </div>
       </main>
-      {editingModel && <ModelSettingsDialog providerId={editingModel.providerId} model={editingModel.model} onClose={() => setEditingModel(undefined)} onSave={saveConfiguredModel} />}
+      {editingModel && (
+        <ModelSettingsDialog
+          providerId={editingModel.providerId}
+          model={editingModel.model}
+          onClose={() => setEditingModel(undefined)}
+          onSave={saveConfiguredModel}
+        />
+      )}
     </div>
   );
 }
@@ -1706,12 +3416,16 @@ export default function App() {
   const [bootstrap, setBootstrap] = useState<BootstrapPayload | null>(null);
   const [projects, setProjects] = useState<ProjectRecord[]>([]);
   const [conversations, setConversations] = useState<ConversationRecord[]>([]);
-  const [archivedConversations, setArchivedConversations] = useState<ConversationRecord[]>([]);
+  const [archivedConversations, setArchivedConversations] = useState<
+    ConversationRecord[]
+  >([]);
   const [activeProjectId, setActiveProjectId] = useState<string>();
   const [activeConversationId, setActiveConversationId] = useState<string>();
   const [snapshot, setSnapshot] = useState<ConversationSnapshot>();
   const [messages, setMessages] = useState<JsonObject[]>([]);
-  const [streamingMessage, setStreamingMessage] = useState<JsonObject | null>(null);
+  const [streamingMessage, setStreamingMessage] = useState<JsonObject | null>(
+    null,
+  );
   const [tools, setTools] = useState<Record<string, ToolActivity>>({});
   const [working, setWorking] = useState(false);
   const [startedAt, setStartedAt] = useState<number>();
@@ -1721,18 +3435,30 @@ export default function App() {
   const [diffOpen, setDiffOpen] = useState(false);
   const [input, setInput] = useState("");
   const [attachments, setAttachments] = useState<Attachment[]>([]);
+  const [maskTarget, setMaskTarget] = useState<Attachment | null>(null);
+  useEffect(() => setMaskTarget(null), [activeConversationId]);
+  const [draggingFiles, setDraggingFiles] = useState(false);
+  const fileDragDepthRef = useRef(0);
   const [loading, setLoading] = useState(true);
   const [sidebarOpen, setSidebarOpen] = useState(true);
   const [modelMenuOpen, setModelMenuOpen] = useState(false);
   const [thinkingMenuOpen, setThinkingMenuOpen] = useState(false);
+  const [addMenuOpen, setAddMenuOpen] = useState(false);
+  const [goalMode, setGoalMode] = useState(false);
   const [search, setSearch] = useState("");
   const [searchMatches, setSearchMatches] = useState<Set<string>>();
-  const [extensionDialog, setExtensionDialog] = useState<{ conversationId: string; request: ExtensionUiRequest }>();
+  const [extensionDialog, setExtensionDialog] = useState<{
+    conversationId: string;
+    request: ExtensionUiRequest;
+  }>();
   const [notices, setNotices] = useState<Notice[]>([]);
   const [statuses, setStatuses] = useState<Record<string, string>>({});
   const [workingMessage, setWorkingMessage] = useState("");
   const [workingVisible, setWorkingVisible] = useState(true);
-  const [workingIndicator, setWorkingIndicator] = useState<{ frames?: string[]; intervalMs?: number }>();
+  const [workingIndicator, setWorkingIndicator] = useState<{
+    frames?: string[];
+    intervalMs?: number;
+  }>();
   const [hiddenThinkingLabel, setHiddenThinkingLabel] = useState("");
   const [widgets, setWidgets] = useState<ExtensionWidgetState[]>([]);
   const [headerLines, setHeaderLines] = useState<string[]>([]);
@@ -1742,14 +3468,19 @@ export default function App() {
   const [queuedPrompts, setQueuedPrompts] = useState<QueuedPrompt[]>([]);
   const [queuedActionId, setQueuedActionId] = useState<string>();
   const [settingsOpen, setSettingsOpen] = useState(false);
-  const [settingsSection, setSettingsSection] = useState<SettingsSection>("general");
+  const [settingsSection, setSettingsSection] =
+    useState<SettingsSection>("general");
   const [projectDialogOpen, setProjectDialogOpen] = useState(false);
   const [commandPaletteOpen, setCommandPaletteOpen] = useState(false);
   const [compactDialogOpen, setCompactDialogOpen] = useState(false);
-  const [conversationMenu, setConversationMenu] = useState<ConversationMenuState>();
+  const [conversationMenu, setConversationMenu] =
+    useState<ConversationMenuState>();
   const [projectMenu, setProjectMenu] = useState<ProjectMenuState>();
-  const [renameConversation, setRenameConversation] = useState<ConversationRecord>();
+  const [renameConversation, setRenameConversation] =
+    useState<ConversationRecord>();
   const [renameProject, setRenameProject] = useState<ProjectRecord>();
+  const [instructionsProject, setInstructionsProject] =
+    useState<ProjectRecord>();
   const conversationScrollRef = useRef<HTMLDivElement>(null);
   const conversationThreadRef = useRef<HTMLDivElement>(null);
   const autoScrollRef = useRef(true);
@@ -1757,13 +3488,17 @@ export default function App() {
   const activeIdRef = useRef<string | undefined>(undefined);
   const conversationsRef = useRef<ConversationRecord[]>([]);
   const startedAtRef = useRef<number | undefined>(undefined);
-  const editorSyncRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+  const editorSyncRef = useRef<ReturnType<typeof setTimeout> | undefined>(
+    undefined,
+  );
   const searchSequenceRef = useRef(0);
   const navigationSequenceRef = useRef(0);
   const queuedActionRef = useRef<string | undefined>(undefined);
 
   useEffect(() => {
     activeIdRef.current = activeConversationId;
+    setGoalMode(false);
+    setAddMenuOpen(false);
   }, [activeConversationId]);
 
   useEffect(() => {
@@ -1774,16 +3509,27 @@ export default function App() {
     if (!activeConversationId) return;
     clearTimeout(editorSyncRef.current);
     editorSyncRef.current = setTimeout(() => {
-      void window.piDesktop.setHostEditorText(activeConversationId, input).catch(() => undefined);
+      void window.piDesktop
+        .setHostEditorText(activeConversationId, input)
+        .catch(() => undefined);
     }, 180);
     return () => clearTimeout(editorSyncRef.current);
   }, [activeConversationId, input]);
 
-  const addNotice = useCallback((message: string, type: Notice["type"] = "info") => {
-    const notice = { id: crypto.randomUUID(), message, type };
-    setNotices((current) => [...current, notice]);
-    setTimeout(() => setNotices((current) => current.filter((item) => item.id !== notice.id)), 5_000);
-  }, []);
+  const addNotice = useCallback(
+    (message: string, type: Notice["type"] = "info") => {
+      const notice = { id: crypto.randomUUID(), message, type };
+      setNotices((current) => [...current, notice]);
+      setTimeout(
+        () =>
+          setNotices((current) =>
+            current.filter((item) => item.id !== notice.id),
+          ),
+        5_000,
+      );
+    },
+    [],
+  );
 
   useEffect(() => {
     const query = search.trim();
@@ -1793,124 +3539,180 @@ export default function App() {
       return;
     }
     const timer = setTimeout(() => {
-      void window.piDesktop.searchConversations(query).then((ids) => {
-        if (searchSequenceRef.current === sequence) setSearchMatches(new Set(ids));
-      }).catch((error) => addNotice(error instanceof Error ? error.message : String(error), "error"));
+      void window.piDesktop
+        .searchConversations(query)
+        .then((ids) => {
+          if (searchSequenceRef.current === sequence)
+            setSearchMatches(new Set(ids));
+        })
+        .catch((error) =>
+          addNotice(
+            error instanceof Error ? error.message : String(error),
+            "error",
+          ),
+        );
     }, 250);
     return () => clearTimeout(timer);
   }, [search, addNotice]);
 
   useEffect(() => {
-    void window.piDesktop.bootstrap().then((payload) => {
-      setBootstrap(payload);
-      setProjects(payload.projects);
-      setConversations(payload.conversations);
-      setArchivedConversations(payload.archivedConversations);
-      setActiveProjectId(payload.activeProjectId);
-      setActiveConversationId(payload.activeConversationId);
-      setLoading(false);
-      if (payload.activeConversationId) void openConversation(payload.activeConversationId);
-    }).catch((error) => {
-      setLoading(false);
-      addNotice(String(error), "error");
-    });
+    void window.piDesktop
+      .bootstrap()
+      .then((payload) => {
+        setBootstrap(payload);
+        setProjects(payload.projects);
+        setConversations(payload.conversations);
+        setArchivedConversations(payload.archivedConversations);
+        setActiveProjectId(payload.activeProjectId);
+        setActiveConversationId(payload.activeConversationId);
+        setLoading(false);
+        if (payload.activeConversationId)
+          void openConversation(payload.activeConversationId);
+      })
+      .catch((error) => {
+        setLoading(false);
+        addNotice(String(error), "error");
+      });
   }, [addNotice]);
 
-  useEffect(() => window.piDesktop.onConversationChanged((conversation) => {
-    setConversations((current) => {
-      const found = current.some((item) => item.id === conversation.id);
-      return found ? current.map((item) => item.id === conversation.id ? conversation : item) : [conversation, ...current];
-    });
-    setSnapshot((current) => current?.conversation.id === conversation.id
-      ? { ...current, conversation }
-      : current);
-  }), []);
-
-  useEffect(() => window.piDesktop.onPiEvent(({ conversationId, event }) => {
-    if (conversationId !== activeIdRef.current) {
-      if (event.type === "agent_settled") {
-        const title = conversationsRef.current.find((item) => item.id === conversationId)?.title ?? "Фоновый чат";
-        addNotice(`Задача завершена: ${title}`);
-      }
-      return;
-    }
-    handlePiEvent(event);
-  }), [addNotice]);
-
-  useEffect(() => window.piDesktop.onExtensionUi(({ conversationId, request }) => {
-    if (request.method === "notify") {
-      addNotice(request.message ?? "Уведомление расширения", request.notifyType ?? "info");
-      return;
-    }
-    if (conversationId !== activeIdRef.current) {
-      if (["select", "confirm", "input", "editor", "custom"].includes(request.method)) {
-        const title = conversationsRef.current.find((item) => item.id === conversationId)?.title ?? "Фоновый чат";
-        addNotice(`Расширение ожидает действие в чате «${title}»`, "warning");
-      }
-      return;
-    }
-    if (request.method === "setStatus" && request.statusKey) {
-      setStatuses((current) => {
-        const next = { ...current };
-        const statusText = sanitizeStatusText(request.statusText);
-        if (statusText) next[request.statusKey!] = statusText;
-        else delete next[request.statusKey!];
-        return next;
-      });
-      return;
-    }
-    if (request.method === "setWorkingMessage") {
-      setWorkingMessage(sanitizeStatusText(request.workingText));
-      return;
-    }
-    if (request.method === "setWorkingVisible") {
-      setWorkingVisible(request.workingVisible !== false);
-      return;
-    }
-    if (request.method === "setWorkingIndicator") {
-      setWorkingIndicator(request.workingIndicator);
-      return;
-    }
-    if (request.method === "setHiddenThinkingLabel") {
-      setHiddenThinkingLabel(request.hiddenThinkingLabel ?? "");
-      return;
-    }
-    if (request.method === "setWidget" && request.widgetKey) {
-      setWidgets((current) => {
-        const next = current.filter((widget) => widget.key !== request.widgetKey);
-        if (request.widgetLines) next.push({
-          key: request.widgetKey!,
-          lines: request.widgetLines,
-          placement: request.widgetPlacement ?? "aboveEditor",
+  useEffect(
+    () =>
+      window.piDesktop.onConversationChanged((conversation) => {
+        setConversations((current) => {
+          const found = current.some((item) => item.id === conversation.id);
+          return found
+            ? current.map((item) =>
+                item.id === conversation.id ? conversation : item,
+              )
+            : [conversation, ...current];
         });
-        return next;
-      });
-      return;
-    }
-    if (request.method === "setHeader") {
-      setHeaderLines(request.customLines ?? []);
-      return;
-    }
-    if (request.method === "setFooter") {
-      setFooterLines(request.customLines ?? []);
-      return;
-    }
-    if (request.method === "setTitle" && request.title) {
-      document.title = request.title;
-      return;
-    }
-    if (request.method === "set_editor_text") {
-      setInput(request.text ?? "");
-      return;
-    }
-    if (["select", "confirm", "input", "editor", "custom"].includes(request.method)) {
-      setExtensionDialog({ conversationId, request });
-      return;
-    }
-    if (request.method === "customClose") {
-      setExtensionDialog((current) => current?.request.id === request.id ? undefined : current);
-    }
-  }), [addNotice]);
+        setSnapshot((current) =>
+          current?.conversation.id === conversation.id
+            ? { ...current, conversation }
+            : current,
+        );
+      }),
+    [],
+  );
+
+  useEffect(
+    () =>
+      window.piDesktop.onPiEvent(({ conversationId, event }) => {
+        if (conversationId !== activeIdRef.current) {
+          if (event.type === "agent_settled") {
+            const title =
+              conversationsRef.current.find(
+                (item) => item.id === conversationId,
+              )?.title ?? "Фоновый чат";
+            addNotice(`Задача завершена: ${title}`);
+          }
+          return;
+        }
+        handlePiEvent(event);
+      }),
+    [addNotice],
+  );
+
+  useEffect(
+    () =>
+      window.piDesktop.onExtensionUi(({ conversationId, request }) => {
+        if (request.method === "notify") {
+          addNotice(
+            request.message ?? "Уведомление расширения",
+            request.notifyType ?? "info",
+          );
+          return;
+        }
+        if (conversationId !== activeIdRef.current) {
+          if (
+            ["select", "confirm", "input", "editor", "custom"].includes(
+              request.method,
+            )
+          ) {
+            const title =
+              conversationsRef.current.find(
+                (item) => item.id === conversationId,
+              )?.title ?? "Фоновый чат";
+            addNotice(
+              `Расширение ожидает действие в чате «${title}»`,
+              "warning",
+            );
+          }
+          return;
+        }
+        if (request.method === "setStatus" && request.statusKey) {
+          setStatuses((current) => {
+            const next = { ...current };
+            const statusText = sanitizeStatusText(request.statusText);
+            if (statusText) next[request.statusKey!] = statusText;
+            else delete next[request.statusKey!];
+            return next;
+          });
+          return;
+        }
+        if (request.method === "setWorkingMessage") {
+          setWorkingMessage(sanitizeStatusText(request.workingText));
+          return;
+        }
+        if (request.method === "setWorkingVisible") {
+          setWorkingVisible(request.workingVisible !== false);
+          return;
+        }
+        if (request.method === "setWorkingIndicator") {
+          setWorkingIndicator(request.workingIndicator);
+          return;
+        }
+        if (request.method === "setHiddenThinkingLabel") {
+          setHiddenThinkingLabel(request.hiddenThinkingLabel ?? "");
+          return;
+        }
+        if (request.method === "setWidget" && request.widgetKey) {
+          setWidgets((current) => {
+            const next = current.filter(
+              (widget) => widget.key !== request.widgetKey,
+            );
+            if (request.widgetLines)
+              next.push({
+                key: request.widgetKey!,
+                lines: request.widgetLines,
+                placement: request.widgetPlacement ?? "aboveEditor",
+              });
+            return next;
+          });
+          return;
+        }
+        if (request.method === "setHeader") {
+          setHeaderLines(request.customLines ?? []);
+          return;
+        }
+        if (request.method === "setFooter") {
+          setFooterLines(request.customLines ?? []);
+          return;
+        }
+        if (request.method === "setTitle" && request.title) {
+          document.title = request.title;
+          return;
+        }
+        if (request.method === "set_editor_text") {
+          setInput(request.text ?? "");
+          return;
+        }
+        if (
+          ["select", "confirm", "input", "editor", "custom"].includes(
+            request.method,
+          )
+        ) {
+          setExtensionDialog({ conversationId, request });
+          return;
+        }
+        if (request.method === "customClose") {
+          setExtensionDialog((current) =>
+            current?.request.id === request.id ? undefined : current,
+          );
+        }
+      }),
+    [addNotice],
+  );
 
   useEffect(() => {
     if (!working || !startedAt) return;
@@ -1930,15 +3732,24 @@ export default function App() {
     if (!autoScrollRef.current) return;
     const frame = requestAnimationFrame(scrollConversationToBottom);
     return () => cancelAnimationFrame(frame);
-  }, [messages, streamingMessage, tools, working, workingMessage, scrollConversationToBottom]);
+  }, [
+    messages,
+    streamingMessage,
+    tools,
+    working,
+    workingMessage,
+    scrollConversationToBottom,
+  ]);
 
   useEffect(() => {
     const thread = conversationThreadRef.current;
-    if (!thread) return;
+    const scroll = conversationScrollRef.current;
+    if (!thread || !scroll) return;
     const observer = new ResizeObserver(() => {
       if (autoScrollRef.current) scrollConversationToBottom();
     });
     observer.observe(thread);
+    observer.observe(scroll);
     return () => observer.disconnect();
   }, [activeConversationId, scrollConversationToBottom]);
 
@@ -1951,23 +3762,36 @@ export default function App() {
   const handleConversationScroll = useCallback(() => {
     const element = conversationScrollRef.current;
     if (!element) return;
-    const distanceFromBottom = element.scrollHeight - element.scrollTop - element.clientHeight;
+    const distanceFromBottom =
+      element.scrollHeight - element.scrollTop - element.clientHeight;
     if (distanceFromBottom <= 24) autoScrollRef.current = true;
     else if (userScrollInteractionRef.current) autoScrollRef.current = false;
   }, []);
 
-  const handleConversationWheel = useCallback((event: React.WheelEvent<HTMLDivElement>) => {
-    if (event.deltaY < 0) autoScrollRef.current = false;
-  }, []);
+  const handleConversationWheel = useCallback(
+    (event: React.WheelEvent<HTMLDivElement>) => {
+      if (event.deltaY < 0) autoScrollRef.current = false;
+    },
+    [],
+  );
 
-  const handleConversationPointerDown = useCallback((event: React.PointerEvent<HTMLDivElement>) => {
-    const element = event.currentTarget;
-    const rect = element.getBoundingClientRect();
-    const scrollbarArea = Math.max(16, element.offsetWidth - element.clientWidth + 4);
-    if (event.pointerType === "touch" || event.clientX >= rect.right - scrollbarArea) {
-      userScrollInteractionRef.current = true;
-    }
-  }, []);
+  const handleConversationPointerDown = useCallback(
+    (event: React.PointerEvent<HTMLDivElement>) => {
+      const element = event.currentTarget;
+      const rect = element.getBoundingClientRect();
+      const scrollbarArea = Math.max(
+        16,
+        element.offsetWidth - element.clientWidth + 4,
+      );
+      if (
+        event.pointerType === "touch" ||
+        event.clientX >= rect.right - scrollbarArea
+      ) {
+        userScrollInteractionRef.current = true;
+      }
+    },
+    [],
+  );
 
   const handleConversationPointerEnd = useCallback(() => {
     userScrollInteractionRef.current = false;
@@ -1975,49 +3799,71 @@ export default function App() {
 
   const handlePiEvent = (event: JsonObject) => {
     if (event.type === "desktop_run_started" || event.type === "agent_start") {
-      const runStartedAt = typeof event.run?.startedAt === "string" ? Date.parse(event.run.startedAt) : NaN;
-      const now = Number.isFinite(runStartedAt) ? runStartedAt : (startedAtRef.current ?? Date.now());
+      const continuingRun = startedAtRef.current !== undefined;
+      const runStartedAt =
+        typeof event.run?.startedAt === "string"
+          ? Date.parse(event.run.startedAt)
+          : NaN;
+      const now = Number.isFinite(runStartedAt)
+        ? runStartedAt
+        : (startedAtRef.current ?? Date.now());
       setWorking(true);
       setStartedAt(now);
       startedAtRef.current = now;
-      setElapsed(0);
       setWorkingMessage("");
-      setLastDuration(undefined);
-      setRunDiff(undefined);
-      setDiffOpen(false);
+      if (!continuingRun) {
+        setElapsed(Math.max(0, Date.now() - now));
+        setLastDuration(undefined);
+        setRunDiff(undefined);
+        setDiffOpen(false);
+      }
     } else if (event.type === "agent_settled") {
       setWorking(false);
       setWorkingMessage("");
       setStreamingMessage(null);
-      const savedDuration = typeof event.run?.durationMs === "number" ? event.run.durationMs : undefined;
+      const savedDuration =
+        typeof event.run?.durationMs === "number"
+          ? event.run.durationMs
+          : undefined;
       if (startedAtRef.current || savedDuration !== undefined) {
-        const duration = savedDuration ?? (Date.now() - startedAtRef.current!);
+        const duration = savedDuration ?? Date.now() - startedAtRef.current!;
         setElapsed(duration);
         setLastDuration(duration);
         startedAtRef.current = undefined;
       }
       setTools({});
       if (event.state) {
-        setSnapshot((current) => current ? {
-          ...current,
-          state: event.state,
-          entries: Array.isArray(event.entries) ? event.entries : current.entries,
-          extensionState: event.extensionState ?? current.extensionState,
-        } : current);
+        setSnapshot((current) =>
+          current
+            ? {
+                ...current,
+                state: event.state,
+                entries: Array.isArray(event.entries)
+                  ? event.entries
+                  : current.entries,
+                extensionState: event.extensionState ?? current.extensionState,
+              }
+            : current,
+        );
       }
     } else if (event.type === "message_start") {
-      if (event.message?.role === "assistant") setStreamingMessage(structuredClone(event.message));
+      if (event.message?.role === "assistant")
+        setStreamingMessage(structuredClone(event.message));
       else if (event.message) {
         setMessages((current) => {
           const incomingText = messageText(event.message);
-          let optimisticIndex = current.findIndex((item) => item.optimistic && messageText(item) === incomingText);
-          if (optimisticIndex < 0) optimisticIndex = current.findIndex((item) => item.optimistic);
+          let optimisticIndex = current.findIndex(
+            (item) => item.optimistic && messageText(item) === incomingText,
+          );
+          if (optimisticIndex < 0)
+            optimisticIndex = current.findIndex((item) => item.optimistic);
           if (optimisticIndex < 0) return [...current, event.message];
           const next = [...current];
           next[optimisticIndex] = {
             ...next[optimisticIndex],
             ...event.message,
-            attachments: next[optimisticIndex].attachments ?? event.message.attachments,
+            attachments:
+              next[optimisticIndex].attachments ?? event.message.attachments,
             optimistic: false,
           };
           return next;
@@ -2026,23 +3872,36 @@ export default function App() {
     } else if (event.type === "message_update") {
       const delta = event.assistantMessageEvent;
       if (!delta) return;
-      setStreamingMessage((current) => applyAssistantMessageDelta(current ?? undefined, delta));
+      setStreamingMessage((current) =>
+        applyAssistantMessageDelta(current ?? undefined, delta),
+      );
     } else if (event.type === "message_end" && event.message) {
       if (event.message.role === "assistant") {
         setMessages((current) => [...current, event.message]);
         setStreamingMessage(null);
-      } else if (event.message.role === "toolResult" || event.message.role === "tool") {
+      } else if (
+        event.message.role === "toolResult" ||
+        event.message.role === "tool"
+      ) {
         setMessages((current) => [...current, event.message]);
       }
       if (event.state) {
-        setSnapshot((current) => current ? { ...current, state: event.state } : current);
+        setSnapshot((current) =>
+          current ? { ...current, state: event.state } : current,
+        );
       }
     } else if (event.type === "desktop_state" && event.state) {
-      setSnapshot((current) => current ? {
-        ...current,
-        state: event.state,
-        commands: Array.isArray(event.commands) ? event.commands : current.commands,
-      } : current);
+      setSnapshot((current) =>
+        current
+          ? {
+              ...current,
+              state: event.state,
+              commands: Array.isArray(event.commands)
+                ? event.commands
+                : current.commands,
+            }
+          : current,
+      );
     } else if (event.type === "tool_execution_start") {
       setTools((current) => ({
         ...current,
@@ -2058,7 +3917,12 @@ export default function App() {
       setTools((current) => ({
         ...current,
         [event.toolCallId]: {
-          ...(current[event.toolCallId] ?? { id: event.toolCallId, name: event.toolName, running: true, startedAt: Date.now() }),
+          ...(current[event.toolCallId] ?? {
+            id: event.toolCallId,
+            name: event.toolName,
+            running: true,
+            startedAt: Date.now(),
+          }),
           result: event.partialResult,
         },
       }));
@@ -2066,21 +3930,38 @@ export default function App() {
       setTools((current) => ({
         ...current,
         [event.toolCallId]: {
-          ...(current[event.toolCallId] ?? { id: event.toolCallId, name: event.toolName, startedAt: Date.now() }),
+          ...(current[event.toolCallId] ?? {
+            id: event.toolCallId,
+            name: event.toolName,
+            startedAt: Date.now(),
+          }),
           result: event.result,
           running: false,
           error: Boolean(event.isError),
         },
       }));
     } else if (event.type === "queue_update") {
-      const steering = Array.isArray(event.steering) ? event.steering.map(String) : [];
-      const followUp = Array.isArray(event.followUp) ? event.followUp.map(String) : [];
+      const steering = Array.isArray(event.steering)
+        ? event.steering.map(String)
+        : [];
+      const followUp = Array.isArray(event.followUp)
+        ? event.followUp.map(String)
+        : [];
       setSteeringMessages(steering);
       setFollowUpMessages(followUp);
-      setSnapshot((current) => current ? {
-        ...current,
-        state: { ...current.state, steeringMessages: steering, followUpMessages: followUp, pendingMessageCount: steering.length + followUp.length },
-      } : current);
+      setSnapshot((current) =>
+        current
+          ? {
+              ...current,
+              state: {
+                ...current.state,
+                steeringMessages: steering,
+                followUpMessages: followUp,
+                pendingMessageCount: steering.length + followUp.length,
+              },
+            }
+          : current,
+      );
     } else if (event.type === "compaction_start") {
       const alreadyWorking = startedAtRef.current !== undefined;
       const now = startedAtRef.current ?? Date.now();
@@ -2092,52 +3973,92 @@ export default function App() {
         setLastDuration(undefined);
       }
       autoScrollRef.current = true;
-      setSnapshot((current) => current ? { ...current, state: { ...current.state, isCompacting: true } } : current);
+      setSnapshot((current) =>
+        current
+          ? { ...current, state: { ...current.state, isCompacting: true } }
+          : current,
+      );
       setWorkingMessage("Сжатие контекста…");
     } else if (event.type === "compaction_end") {
-      setSnapshot((current) => current ? {
-        ...current,
-        state: event.state ?? { ...current.state, isCompacting: false },
-        entries: Array.isArray(event.entries) ? event.entries : current.entries,
-        compactions: Array.isArray(event.compactions) ? event.compactions : current.compactions,
-      } : current);
+      setSnapshot((current) =>
+        current
+          ? {
+              ...current,
+              state: event.state ?? { ...current.state, isCompacting: false },
+              entries: Array.isArray(event.entries)
+                ? event.entries
+                : current.entries,
+              compactions: Array.isArray(event.compactions)
+                ? event.compactions
+                : current.compactions,
+            }
+          : current,
+      );
       setWorking(Boolean(event.state?.isStreaming));
       setWorkingMessage("");
-      if (event.errorMessage) addNotice(`Сжатие контекста: ${String(event.errorMessage)}`, "warning");
+      if (event.errorMessage)
+        addNotice(`Сжатие контекста: ${String(event.errorMessage)}`, "warning");
     } else if (event.type === "auto_retry_start") {
       setWorking(true);
-      setWorkingMessage(`Повтор запроса ${Number(event.attempt ?? 0)}/${Number(event.maxAttempts ?? 0)}…`);
+      setWorkingMessage(
+        `Повтор запроса ${Number(event.attempt ?? 0)}/${Number(event.maxAttempts ?? 0)}…`,
+      );
     } else if (event.type === "auto_retry_end") {
       setWorkingMessage("");
-      if (event.success === false && event.finalError) addNotice(String(event.finalError), "error");
+      if (event.success === false && event.finalError)
+        addNotice(String(event.finalError), "error");
     } else if (event.type === "summarization_retry_scheduled") {
-      setWorkingMessage(`Повтор сжатия ${Number(event.attempt ?? 0)}/${Number(event.maxAttempts ?? 0)}…`);
+      setWorkingMessage(
+        `Повтор сжатия ${Number(event.attempt ?? 0)}/${Number(event.maxAttempts ?? 0)}…`,
+      );
     } else if (event.type === "summarization_retry_finished") {
       setWorkingMessage("");
-    } else if (event.type === "runtime_error" || event.type === "extension_error") {
+    } else if (
+      event.type === "runtime_error" ||
+      event.type === "extension_error"
+    ) {
       addNotice(String(event.error ?? "Ошибка Pi"), "error");
       setWorking(false);
       setWorkingMessage("");
-      if (typeof event.run?.durationMs === "number") setLastDuration(event.run.durationMs);
+      if (typeof event.run?.durationMs === "number")
+        setLastDuration(event.run.durationMs);
     } else if (event.type === "desktop_run_diff" && event.diff) {
       setRunDiff(event.diff as RunDiff);
-      if (typeof event.run?.durationMs === "number") setLastDuration(event.run.durationMs);
+      if (typeof event.run?.durationMs === "number")
+        setLastDuration(event.run.durationMs);
     } else if (event.type === "desktop_preparing") {
-      setWorking(true);
-      setWorkingMessage(String(event.message ?? "Подготовка…"));
+      const preparingMessage = String(event.message ?? "");
+      if (preparingMessage) {
+        setWorking(true);
+        setWorkingMessage(preparingMessage);
+      } else {
+        setWorkingMessage((current) =>
+          current.startsWith("Подготавливаю отслеживание") ? "" : current,
+        );
+      }
     } else if (event.type === "desktop_diff_error") {
-      addNotice(`Не удалось построить diff: ${String(event.error ?? "неизвестная ошибка")}`, "warning");
+      addNotice(
+        `Не удалось построить diff: ${String(event.error ?? "неизвестная ошибка")}`,
+        "warning",
+      );
     } else if (event.type === "desktop_queue_update") {
-      setQueuedPrompts(Array.isArray(event.queued) ? event.queued as QueuedPrompt[] : []);
+      setQueuedPrompts(
+        Array.isArray(event.queued) ? (event.queued as QueuedPrompt[]) : [],
+      );
     } else if (event.type === "desktop_queue_error") {
-      addNotice(`Не удалось автоматически отправить сообщение из очереди: ${String(event.error ?? "неизвестная ошибка")}`, "error");
+      addNotice(
+        `Не удалось автоматически отправить сообщение из очереди: ${String(event.error ?? "неизвестная ошибка")}`,
+        "error",
+      );
     }
   };
 
   const openConversation = async (conversationId: string) => {
     const navigationSequence = ++navigationSequenceRef.current;
     setActiveConversationId(conversationId);
-    const conversation = conversations.find((item) => item.id === conversationId);
+    const conversation = conversations.find(
+      (item) => item.id === conversationId,
+    );
     if (conversation) setActiveProjectId(conversation.projectId);
     setLoading(true);
     setMessages([]);
@@ -2165,8 +4086,16 @@ export default function App() {
       setSnapshot(next);
       setActiveProjectId(next.conversation.projectId);
       setMessages(next.messages as JsonObject[]);
-      setStreamingMessage(next.liveMessage ? structuredClone(next.liveMessage as JsonObject) : null);
-      setTools(next.liveTools ? structuredClone(next.liveTools) as Record<string, ToolActivity> : {});
+      setStreamingMessage(
+        next.liveMessage
+          ? structuredClone(next.liveMessage as JsonObject)
+          : null,
+      );
+      setTools(
+        next.liveTools
+          ? (structuredClone(next.liveTools) as Record<string, ToolActivity>)
+          : {},
+      );
       setWorking(next.state.isStreaming);
       setStatuses(next.extensionUi.statuses);
       setWorkingMessage(next.extensionUi.workingMessage ?? "");
@@ -2179,15 +4108,21 @@ export default function App() {
       setSteeringMessages(next.state.steeringMessages ?? []);
       setFollowUpMessages(next.state.followUpMessages ?? []);
       setQueuedPrompts(next.queuedPrompts ?? []);
-      setExtensionDialog(next.extensionUi.pendingDialogs[0]
-        ? { conversationId, request: next.extensionUi.pendingDialogs[0] }
-        : undefined);
+      setExtensionDialog(
+        next.extensionUi.pendingDialogs[0]
+          ? { conversationId, request: next.extensionUi.pendingDialogs[0] }
+          : undefined,
+      );
       document.title = next.extensionUi.title || "Pi Desktop";
       setRunDiff(next.run?.diff);
       setLastDuration(next.run?.durationMs);
       if (next.state.isStreaming) {
-        const savedStartedAt = next.run?.startedAt ? Date.parse(next.run.startedAt) : NaN;
-        const now = Number.isFinite(savedStartedAt) ? savedStartedAt : Date.now();
+        const savedStartedAt = next.run?.startedAt
+          ? Date.parse(next.run.startedAt)
+          : NaN;
+        const now = Number.isFinite(savedStartedAt)
+          ? savedStartedAt
+          : Date.now();
         setStartedAt(now);
         startedAtRef.current = now;
       } else {
@@ -2195,9 +4130,13 @@ export default function App() {
         startedAtRef.current = undefined;
       }
     } catch (error) {
-      addNotice(error instanceof Error ? error.message : String(error), "error");
+      addNotice(
+        error instanceof Error ? error.message : String(error),
+        "error",
+      );
     } finally {
-      if (navigationSequenceRef.current === navigationSequence) setLoading(false);
+      if (navigationSequenceRef.current === navigationSequence)
+        setLoading(false);
     }
   };
 
@@ -2210,7 +4149,9 @@ export default function App() {
       setConversations((current) => {
         const found = current.some((item) => item.id === next.conversation.id);
         return found
-          ? current.map((item) => item.id === next.conversation.id ? next.conversation : item)
+          ? current.map((item) =>
+              item.id === next.conversation.id ? next.conversation : item,
+            )
           : [next.conversation, ...current];
       });
       setActiveConversationId(next.conversation.id);
@@ -2237,15 +4178,22 @@ export default function App() {
       setRunDiff(undefined);
       setDiffOpen(false);
     } catch (error) {
-      addNotice(error instanceof Error ? error.message : String(error), "error");
+      addNotice(
+        error instanceof Error ? error.message : String(error),
+        "error",
+      );
     } finally {
-      if (navigationSequenceRef.current === navigationSequence) setLoading(false);
+      if (navigationSequenceRef.current === navigationSequence)
+        setLoading(false);
     }
   };
 
   const projectCreated = async (project: ProjectRecord) => {
     setProjectDialogOpen(false);
-    setProjects((current) => [project, ...current.filter((item) => item.id !== project.id)]);
+    setProjects((current) => [
+      project,
+      ...current.filter((item) => item.id !== project.id),
+    ]);
     setActiveProjectId(project.id);
     try {
       const chats = await window.piDesktop.refreshProjectSessions(project.id);
@@ -2256,11 +4204,17 @@ export default function App() {
       if (chats.length) await openConversation(chats[0].id);
       else await newChat(project.id);
     } catch (error) {
-      addNotice(error instanceof Error ? error.message : String(error), "error");
+      addNotice(
+        error instanceof Error ? error.message : String(error),
+        "error",
+      );
     }
   };
 
-  const showConversationMenu = (event: React.MouseEvent, conversationId: string) => {
+  const showConversationMenu = (
+    event: React.MouseEvent,
+    conversationId: string,
+  ) => {
     event.preventDefault();
     event.stopPropagation();
     setConversationMenu({
@@ -2275,8 +4229,8 @@ export default function App() {
     event.stopPropagation();
     setProjectMenu({
       projectId,
-      x: Math.min(event.clientX, window.innerWidth - 230),
-      y: Math.min(event.clientY, window.innerHeight - 180),
+      x: Math.min(event.clientX, window.innerWidth - 300),
+      y: Math.min(event.clientY, window.innerHeight - 220),
     });
   };
 
@@ -2305,23 +4259,45 @@ export default function App() {
     setConversationMenu(undefined);
     try {
       await window.piDesktop.archiveConversation(conversationId);
-      const conversation = conversations.find((item) => item.id === conversationId);
-      setConversations((current) => current.filter((item) => item.id !== conversationId));
-      if (conversation) setArchivedConversations((current) => [{ ...conversation, archived: true, status: "idle" }, ...current]);
+      const conversation = conversations.find(
+        (item) => item.id === conversationId,
+      );
+      setConversations((current) =>
+        current.filter((item) => item.id !== conversationId),
+      );
+      if (conversation)
+        setArchivedConversations((current) => [
+          { ...conversation, archived: true, status: "idle" },
+          ...current,
+        ]);
       clearConversationView(conversationId);
     } catch (error) {
-      addNotice(error instanceof Error ? error.message : String(error), "error");
+      addNotice(
+        error instanceof Error ? error.message : String(error),
+        "error",
+      );
     }
   };
 
   const restoreChat = async (conversationId: string) => {
     try {
       await window.piDesktop.restoreConversation(conversationId);
-      const conversation = archivedConversations.find((item) => item.id === conversationId);
-      setArchivedConversations((current) => current.filter((item) => item.id !== conversationId));
-      if (conversation) setConversations((current) => [{ ...conversation, archived: false }, ...current]);
+      const conversation = archivedConversations.find(
+        (item) => item.id === conversationId,
+      );
+      setArchivedConversations((current) =>
+        current.filter((item) => item.id !== conversationId),
+      );
+      if (conversation)
+        setConversations((current) => [
+          { ...conversation, archived: false },
+          ...current,
+        ]);
     } catch (error) {
-      addNotice(error instanceof Error ? error.message : String(error), "error");
+      addNotice(
+        error instanceof Error ? error.message : String(error),
+        "error",
+      );
     }
   };
 
@@ -2330,11 +4306,18 @@ export default function App() {
     try {
       const deleted = await window.piDesktop.deleteConversation(conversationId);
       if (!deleted) return;
-      setConversations((current) => current.filter((item) => item.id !== conversationId));
-      setArchivedConversations((current) => current.filter((item) => item.id !== conversationId));
+      setConversations((current) =>
+        current.filter((item) => item.id !== conversationId),
+      );
+      setArchivedConversations((current) =>
+        current.filter((item) => item.id !== conversationId),
+      );
       clearConversationView(conversationId);
     } catch (error) {
-      addNotice(error instanceof Error ? error.message : String(error), "error");
+      addNotice(
+        error instanceof Error ? error.message : String(error),
+        "error",
+      );
     }
   };
 
@@ -2344,9 +4327,16 @@ export default function App() {
     setRenameConversation(undefined);
     try {
       await window.piDesktop.renameConversation(conversation.id, title);
-      setConversations((current) => current.map((item) => item.id === conversation.id ? { ...item, title } : item));
+      setConversations((current) =>
+        current.map((item) =>
+          item.id === conversation.id ? { ...item, title } : item,
+        ),
+      );
     } catch (error) {
-      addNotice(error instanceof Error ? error.message : String(error), "error");
+      addNotice(
+        error instanceof Error ? error.message : String(error),
+        "error",
+      );
     }
   };
 
@@ -2356,9 +4346,14 @@ export default function App() {
     setRenameProject(undefined);
     try {
       const updated = await window.piDesktop.renameProject(project.id, name);
-      setProjects((current) => current.map((item) => item.id === updated.id ? updated : item));
+      setProjects((current) =>
+        current.map((item) => (item.id === updated.id ? updated : item)),
+      );
     } catch (error) {
-      addNotice(error instanceof Error ? error.message : String(error), "error");
+      addNotice(
+        error instanceof Error ? error.message : String(error),
+        "error",
+      );
     }
   };
 
@@ -2368,7 +4363,9 @@ export default function App() {
       const removed = await window.piDesktop.removeProject(projectId);
       if (!removed) return;
       setProjects((current) => current.filter((item) => item.id !== projectId));
-      setConversations((current) => current.filter((item) => item.projectId !== projectId));
+      setConversations((current) =>
+        current.filter((item) => item.projectId !== projectId),
+      );
       if (activeProjectId === projectId) {
         setActiveProjectId(undefined);
         setActiveConversationId(undefined);
@@ -2376,16 +4373,22 @@ export default function App() {
         setMessages([]);
       }
     } catch (error) {
-      addNotice(error instanceof Error ? error.message : String(error), "error");
+      addNotice(
+        error instanceof Error ? error.message : String(error),
+        "error",
+      );
     }
   };
 
   const submit = async () => {
-    const text = input.trim() || (attachments.length ? "Посмотри вложения." : "");
+    const text =
+      input.trim() || (attachments.length ? "Посмотри вложения." : "");
     if (!text || !activeConversationId) return;
     if (!working && (text === "/compact" || text.startsWith("/compact "))) {
       setInput("");
-      await executeCompact(text.startsWith("/compact ") ? text.slice(9).trim() : undefined);
+      await executeCompact(
+        text.startsWith("/compact ") ? text.slice(9).trim() : undefined,
+      );
       return;
     }
     if (!working && text === "/reload") {
@@ -2395,19 +4398,28 @@ export default function App() {
     }
     const conversationId = activeConversationId;
     const submittedAttachments = attachments;
+    const submittedAsGoal = goalMode;
     autoScrollRef.current = true;
     setInput("");
     setAttachments([]);
+    setGoalMode(false);
     if (working) {
       try {
-        const queued = await window.piDesktop.queuePrompt(conversationId, text, submittedAttachments);
+        const queued = await window.piDesktop.queuePrompt(
+          conversationId,
+          text,
+          submittedAttachments,
+        );
         if (activeIdRef.current === conversationId) setQueuedPrompts(queued);
       } catch (error) {
         if (activeIdRef.current === conversationId) {
           setInput(text);
           setAttachments(submittedAttachments);
         }
-        addNotice(error instanceof Error ? error.message : String(error), "error");
+        addNotice(
+          error instanceof Error ? error.message : String(error),
+          "error",
+        );
       }
       return;
     }
@@ -2417,18 +4429,44 @@ export default function App() {
       content: text,
       timestamp: Date.now(),
       attachments: submittedAttachments.map((item) => item.name),
+      images: submittedAttachments
+        .filter(
+          (item) => item.mimeType?.startsWith("image/") && Boolean(item.data),
+        )
+        .map((item) => ({
+          name: item.name,
+          mimeType: item.mimeType as string,
+          data: item.data as string,
+        })),
       optimistic: true,
     };
     setMessages((current) => [...current, optimistic]);
     try {
-      await window.piDesktop.sendPrompt(conversationId, text, submittedAttachments);
+      if (submittedAsGoal)
+        await window.piDesktop.setGoal(
+          conversationId,
+          text,
+          submittedAttachments,
+        );
+      else
+        await window.piDesktop.sendPrompt(
+          conversationId,
+          text,
+          submittedAttachments,
+        );
     } catch (error) {
       if (activeIdRef.current === conversationId) {
-        setMessages((current) => current.filter((item) => item.id !== optimistic.id));
+        setMessages((current) =>
+          current.filter((item) => item.id !== optimistic.id),
+        );
         setInput(text);
         setAttachments(submittedAttachments);
+        setGoalMode(submittedAsGoal);
       }
-      addNotice(error instanceof Error ? error.message : String(error), "error");
+      addNotice(
+        error instanceof Error ? error.message : String(error),
+        "error",
+      );
     }
   };
 
@@ -2439,11 +4477,17 @@ export default function App() {
     queuedActionRef.current = prompt.id;
     setQueuedActionId(prompt.id);
     try {
-      const queued = await window.piDesktop.sendQueuedPrompt(conversationId, prompt.id);
+      const queued = await window.piDesktop.sendQueuedPrompt(
+        conversationId,
+        prompt.id,
+      );
       if (activeIdRef.current === conversationId) setQueuedPrompts(queued);
       autoScrollRef.current = true;
     } catch (error) {
-      addNotice(error instanceof Error ? error.message : String(error), "error");
+      addNotice(
+        error instanceof Error ? error.message : String(error),
+        "error",
+      );
     } finally {
       queuedActionRef.current = undefined;
       setQueuedActionId(undefined);
@@ -2457,17 +4501,32 @@ export default function App() {
     queuedActionRef.current = prompt.id;
     setQueuedActionId(prompt.id);
     try {
-      const queued = await window.piDesktop.removeQueuedPrompt(conversationId, prompt.id);
+      const queued = await window.piDesktop.removeQueuedPrompt(
+        conversationId,
+        prompt.id,
+      );
       if (activeIdRef.current === conversationId) {
         setQueuedPrompts(queued);
-        setInput((current) => current ? `${prompt.message}\n\n${current}` : prompt.message);
+        setInput((current) =>
+          current ? `${prompt.message}\n\n${current}` : prompt.message,
+        );
         setAttachments((current) => [
           ...prompt.attachments,
-          ...current.filter((item) => !prompt.attachments.some((queuedAttachment) => queuedAttachment.id === item.id || queuedAttachment.path === item.path)),
+          ...current.filter(
+            (item) =>
+              !prompt.attachments.some(
+                (queuedAttachment) =>
+                  queuedAttachment.id === item.id ||
+                  queuedAttachment.path === item.path,
+              ),
+          ),
         ]);
       }
     } catch (error) {
-      addNotice(error instanceof Error ? error.message : String(error), "error");
+      addNotice(
+        error instanceof Error ? error.message : String(error),
+        "error",
+      );
     } finally {
       queuedActionRef.current = undefined;
       setQueuedActionId(undefined);
@@ -2481,10 +4540,16 @@ export default function App() {
     queuedActionRef.current = promptId;
     setQueuedActionId(promptId);
     try {
-      const queued = await window.piDesktop.removeQueuedPrompt(conversationId, promptId);
+      const queued = await window.piDesktop.removeQueuedPrompt(
+        conversationId,
+        promptId,
+      );
       if (activeIdRef.current === conversationId) setQueuedPrompts(queued);
     } catch (error) {
-      addNotice(error instanceof Error ? error.message : String(error), "error");
+      addNotice(
+        error instanceof Error ? error.message : String(error),
+        "error",
+      );
     } finally {
       queuedActionRef.current = undefined;
       setQueuedActionId(undefined);
@@ -2496,11 +4561,17 @@ export default function App() {
     try {
       const queued = await window.piDesktop.clearQueue(activeConversationId);
       const restored = [...queued.steering, ...queued.followUp].join("\n\n");
-      if (restored) setInput((current) => current ? `${restored}\n\n${current}` : restored);
+      if (restored)
+        setInput((current) =>
+          current ? `${restored}\n\n${current}` : restored,
+        );
       setSteeringMessages([]);
       setFollowUpMessages([]);
     } catch (error) {
-      addNotice(error instanceof Error ? error.message : String(error), "error");
+      addNotice(
+        error instanceof Error ? error.message : String(error),
+        "error",
+      );
     }
   };
 
@@ -2508,11 +4579,36 @@ export default function App() {
     try {
       const selected = await window.piDesktop.chooseAttachments();
       if (selected.length) {
-        setAttachments((current) => [
-          ...current,
-          ...selected.filter((item) => !current.some((existing) => existing.path === item.path)),
-        ]);
+        setAttachments((current) => mergeAttachments(current, selected));
       }
+    } catch (error) {
+      addNotice(
+        error instanceof Error ? error.message : String(error),
+        "error",
+      );
+    }
+  };
+
+  const dropAttachments = async (files: File[]) => {
+    const conversationId = activeConversationId;
+    if (!conversationId) {
+      addNotice("Сначала откройте или создайте чат.", "error");
+      return;
+    }
+    try {
+      const paths: string[] = [];
+      const pastedFiles: File[] = [];
+      for (const file of files) {
+        const originalPath = window.piDesktop.getDroppedFilePath(file);
+        if (originalPath) paths.push(originalPath);
+        else if (file.type.startsWith("image/")) pastedFiles.push(file);
+      }
+      const [originals, pasted] = await Promise.all([
+        paths.length ? window.piDesktop.attachFilePaths(paths) : Promise.resolve([]),
+        Promise.all(pastedFiles.map(pastedImageAttachment)),
+      ]);
+      if (activeIdRef.current !== conversationId) return;
+      setAttachments((current) => mergeAttachments(current, [...originals, ...pasted]));
     } catch (error) {
       addNotice(error instanceof Error ? error.message : String(error), "error");
     }
@@ -2522,14 +4618,25 @@ export default function App() {
     if (!activeConversationId) return;
     setModelMenuOpen(false);
     try {
-      const state = await window.piDesktop.setModel(activeConversationId, model.provider, model.id);
-      setSnapshot((current) => current ? {
-        ...current,
-        state,
-        thinkingLevels: model.thinkingLevels ?? current.thinkingLevels,
-      } : current);
+      const state = await window.piDesktop.setModel(
+        activeConversationId,
+        model.provider,
+        model.id,
+      );
+      setSnapshot((current) =>
+        current
+          ? {
+              ...current,
+              state,
+              thinkingLevels: model.thinkingLevels ?? current.thinkingLevels,
+            }
+          : current,
+      );
     } catch (error) {
-      addNotice(error instanceof Error ? error.message : String(error), "error");
+      addNotice(
+        error instanceof Error ? error.message : String(error),
+        "error",
+      );
     }
   };
 
@@ -2537,10 +4644,16 @@ export default function App() {
     if (!activeConversationId) return;
     setThinkingMenuOpen(false);
     try {
-      const state = await window.piDesktop.setThinkingLevel(activeConversationId, level);
-      setSnapshot((current) => current ? { ...current, state } : current);
+      const state = await window.piDesktop.setThinkingLevel(
+        activeConversationId,
+        level,
+      );
+      setSnapshot((current) => (current ? { ...current, state } : current));
     } catch (error) {
-      addNotice(error instanceof Error ? error.message : String(error), "error");
+      addNotice(
+        error instanceof Error ? error.message : String(error),
+        "error",
+      );
     }
   };
 
@@ -2573,11 +4686,17 @@ export default function App() {
     setElapsed(0);
     autoScrollRef.current = true;
     try {
-      const next = await window.piDesktop.compactConversation(activeConversationId, instructions);
+      const next = await window.piDesktop.compactConversation(
+        activeConversationId,
+        instructions,
+      );
       applyRuntimeSnapshot(next);
       addNotice("Контекст сжат штатным механизмом Pi.", "info");
     } catch (error) {
-      addNotice(error instanceof Error ? error.message : String(error), "error");
+      addNotice(
+        error instanceof Error ? error.message : String(error),
+        "error",
+      );
     } finally {
       const duration = Date.now() - started;
       setWorking(false);
@@ -2591,7 +4710,12 @@ export default function App() {
 
   const executeReload = async () => {
     if (!activeConversationId || working) return;
-    if (!window.confirm("Перезагрузить расширения, навыки, промпты и настройки Pi? Текущий процесс перечитает конфигурацию, поэтому KV-кэш может быть пересчитан.")) return;
+    if (
+      !window.confirm(
+        "Перезагрузить расширения, навыки, промпты и настройки Pi? Текущий процесс перечитает конфигурацию, поэтому KV-кэш может быть пересчитан.",
+      )
+    )
+      return;
     setCommandPaletteOpen(false);
     setWorking(true);
     setWorkingMessage("Перезагрузка ресурсов Pi…");
@@ -2600,7 +4724,10 @@ export default function App() {
       applyRuntimeSnapshot(next);
       addNotice("Ресурсы Pi перезагружены.", "info");
     } catch (error) {
-      addNotice(error instanceof Error ? error.message : String(error), "error");
+      addNotice(
+        error instanceof Error ? error.message : String(error),
+        "error",
+      );
     } finally {
       setWorking(false);
       setWorkingMessage("");
@@ -2645,16 +4772,33 @@ export default function App() {
   }, [diffOpen, extensionDialog, activeConversationId]);
 
   const activeProject = projects.find((item) => item.id === activeProjectId);
-  const activeConversation = conversations.find((item) => item.id === activeConversationId) ?? snapshot?.conversation;
-  const grouped = useMemo(() => projects.map((project) => ({
-    project,
-    chats: conversations
-      .filter((item) => item.projectId === project.id && (!searchMatches || searchMatches.has(item.id)))
-      .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt)),
-  })), [projects, conversations, searchMatches]);
-  const standaloneChats = useMemo(() => conversations
-    .filter((item) => !item.projectId && (!searchMatches || searchMatches.has(item.id)))
-    .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt)), [conversations, searchMatches]);
+  const activeConversation =
+    conversations.find((item) => item.id === activeConversationId) ??
+    snapshot?.conversation;
+  const grouped = useMemo(
+    () =>
+      projects.map((project) => ({
+        project,
+        chats: conversations
+          .filter(
+            (item) =>
+              item.projectId === project.id &&
+              (!searchMatches || searchMatches.has(item.id)),
+          )
+          .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt)),
+      })),
+    [projects, conversations, searchMatches],
+  );
+  const standaloneChats = useMemo(
+    () =>
+      conversations
+        .filter(
+          (item) =>
+            !item.projectId && (!searchMatches || searchMatches.has(item.id)),
+        )
+        .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt)),
+    [conversations, searchMatches],
+  );
   const openProject = async (projectId: string) => {
     setActiveProjectId(projectId);
     try {
@@ -2666,51 +4810,88 @@ export default function App() {
       if (chats.length) await openConversation(chats[0].id);
       else await newChat(projectId);
     } catch (error) {
-      addNotice(error instanceof Error ? error.message : String(error), "error");
+      addNotice(
+        error instanceof Error ? error.message : String(error),
+        "error",
+      );
     }
   };
   const historicalTranscriptItems = useMemo(() => {
-    const visibleExtensionEntries = (snapshot?.entries ?? []).filter((entry) => entry.renderedLines?.length);
-    const compactionEntries = (snapshot?.entries ?? []).filter((entry) => entry.type === "compaction");
+    const visibleExtensionEntries = (snapshot?.entries ?? []).filter(
+      (entry) => entry.renderedLines?.length,
+    );
+    const compactionEntries = (snapshot?.entries ?? []).filter(
+      (entry) => entry.type === "compaction",
+    );
     return [
-      ...messages.map((message, sourceIndex): TranscriptTimelineItem => ({
-        kind: "message",
-        message,
-        sourceIndex,
-        timestamp: transcriptTimestamp(message.timestamp, Number.MAX_SAFE_INTEGER - 100_000 + sourceIndex),
-        order: sourceIndex * 2,
-      })),
-      ...visibleExtensionEntries.map((entry, sourceIndex): TranscriptTimelineItem => ({
-        kind: "extension",
-        entry,
-        sourceIndex,
-        timestamp: transcriptTimestamp(entry.timestamp, Number.MAX_SAFE_INTEGER - 50_000 + sourceIndex),
-        order: sourceIndex * 2 + 1,
-      })),
-      ...compactionEntries.map((entry, sourceIndex): TranscriptTimelineItem => ({
-        kind: "compaction",
-        entry,
-        record: snapshot?.compactions.find((record) => record.entryId === entry.id),
-        sourceIndex,
-        timestamp: transcriptTimestamp(entry.timestamp, Number.MAX_SAFE_INTEGER - 25_000 + sourceIndex),
-        order: sourceIndex * 2 + 2,
-      })),
-    ].sort((left, right) => left.timestamp - right.timestamp || left.order - right.order);
+      ...messages.map(
+        (message, sourceIndex): TranscriptTimelineItem => ({
+          kind: "message",
+          message,
+          sourceIndex,
+          timestamp: transcriptTimestamp(
+            message.timestamp,
+            Number.MAX_SAFE_INTEGER - 100_000 + sourceIndex,
+          ),
+          order: sourceIndex * 2,
+        }),
+      ),
+      ...visibleExtensionEntries.map(
+        (entry, sourceIndex): TranscriptTimelineItem => ({
+          kind: "extension",
+          entry,
+          sourceIndex,
+          timestamp: transcriptTimestamp(
+            entry.timestamp,
+            Number.MAX_SAFE_INTEGER - 50_000 + sourceIndex,
+          ),
+          order: sourceIndex * 2 + 1,
+        }),
+      ),
+      ...compactionEntries.map(
+        (entry, sourceIndex): TranscriptTimelineItem => ({
+          kind: "compaction",
+          entry,
+          record: snapshot?.compactions.find(
+            (record) => record.entryId === entry.id,
+          ),
+          sourceIndex,
+          timestamp: transcriptTimestamp(
+            entry.timestamp,
+            Number.MAX_SAFE_INTEGER - 25_000 + sourceIndex,
+          ),
+          order: sourceIndex * 2 + 2,
+        }),
+      ),
+    ].sort(
+      (left, right) =>
+        left.timestamp - right.timestamp || left.order - right.order,
+    );
   }, [messages, snapshot?.entries, snapshot?.compactions]);
-  const transcriptItems: TranscriptTimelineItem[] = streamingMessage ? [
-    ...historicalTranscriptItems,
-    {
-      kind: "message",
-      message: streamingMessage,
-      sourceIndex: messages.length,
-      timestamp: Number.MAX_SAFE_INTEGER,
-      order: Number.MAX_SAFE_INTEGER,
-    },
-  ] : historicalTranscriptItems;
-  const slashQuery = input.startsWith("/") && !input.includes(" ") ? input.slice(1).toLocaleLowerCase() : undefined;
-  const slashCommands = slashQuery === undefined ? [] : (snapshot?.commands ?? [])
-    .filter((command) => command.name.toLocaleLowerCase().includes(slashQuery))
-    .slice(0, 10);
+  const transcriptItems: TranscriptTimelineItem[] = streamingMessage
+    ? [
+        ...historicalTranscriptItems,
+        {
+          kind: "message",
+          message: streamingMessage,
+          sourceIndex: messages.length,
+          timestamp: Number.MAX_SAFE_INTEGER,
+          order: Number.MAX_SAFE_INTEGER,
+        },
+      ]
+    : historicalTranscriptItems;
+  const slashQuery =
+    input.startsWith("/") && !input.includes(" ")
+      ? input.slice(1).toLocaleLowerCase()
+      : undefined;
+  const slashCommands =
+    slashQuery === undefined
+      ? []
+      : (snapshot?.commands ?? [])
+          .filter((command) =>
+            command.name.toLocaleLowerCase().includes(slashQuery),
+          )
+          .slice(0, 10);
   const historicalToolIndex = useMemo(() => {
     const results = new Map<string, JsonObject>();
     const calls = new Set<string>();
@@ -2720,7 +4901,9 @@ export default function App() {
         if (id) results.set(id, message);
       }
       toolCallParts(message).forEach((call, callIndex) => {
-        calls.add(toolCallIdentifier(call, `message-${messageIndex}-tool-${callIndex}`));
+        calls.add(
+          toolCallIdentifier(call, `message-${messageIndex}-tool-${callIndex}`),
+        );
       });
     });
     return { results, calls };
@@ -2728,19 +4911,35 @@ export default function App() {
   const streamingToolIds = new Set<string>();
   if (streamingMessage) {
     toolCallParts(streamingMessage).forEach((call, callIndex) => {
-      streamingToolIds.add(toolCallIdentifier(call, `message-${messages.length}-tool-${callIndex}`));
+      streamingToolIds.add(
+        toolCallIdentifier(
+          call,
+          `message-${messages.length}-tool-${callIndex}`,
+        ),
+      );
     });
   }
-  const hasTranscriptTool = (id: string): boolean => historicalToolIndex.calls.has(id) || streamingToolIds.has(id);
-  const buildToolActivity = (call: JsonObject, fallbackId: string): ToolActivity => {
+  const hasTranscriptTool = (id: string): boolean =>
+    historicalToolIndex.calls.has(id) || streamingToolIds.has(id);
+  const buildToolActivity = (
+    call: JsonObject,
+    fallbackId: string,
+  ): ToolActivity => {
     const id = toolCallIdentifier(call, fallbackId);
     const live = tools[id];
     const persisted = historicalToolIndex.results.get(id);
     return {
       id,
-      name: String(call.name && call.name !== "Инструмент" ? call.name : live?.name ?? persisted?.toolName ?? "Инструмент"),
+      name: String(
+        call.name && call.name !== "Инструмент"
+          ? call.name
+          : (live?.name ?? persisted?.toolName ?? "Инструмент"),
+      ),
       args: call.arguments ?? call.args ?? live?.args,
-      partialArguments: typeof call.partialArguments === "string" ? call.partialArguments : undefined,
+      partialArguments:
+        typeof call.partialArguments === "string"
+          ? call.partialArguments
+          : undefined,
       result: persisted ? resultMessagePayload(persisted) : live?.result,
       running: live?.running ?? false,
       preparing: !live && !persisted && working,
@@ -2748,11 +4947,21 @@ export default function App() {
       startedAt: live?.startedAt ?? 0,
     };
   };
-  const orphanTools = Object.values(tools).filter((tool) => !hasTranscriptTool(tool.id));
+  const orphanTools = Object.values(tools).filter(
+    (tool) => !hasTranscriptTool(tool.id),
+  );
   const runningTool = Object.values(tools).find((tool) => tool.running);
-  const streamingParts = Array.isArray(streamingMessage?.content) ? streamingMessage.content as JsonObject[] : [];
-  const hasStreamingAnswer = streamingParts.some((part) => part.type === "text" && String(part.text ?? "").trim());
-  const hasStreamingThinking = streamingParts.some((part) => part.type === "thinking" && String(part.thinking ?? part.text ?? "").trim());
+  const streamingParts = Array.isArray(streamingMessage?.content)
+    ? (streamingMessage.content as JsonObject[])
+    : [];
+  const hasStreamingAnswer = streamingParts.some(
+    (part) => part.type === "text" && String(part.text ?? "").trim(),
+  );
+  const hasStreamingThinking = streamingParts.some(
+    (part) =>
+      part.type === "thinking" &&
+      String(part.thinking ?? part.text ?? "").trim(),
+  );
   const activityLabel = runningTool
     ? `Выполняется: ${toolPresentation(runningTool.name, parsedToolArguments(runningTool.args)).label}`
     : workingMessage
@@ -2760,20 +4969,32 @@ export default function App() {
       : hasStreamingAnswer
         ? "Модель формирует ответ…"
         : hasStreamingThinking
-        ? hiddenThinkingLabel || "Модель размышляет…"
-        : "Модель работает…";
-  const transcriptItemKey = (item: TranscriptTimelineItem, index: number): string => {
-    if (item.kind === "message") return messageKey(item.message, item.sourceIndex);
+          ? hiddenThinkingLabel || "Модель размышляет…"
+          : "Модель работает…";
+  const transcriptItemKey = (
+    item: TranscriptTimelineItem,
+    index: number,
+  ): string => {
+    if (item.kind === "message")
+      return messageKey(item.message, item.sourceIndex);
     return String(item.entry.id ?? `${item.kind}-${item.sourceIndex}-${index}`);
   };
-  const renderTranscriptItem = (item: TranscriptTimelineItem): ReactNode => {
+  const renderTranscriptItem = (item: TranscriptTimelineItem, published?: ReadonlySet<string>, answerMedia?: Record<string, unknown>[]): ReactNode => {
     if (item.kind === "compaction") {
-      const tokensBefore = item.record?.tokensBefore ?? Number(item.entry.tokensBefore);
-      const tokensAfter = item.record?.tokensAfter ?? Number(item.entry.estimatedTokensAfter);
+      const tokensBefore =
+        item.record?.tokensBefore ?? Number(item.entry.tokensBefore);
+      const tokensAfter =
+        item.record?.tokensAfter ?? Number(item.entry.estimatedTokensAfter);
       return (
         <div className="compaction-entry">
           <Check size={14} />
-          <span>Контекст сжат: <strong>{formatCompactTokens(tokensBefore)}</strong> → <strong>{formatCompactTokens(tokensAfter)}</strong>{item.record?.durationMs !== undefined ? ` за ${formatElapsed(item.record.durationMs)}` : ""}</span>
+          <span>
+            Контекст сжат: <strong>{formatCompactTokens(tokensBefore)}</strong>{" "}
+            → <strong>{formatCompactTokens(tokensAfter)}</strong>
+            {item.record?.durationMs !== undefined
+              ? ` за ${formatElapsed(item.record.durationMs)}`
+              : ""}
+          </span>
         </div>
       );
     }
@@ -2791,40 +5012,198 @@ export default function App() {
     if (message.role === "toolResult" || message.role === "tool") {
       const id = toolResultIdentifier(message);
       if (id && hasTranscriptTool(id)) return null;
-      return <ToolCard tool={{
-        id: id ?? messageKey(message, index),
-        name: String(message.toolName ?? message.name ?? "Инструмент"),
-        result: resultMessagePayload(message),
-        running: false,
-        error: Boolean(message.isError),
-        startedAt: 0,
-      }} />;
+      return (
+        <ToolCard
+          hideMedia={published?.has(id ?? messageKey(message, index))}
+          tool={{
+            id: id ?? messageKey(message, index),
+            name: String(message.toolName ?? message.name ?? "Инструмент"),
+            result: resultMessagePayload(message),
+            running: false,
+            error: Boolean(message.isError),
+            startedAt: 0,
+          }}
+        />
+      );
     }
     const visibleMessage = messageWithoutToolCalls(message);
     const calls = toolCallParts(message);
     const isStreamingMessage = message === streamingMessage;
     return (
       <>
-        {visibleMessage && <article className={`message ${message.role ?? "assistant"}`}>
-          {message.role === "user" ? (
-            <div className="user-bubble"><MessageContent message={visibleMessage} /></div>
-          ) : (
-            <div className="assistant-message"><MessageContent message={visibleMessage} assistant streaming={isStreamingMessage} /></div>
-          )}
-        </article>}
-        {calls.map((call, callIndex) => <ToolCard
-          key={toolCallIdentifier(call, `${messageKey(message, index)}-${callIndex}`)}
-          tool={buildToolActivity(call, `${messageKey(message, index)}-${callIndex}`)}
-        />)}
+        {visibleMessage && (
+          <article className={`message ${message.role ?? "assistant"}`}>
+            {message.role === "user" ? (
+              <div className="user-bubble">
+                <MessageContent message={visibleMessage} />
+              </div>
+            ) : (
+              <div className="assistant-message">
+                <MessageContent
+                  message={visibleMessage}
+                  assistant
+                  streaming={isStreamingMessage}
+                />
+                {answerMedia && answerMedia.length > 0 && <div className="assistant-published-media"><ComfyMedia parts={answerMedia} /></div>}
+              </div>
+            )}
+          </article>
+        )}
+        {calls.map((call, callIndex) => (
+          <ToolCard
+            hideMedia={published?.has(toolCallIdentifier(call, `${messageKey(message, index)}-${callIndex}`))}
+            key={toolCallIdentifier(
+              call,
+              `${messageKey(message, index)}-${callIndex}`,
+            )}
+            tool={buildToolActivity(
+              call,
+              `${messageKey(message, index)}-${callIndex}`,
+            )}
+          />
+        ))}
       </>
+    );
+  };
+
+  const transcriptDisplay = useMemo(
+    () => buildTranscriptDisplay(transcriptItems, streamingMessage),
+    [transcriptItems, streamingMessage],
+  );
+  const currentTurnStart = messages.reduce((last, message, index) => message.role === "user" ? index : last, -1);
+  const [expandedProcessFolds, setExpandedProcessFolds] = useState<Set<string>>(
+    () => new Set(),
+  );
+  const toggleProcessFold = useCallback((key: string) => {
+    setExpandedProcessFolds((current) => {
+      const next = new Set(current);
+      if (next.has(key)) next.delete(key);
+      else next.add(key);
+      return next;
+    });
+  }, []);
+  const displayItemKey = (display: TranscriptDisplayItem): string =>
+    display.display === "single"
+      ? transcriptItemKey(display.item, 0)
+      : display.key;
+  const foldStats = (process: TranscriptTimelineItem[]) => {
+    let calls = 0;
+    let errors = 0;
+    let thinking = false;
+    for (const item of process) {
+      if (item.kind !== "message") continue;
+      const content: JsonObject[] = Array.isArray(item.message.content)
+        ? item.message.content
+        : [];
+      if (
+        content.some(
+          (part) =>
+            part?.type === "thinking" &&
+            String(part.thinking ?? part.text ?? "").trim(),
+        )
+      )
+        thinking = true;
+      toolCallParts(item.message).forEach((call, callIndex) => {
+        calls += 1;
+        const id = toolCallIdentifier(
+          call,
+          `message-${item.sourceIndex}-tool-${callIndex}`,
+        );
+        const persisted = historicalToolIndex.results.get(id);
+        if (persisted) {
+          if (persisted.isError) errors += 1;
+        } else if (tools[id]?.error) errors += 1;
+      });
+    }
+    return { calls, errors, thinking };
+  };
+  const renderDisplayItem = (display: TranscriptDisplayItem): ReactNode => {
+    if (display.display === "single") return renderTranscriptItem(display.item);
+    const expanded = expandedProcessFolds.has(display.key);
+    const imageTools: { id: string; name: string; result?: unknown; args?: unknown }[] = [];
+    {
+      for (const item of display.process) {
+        if (item.kind !== "message") continue;
+        const message = item.message;
+        toolCallParts(message).forEach((call, index) => {
+          imageTools.push(buildToolActivity(call, `${messageKey(message, item.sourceIndex)}-${index}`));
+        });
+        if (message.role === "toolResult" || message.role === "tool") {
+          const id = toolResultIdentifier(message) ?? messageKey(message, item.sourceIndex);
+          imageTools.push({
+            id,
+            name: String(message.toolName ?? message.name ?? tools[id]?.name ?? ""),
+            result: resultMessagePayload(message),
+            args: tools[id]?.args,
+          });
+        }
+      }
+    }
+    const answerMessage = display.answer.kind === "message" ? display.answer.message : undefined;
+    const answerComplete = answerCanPublishMedia({
+      streaming: answerMessage === streamingMessage,
+      working,
+      currentTurn: display.answer.sourceIndex >= currentTurnStart,
+      stopReason: answerMessage?.stopReason,
+    });
+    const published = collectAnswerMedia(imageTools, answerComplete, answerMessage ? messageText(answerMessage) : "");
+    const { calls, errors, thinking } = foldStats(display.process);
+    const label =
+      thinking && calls
+        ? "Размышления и инструменты"
+        : thinking
+          ? "Размышления"
+          : calls
+            ? "Инструменты"
+            : "Ход работы";
+    const summary = [label];
+    if (calls) summary.push(`вызовов: ${calls}`);
+    if (errors) summary.push(`с ошибками: ${errors}`);
+    return (
+      <div className="process-fold">
+        <button
+          type="button"
+          className={`process-fold-head ${expanded ? "open" : ""}`}
+          onClick={() => toggleProcessFold(display.key)}
+        >
+          <ChevronRight size={14} />
+          <span>{summary.join(" · ")}</span>
+        </button>
+        {expanded && (
+          <div className="process-fold-body">
+            {display.process.map((item, index) => (
+              <Fragment key={transcriptItemKey(item, index)}>
+                {renderTranscriptItem(item, published.toolIds)}
+              </Fragment>
+            ))}
+          </div>
+        )}
+        {renderTranscriptItem(display.answer, undefined, published.parts)}
+      </div>
     );
   };
 
   return (
     <div className="app-shell">
+      {maskTarget && <MaskEditor key={maskTarget.id} image={maskTarget} initialMask={attachments.find(item => item.maskFor === maskTarget.id)} onClose={() => setMaskTarget(null)} onSave={mask => {
+        setAttachments(current => current.some(item => item.id === maskTarget.id) ? [...current.filter(item => item.maskFor !== maskTarget.id), mask] : current);
+        setMaskTarget(null);
+      }} />}
       <div className="titlebar">
         <div className="titlebar-drag">
-          {!settingsOpen && <button className="title-icon" title={sidebarOpen ? "Скрыть боковую панель" : "Показать боковую панель"} onClick={() => setSidebarOpen((value) => !value)}><PanelLeft size={15} /></button>}
+          {!settingsOpen && (
+            <button
+              className="title-icon"
+              title={
+                sidebarOpen
+                  ? "Скрыть боковую панель"
+                  : "Показать боковую панель"
+              }
+              onClick={() => setSidebarOpen((value) => !value)}
+            >
+              <PanelLeft size={15} />
+            </button>
+          )}
         </div>
       </div>
 
@@ -2842,281 +5221,971 @@ export default function App() {
             extensionState={snapshot?.extensionState}
             archivedConversations={archivedConversations}
             projects={projects}
-            onRestoreConversation={(conversationId) => void restoreChat(conversationId)}
-            onDeleteConversation={(conversationId) => void deleteChat(conversationId)}
+            onRestoreConversation={(conversationId) =>
+              void restoreChat(conversationId)
+            }
+            onDeleteConversation={(conversationId) =>
+              void deleteChat(conversationId)
+            }
           />
         ) : (
-        <>
-        {sidebarOpen && (
-          <aside className="sidebar">
-            <div className="sidebar-brand">
-              <div className="brand-label">Pi Desktop</div>
-            </div>
-            <div className="search-box"><Search size={14} /><input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Поиск по чатам" /></div>
-            <div className="project-list">
-              <div className="sidebar-section-title"><span>Проекты</span><button title="Создать проект" onClick={() => setProjectDialogOpen(true)}><Plus size={15} /></button></div>
-              {grouped.map(({ project, chats }) => (
-                <section className="project-section" key={project.id} onContextMenu={(event) => showProjectMenu(event, project.id)}>
-                  <div className="project-row-wrap">
-                    <button className={`project-row ${activeProjectId === project.id ? "active" : ""}`} onClick={() => void openProject(project.id)}>
-                      <Folder size={16} /><span>{project.name}</span>
+          <>
+            {sidebarOpen && (
+              <aside className="sidebar">
+                <div className="sidebar-brand">
+                  <div className="brand-label">Pi Desktop</div>
+                </div>
+                <div className="search-box">
+                  <Search size={14} />
+                  <input
+                    value={search}
+                    onChange={(event) => setSearch(event.target.value)}
+                    placeholder="Поиск по чатам"
+                  />
+                </div>
+                <div className="project-list">
+                  <div className="sidebar-section-title">
+                    <span>Проекты</span>
+                    <button
+                      title="Создать проект"
+                      onClick={() => setProjectDialogOpen(true)}
+                    >
+                      <Plus size={15} />
                     </button>
-                    <button className="project-new-chat" title={`Новый чат в проекте «${project.name}»`} onClick={() => void newChat(project.id)}><Plus size={14} /></button>
-                    <button className="project-more" title="Действия с проектом" onClick={(event) => showProjectMenu(event, project.id)}><MoreHorizontal size={14} /></button>
                   </div>
-                  <div className="chat-list">
-                    {chats.map((chat) => (
-                      <div className="chat-entry" key={chat.id} data-conversation-id={chat.id} onContextMenu={(event) => showConversationMenu(event, chat.id)}>
-                        <button className={`chat-row ${chat.id === activeConversationId ? "selected" : ""}`} onClick={() => void openConversation(chat.id)}>
+                  {grouped.map(({ project, chats }) => (
+                    <section
+                      className="project-section"
+                      key={project.id}
+                      onContextMenu={(event) =>
+                        showProjectMenu(event, project.id)
+                      }
+                    >
+                      <div className="project-row-wrap">
+                        <button
+                          className={`project-row ${activeProjectId === project.id ? "active" : ""}`}
+                          onClick={() => void openProject(project.id)}
+                        >
+                          <Folder size={16} />
+                          <span>{project.name}</span>
+                        </button>
+                        <button
+                          className="project-new-chat"
+                          title={`Новый чат в проекте «${project.name}»`}
+                          onClick={() => void newChat(project.id)}
+                        >
+                          <Plus size={14} />
+                        </button>
+                        <button
+                          className="project-more"
+                          title="Действия с проектом"
+                          onClick={(event) =>
+                            showProjectMenu(event, project.id)
+                          }
+                        >
+                          <MoreHorizontal size={14} />
+                        </button>
+                      </div>
+                      <div className="chat-list">
+                        {chats.map((chat) => (
+                          <div
+                            className="chat-entry"
+                            key={chat.id}
+                            data-conversation-id={chat.id}
+                            onContextMenu={(event) =>
+                              showConversationMenu(event, chat.id)
+                            }
+                          >
+                            <button
+                              className={`chat-row ${chat.id === activeConversationId ? "selected" : ""}`}
+                              onClick={() => void openConversation(chat.id)}
+                            >
+                              <span className={`status-dot ${chat.status}`} />
+                              <span>{chat.title}</span>
+                            </button>
+                            <button
+                              className="chat-more"
+                              title="Действия с чатом"
+                              onClick={(event) =>
+                                showConversationMenu(event, chat.id)
+                              }
+                            >
+                              <MoreHorizontal size={15} />
+                            </button>
+                          </div>
+                        ))}
+                      </div>
+                    </section>
+                  ))}
+                  <button
+                    className="new-chat-button standalone-new-chat"
+                    onClick={() => void newChat()}
+                  >
+                    <MessageSquarePlus size={17} /> Новый чат
+                  </button>
+                  <div className="sidebar-section-title chats-title">
+                    <span>Чаты</span>
+                  </div>
+                  <div className="standalone-chat-list">
+                    {standaloneChats.map((chat) => (
+                      <div
+                        className="chat-entry"
+                        key={chat.id}
+                        data-conversation-id={chat.id}
+                        onContextMenu={(event) =>
+                          showConversationMenu(event, chat.id)
+                        }
+                      >
+                        <button
+                          className={`chat-row ${chat.id === activeConversationId ? "selected" : ""}`}
+                          onClick={() => void openConversation(chat.id)}
+                        >
                           <span className={`status-dot ${chat.status}`} />
                           <span>{chat.title}</span>
                         </button>
-                        <button className="chat-more" title="Действия с чатом" onClick={(event) => showConversationMenu(event, chat.id)}><MoreHorizontal size={15} /></button>
+                        <button
+                          className="chat-more"
+                          title="Действия с чатом"
+                          onClick={(event) =>
+                            showConversationMenu(event, chat.id)
+                          }
+                        >
+                          <MoreHorizontal size={15} />
+                        </button>
                       </div>
                     ))}
+                    {!standaloneChats.length && (
+                      <div className="sidebar-empty">
+                        Самостоятельных чатов пока нет
+                      </div>
+                    )}
                   </div>
-                </section>
-              ))}
-              <button className="new-chat-button standalone-new-chat" onClick={() => void newChat()}>
-                <MessageSquarePlus size={17} /> Новый чат
-              </button>
-              <div className="sidebar-section-title chats-title"><span>Чаты</span></div>
-              <div className="standalone-chat-list">
-                {standaloneChats.map((chat) => (
-                  <div className="chat-entry" key={chat.id} data-conversation-id={chat.id} onContextMenu={(event) => showConversationMenu(event, chat.id)}>
-                    <button className={`chat-row ${chat.id === activeConversationId ? "selected" : ""}`} onClick={() => void openConversation(chat.id)}>
-                      <span className={`status-dot ${chat.status}`} />
-                      <span>{chat.title}</span>
-                    </button>
-                    <button className="chat-more" title="Действия с чатом" onClick={(event) => showConversationMenu(event, chat.id)}><MoreHorizontal size={15} /></button>
-                  </div>
-                ))}
-                {!standaloneChats.length && <div className="sidebar-empty">Самостоятельных чатов пока нет</div>}
-              </div>
-            </div>
-            <button className="sidebar-footer" onClick={() => setSettingsOpen(true)}>
-              <Settings size={16} /><span>Настройки</span>
-            </button>
-          </aside>
-        )}
-
-        <main className="main-panel">
-          <header className="chat-header">
-            <button className="icon-button" onClick={() => setSidebarOpen((value) => !value)}><Menu size={18} /></button>
-            {activeProject ? <FolderOpen size={17} /> : <Bot size={17} />}
-            <strong>{activeConversation?.title ?? activeProject?.name ?? "Pi Desktop"}</strong>
-            <div className="header-spacer" />
-            {activeProject && <button className="path-button" title={`Показать в проводнике: ${activeProject.path}`} onClick={() => void window.piDesktop.showItemInFolder(activeProject.path)}>{activeProject.name}</button>}
-          </header>
-
-          <div
-            className="conversation-scroll"
-            ref={conversationScrollRef}
-            onScroll={handleConversationScroll}
-            onWheel={handleConversationWheel}
-            onPointerDown={handleConversationPointerDown}
-            onPointerUp={handleConversationPointerEnd}
-            onPointerCancel={handleConversationPointerEnd}
-          >
-            {!activeConversationId ? (
-              <div className="welcome">
-                <div className="welcome-logo"><Bot size={34} /></div>
-                <h1>С чего начнём?</h1>
-                <p>Начните самостоятельный чат или создайте проект с одной или несколькими рабочими папками.</p>
-                <div className="welcome-actions">
-                  <button className="primary large" onClick={() => void newChat()}><MessageSquarePlus size={18} /> Новый чат</button>
-                  <button className="secondary large" onClick={() => setProjectDialogOpen(true)}><FolderOpen size={18} /> Создать проект</button>
                 </div>
-              </div>
-            ) : (
-              <div className="thread" ref={conversationThreadRef}>
-                {headerLines.length > 0 && <div className="extension-frame header-frame">{headerLines.map((line, index) => <div key={`${index}-${line}`}>{line}</div>)}</div>}
-                <VirtualFilm
-                  items={transcriptItems}
-                  itemKey={transcriptItemKey}
-                  renderItem={renderTranscriptItem}
-                  resetKey={activeConversationId}
-                  scrollRef={conversationScrollRef}
-                />
-                {orphanTools.map((tool) => <ToolCard key={tool.id} tool={tool} />)}
-                {footerLines.length > 0 && <div className="extension-frame footer-frame">{footerLines.map((line, index) => <div key={`${index}-${line}`}>{line}</div>)}</div>}
-                {working && (
-                  <div className="run-activity" role="status" aria-live="polite">
-                    <div className="run-activity-phase">
-                      <WorkingIndicator indicator={workingIndicator} />
-                      <span className="working-message">{activityLabel}</span>
-                    </div>
-                    <div className="run-activity-total"><Clock3 size={13} /> Работаю… <strong>{formatElapsed(elapsed)}</strong></div>
-                  </div>
+                <button
+                  className="sidebar-footer"
+                  onClick={() => setSettingsOpen(true)}
+                >
+                  <Settings size={16} />
+                  <span>Настройки</span>
+                </button>
+              </aside>
+            )}
+
+            <main className="main-panel"
+              onDragEnter={(event) => {
+                if (!Array.from(event.dataTransfer.types).includes("Files")) return;
+                event.preventDefault();
+                fileDragDepthRef.current += 1;
+                if (activeConversationId) setDraggingFiles(true);
+              }}
+              onDragOver={(event) => {
+                if (!Array.from(event.dataTransfer.types).includes("Files")) return;
+                event.preventDefault();
+                event.dataTransfer.dropEffect = activeConversationId ? "copy" : "none";
+              }}
+              onDragLeave={() => {
+                fileDragDepthRef.current = Math.max(0, fileDragDepthRef.current - 1);
+                if (!fileDragDepthRef.current) setDraggingFiles(false);
+              }}
+              onDrop={(event) => {
+                if (!Array.from(event.dataTransfer.types).includes("Files")) return;
+                event.preventDefault();
+                fileDragDepthRef.current = 0;
+                setDraggingFiles(false);
+                void dropAttachments(Array.from(event.dataTransfer.files));
+              }}
+            >
+              {draggingFiles && <div className="chat-drop-overlay"><div>Отпустите, чтобы прикрепить к сообщению</div></div>}
+              <header className="chat-header">
+                <button
+                  className="icon-button"
+                  onClick={() => setSidebarOpen((value) => !value)}
+                >
+                  <Menu size={18} />
+                </button>
+                {activeProject ? <FolderOpen size={17} /> : <Bot size={17} />}
+                <strong>
+                  {activeConversation?.title ??
+                    activeProject?.name ??
+                    "Pi Desktop"}
+                </strong>
+                <div className="header-spacer" />
+                {activeProject && (
+                  <button
+                    className="path-button"
+                    title={`Показать в проводнике: ${activeProject.path}`}
+                    onClick={() =>
+                      void window.piDesktop.showItemInFolder(activeProject.path)
+                    }
+                  >
+                    {activeProject.name}
+                  </button>
                 )}
-                {!working && lastDuration !== undefined && (
-                  <div className="run-complete">
-                    <span><Clock3 size={13} /> Запрос занял {formatElapsed(lastDuration)}</span>
-                    {runDiff && (runDiff.files.length > 0 || runDiff.incomplete) && (
-                      <button className="diff-summary-chip" onClick={() => setDiffOpen(true)}>
-                        Изменено {runDiff.files.length} {pluralFiles(runDiff.files.length)} <span className="diff-add">+{runDiff.additions}</span> <span className="diff-remove">−{runDiff.deletions}</span>
+              </header>
+
+              <div
+                className="conversation-scroll"
+                ref={conversationScrollRef}
+                onScroll={handleConversationScroll}
+                onWheel={handleConversationWheel}
+                onPointerDown={handleConversationPointerDown}
+                onPointerUp={handleConversationPointerEnd}
+                onPointerCancel={handleConversationPointerEnd}
+              >
+                {!activeConversationId ? (
+                  <div className="welcome">
+                    <div className="welcome-logo">
+                      <Bot size={34} />
+                    </div>
+                    <h1>С чего начнём?</h1>
+                    <p>
+                      Начните самостоятельный чат или создайте проект с одной
+                      или несколькими рабочими папками.
+                    </p>
+                    <div className="welcome-actions">
+                      <button
+                        className="primary large"
+                        onClick={() => void newChat()}
+                      >
+                        <MessageSquarePlus size={18} /> Новый чат
                       </button>
+                      <button
+                        className="secondary large"
+                        onClick={() => setProjectDialogOpen(true)}
+                      >
+                        <FolderOpen size={18} /> Создать проект
+                      </button>
+                    </div>
+                  </div>
+                ) : (
+                  <div className="thread" ref={conversationThreadRef}>
+                    {headerLines.length > 0 && (
+                      <div className="extension-frame header-frame">
+                        {headerLines.map((line, index) => (
+                          <div key={`${index}-${line}`}>{line}</div>
+                        ))}
+                      </div>
+                    )}
+                    <VirtualFilm
+                      items={transcriptDisplay}
+                      itemKey={displayItemKey}
+                      renderItem={renderDisplayItem}
+                      resetKey={activeConversationId}
+                      scrollRef={conversationScrollRef}
+                    />
+                    {orphanTools.map((tool) => (
+                      <ToolCard key={tool.id} tool={tool} />
+                    ))}
+                    {footerLines.length > 0 && (
+                      <div className="extension-frame footer-frame">
+                        {footerLines.map((line, index) => (
+                          <div key={`${index}-${line}`}>{line}</div>
+                        ))}
+                      </div>
+                    )}
+                    {working && (
+                      <div
+                        className="run-activity"
+                        role="status"
+                        aria-live="polite"
+                      >
+                        <div className="run-activity-phase">
+                          <WorkingIndicator indicator={workingIndicator} />
+                          <span className="working-message">
+                            {activityLabel}
+                          </span>
+                        </div>
+                        <div className="run-activity-total">
+                          <Clock3 size={13} /> Работаю…{" "}
+                          <strong>{formatElapsed(elapsed)}</strong>
+                        </div>
+                      </div>
+                    )}
+                    {!working && lastDuration !== undefined && (
+                      <div className="run-complete">
+                        <span>
+                          <Clock3 size={13} /> Запрос занял{" "}
+                          {formatElapsed(lastDuration)}
+                        </span>
+                        {runDiff && runDiff.files.length > 0 && (
+                            <section className="run-diff-card">
+                              <div className="run-diff-card-head">
+                                <span className="run-diff-card-icon">
+                                  <FileText size={16} />
+                                </span>
+                                <span className="run-diff-card-summary">
+                                  <strong>
+                                    {runDiff.files.length === 1
+                                      ? "Изменён"
+                                      : "Изменены"}{" "}
+                                    {runDiff.files.length}{" "}
+                                    {pluralFiles(runDiff.files.length)}
+                                  </strong>
+                                  <small>
+                                    <span className="diff-add">
+                                      +{runDiff.additions}
+                                    </span>{" "}
+                                    <span className="diff-remove">
+                                      −{runDiff.deletions}
+                                    </span>
+                                  </small>
+                                </span>
+                                <button
+                                  className="run-diff-review"
+                                  onClick={() => setDiffOpen(true)}
+                                >
+                                  Проверить
+                                </button>
+                              </div>
+                              <div className="run-diff-file-list">
+                                {runDiff.files.map((file) => (
+                                  <div
+                                    className="run-diff-file"
+                                    key={file.path}
+                                    title={file.path}
+                                  >
+                                    <span>{file.relativePath}</span>
+                                    <small>
+                                      <span className="diff-add">
+                                        +{file.additions}
+                                      </span>{" "}
+                                      <span className="diff-remove">
+                                        −{file.deletions}
+                                      </span>
+                                    </small>
+                                  </div>
+                                ))}
+                                {runDiff.incomplete && (
+                                  <div className="run-diff-incomplete">
+                                    Некоторые большие или двоичные файлы не
+                                    показаны.
+                                  </div>
+                                )}
+                              </div>
+                            </section>
+                          )}
+                      </div>
                     )}
                   </div>
                 )}
               </div>
-            )}
-          </div>
 
-          {activeConversationId && (
-            <div className={`composer-wrap${modelMenuOpen || thinkingMenuOpen || slashCommands.length > 0 ? " dropdown-open" : ""}`}>
-              {slashCommands.length > 0 && <div className="slash-menu">
-                {slashCommands.map((command) => <button key={`${command.source}-${command.name}`} onClick={() => setInput(`/${command.name} `)}>
-                  <span><strong>/{command.name}</strong><small>{command.description ?? command.source}</small></span>
-                  <em>{command.source}</em>
-                </button>)}
-              </div>}
-              {queuedPrompts.length > 0 && <div className="queued-messages desktop-queue">
-                <div className="queued-head"><span>Ожидают отправки: {queuedPrompts.length}</span></div>
-                {queuedPrompts.map((prompt) => <div className="queued-message" key={prompt.id}>
-                  <Clock3 size={13} />
-                  <span title={prompt.message}>{prompt.message}</span>
-                  {prompt.attachments.length > 0 && <small>{prompt.attachments.length} влож.</small>}
-                  <div className="queued-actions">
-                    <button className="queued-send" title="Передать сообщение модели" disabled={Boolean(queuedActionId)} onClick={() => void sendQueuedPrompt(prompt)}><Zap size={13} /><span>Скорректировать</span></button>
-                    <button title="Вернуть в поле ввода" disabled={Boolean(queuedActionId)} onClick={() => void editQueuedPrompt(prompt)}><Pencil size={13} /></button>
-                    <button title="Удалить из очереди" disabled={Boolean(queuedActionId)} onClick={() => void deleteQueuedPrompt(prompt.id)}><Trash2 size={13} /></button>
-                  </div>
-                </div>)}
-              </div>}
-              {(steeringMessages.length > 0 || followUpMessages.length > 0) && <div className="queued-messages">
-                <div className="queued-head"><span>Очередь Pi: {steeringMessages.length + followUpMessages.length}</span><button onClick={() => void restoreQueuedMessages()}>Вернуть в редактор</button></div>
-                {steeringMessages.map((message, index) => <div className="queued-message steer" key={`steer-${index}`}><Zap size={13} /><span>{message}</span><small>в текущую работу</small></div>)}
-                {followUpMessages.map((message, index) => <div className="queued-message" key={`follow-${index}`}><Clock3 size={13} /><span>{message}</span><small>следом</small></div>)}
-              </div>}
-              {widgets.filter((widget) => widget.placement === "aboveEditor").map((widget) => <div className="extension-widget" key={widget.key}>{widget.lines.map((line, index) => <div key={`${index}-${line}`}>{line}</div>)}</div>)}
-              <div className="composer">
-                {attachments.length > 0 && (
-                  <div className="attachment-list">
-                    {attachments.map((attachment) => (
-                      <div className="attachment-chip" key={attachment.id} title={attachment.path}>
-                        <Paperclip size={13} />
-                        <span>{attachment.name}</span>
-                        <button onClick={() => setAttachments((current) => current.filter((item) => item.id !== attachment.id))}><X size={13} /></button>
+              {activeConversationId && (
+                <div
+                  className={`composer-wrap${modelMenuOpen || thinkingMenuOpen || addMenuOpen || slashCommands.length > 0 ? " dropdown-open" : ""}`}
+                >
+                  {snapshot && (
+                    <GoalPanel
+                      key={snapshot.conversation.id}
+                      conversation={snapshot.conversation}
+                      working={working}
+                    />
+                  )}
+                  {working && runDiff && runDiff.files.length > 0 && (
+                      <div className="live-diff-summary">
+                        <button
+                          className="diff-summary-chip"
+                          onClick={() => setDiffOpen(true)}
+                        >
+                          Изменено {runDiff.files.length}{" "}
+                          {pluralFiles(runDiff.files.length)}{" "}
+                          <span className="diff-add">+{runDiff.additions}</span>{" "}
+                          <span className="diff-remove">
+                            −{runDiff.deletions}
+                          </span>
+                        </button>
+                      </div>
+                    )}
+                  {slashCommands.length > 0 && (
+                    <div className="slash-menu">
+                      {slashCommands.map((command) => (
+                        <button
+                          key={`${command.source}-${command.name}`}
+                          onClick={() => setInput(`/${command.name} `)}
+                        >
+                          <span>
+                            <strong>/{command.name}</strong>
+                            <small>
+                              {command.description ?? command.source}
+                            </small>
+                          </span>
+                          <em>{command.source}</em>
+                        </button>
+                      ))}
+                    </div>
+                  )}
+                  {queuedPrompts.length > 0 && (
+                    <div className="queued-messages desktop-queue">
+                      <div className="queued-head">
+                        <span>Ожидают отправки: {queuedPrompts.length}</span>
+                      </div>
+                      {queuedPrompts.map((prompt) => (
+                        <div className="queued-message" key={prompt.id}>
+                          <Clock3 size={13} />
+                          <span title={prompt.message}>{prompt.message}</span>
+                          {prompt.attachments.length > 0 && (
+                            <small>{prompt.attachments.length} влож.</small>
+                          )}
+                          <div className="queued-actions">
+                            <button
+                              className="queued-send"
+                              title="Передать сообщение модели"
+                              disabled={Boolean(queuedActionId)}
+                              onClick={() => void sendQueuedPrompt(prompt)}
+                            >
+                              <Zap size={13} />
+                              <span>Скорректировать</span>
+                            </button>
+                            <button
+                              title="Вернуть в поле ввода"
+                              disabled={Boolean(queuedActionId)}
+                              onClick={() => void editQueuedPrompt(prompt)}
+                            >
+                              <Pencil size={13} />
+                            </button>
+                            <button
+                              title="Удалить из очереди"
+                              disabled={Boolean(queuedActionId)}
+                              onClick={() => void deleteQueuedPrompt(prompt.id)}
+                            >
+                              <Trash2 size={13} />
+                            </button>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                  {(steeringMessages.length > 0 ||
+                    followUpMessages.length > 0) && (
+                    <div className="queued-messages">
+                      <div className="queued-head">
+                        <span>
+                          Очередь Pi:{" "}
+                          {steeringMessages.length + followUpMessages.length}
+                        </span>
+                        <button onClick={() => void restoreQueuedMessages()}>
+                          Вернуть в редактор
+                        </button>
+                      </div>
+                      {steeringMessages.map((message, index) => (
+                        <div
+                          className="queued-message steer"
+                          key={`steer-${index}`}
+                        >
+                          <Zap size={13} />
+                          <span>{message}</span>
+                          <small>в текущую работу</small>
+                        </div>
+                      ))}
+                      {followUpMessages.map((message, index) => (
+                        <div className="queued-message" key={`follow-${index}`}>
+                          <Clock3 size={13} />
+                          <span>{message}</span>
+                          <small>следом</small>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                  {widgets
+                    .filter((widget) => widget.placement === "aboveEditor")
+                    .map((widget) => (
+                      <div className="extension-widget" key={widget.key}>
+                        {widget.lines.map((line, index) => (
+                          <div key={`${index}-${line}`}>{line}</div>
+                        ))}
                       </div>
                     ))}
+                  <div className="composer">
+                    {attachments.length > 0 && (
+                      <div className="attachment-list">
+                        {attachments.map((attachment) => {
+                          const remove = () =>
+                            setAttachments((current) =>
+                              current.filter(
+                                (item) => item.id !== attachment.id && item.maskFor !== attachment.id,
+                              ),
+                            );
+                          if (
+                            attachment.mimeType?.startsWith("image/") &&
+                            attachment.data
+                          ) {
+                            return (
+                              <div
+                                className="attachment-preview"
+                                key={attachment.id}
+                                title={attachment.name}
+                              >
+                                <PreviewImage
+                                  src={`data:${attachment.mimeType};base64,${attachment.data}`}
+                                  alt={attachment.name}
+                                />
+                                {!attachment.maskFor && <button className="attachment-mask-button" type="button" title="Нарисовать маску" onClick={() => setMaskTarget(attachment)}>Маска</button>}
+                                {attachment.maskFor && <span className="attachment-mask-label">Маска</span>}
+                                <button
+                                  type="button"
+                                  title="Удалить изображение"
+                                  aria-label={`Удалить ${attachment.name}`}
+                                  onClick={remove}
+                                >
+                                  <X size={13} />
+                                </button>
+                              </div>
+                            );
+                          }
+                          return (
+                            <div
+                              className="attachment-chip"
+                              key={attachment.id}
+                              title={attachment.path}
+                            >
+                              <Paperclip size={13} />
+                              <span>{attachment.name}</span>
+                              <button
+                                type="button"
+                                title="Удалить вложение"
+                                aria-label={`Удалить ${attachment.name}`}
+                                onClick={remove}
+                              >
+                                <X size={13} />
+                              </button>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    )}
+                    <textarea
+                      value={input}
+                      onChange={(event) => setInput(event.target.value)}
+                      onPaste={(event) => {
+                        const imageFiles = [
+                          ...event.clipboardData.files,
+                        ].filter((file) => file.type.startsWith("image/"));
+                        if (!imageFiles.length) return;
+                        event.preventDefault();
+                        void Promise.all(imageFiles.map(pastedImageAttachment))
+                          .then((items) =>
+                            setAttachments((current) => [...current, ...items]),
+                          )
+                          .catch((error) =>
+                            addNotice(
+                              error instanceof Error
+                                ? error.message
+                                : String(error),
+                              "error",
+                            ),
+                          );
+                      }}
+                      onKeyDown={(event) => {
+                        if (event.key === "Enter" && !event.shiftKey) {
+                          event.preventDefault();
+                          void submit();
+                        }
+                      }}
+                      placeholder={
+                        working
+                          ? "Сообщение будет добавлено в очередь…"
+                          : goalMode
+                            ? "Опишите цель"
+                            : "Спросите что-нибудь или опишите задачу"
+                      }
+                      rows={2}
+                    />
+                    <div className="composer-toolbar">
+                      <div className="composer-add-wrap">
+                        <button
+                          className="icon-button"
+                          title="Добавить"
+                          onClick={() => {
+                            setModelMenuOpen(false);
+                            setThinkingMenuOpen(false);
+                            setAddMenuOpen((value) => !value);
+                          }}
+                        >
+                          <Plus size={19} />
+                        </button>
+                        {addMenuOpen && (
+                          <div className="composer-add-menu">
+                            <button
+                              onClick={() => {
+                                setAddMenuOpen(false);
+                                void addAttachments();
+                              }}
+                            >
+                              <Paperclip size={16} />
+                              <span>
+                                <strong>Файлы и папки</strong>
+                                <small>Добавить вложения</small>
+                              </span>
+                            </button>
+                            <button
+                              disabled={
+                                working || Boolean(snapshot?.conversation.goal)
+                              }
+                              onClick={() => {
+                                setAddMenuOpen(false);
+                                setGoalMode(true);
+                              }}
+                            >
+                              <Target size={16} />
+                              <span>
+                                <strong>Цель</strong>
+                                <small>
+                                  Поставьте цель, к которой будете двигаться
+                                </small>
+                              </span>
+                            </button>
+                          </div>
+                        )}
+                      </div>
+                      <button
+                        className="icon-button"
+                        title="Команды Pi (Ctrl+Shift+P)"
+                        onClick={() => setCommandPaletteOpen(true)}
+                      >
+                        <SquareTerminal size={17} />
+                      </button>
+                      <span className="access-chip">
+                        <Check size={13} /> Полный доступ
+                      </span>
+                      {goalMode && (
+                        <button
+                          className="goal-mode-chip"
+                          title="Отключить режим цели"
+                          onClick={() => setGoalMode(false)}
+                        >
+                          <Target size={14} /> Цель <X size={12} />
+                        </button>
+                      )}
+                      <div className="composer-spacer" />
+                      <div className="dropdown-wrap model-dropdown-wrap">
+                        <button
+                          className="selector-button model-selector-button"
+                          title={
+                            snapshot?.state.model?.name ??
+                            snapshot?.state.model?.id ??
+                            "Модель"
+                          }
+                          onClick={() => {
+                            setThinkingMenuOpen(false);
+                            setModelMenuOpen((value) => !value);
+                          }}
+                        >
+                          <span className="selector-label">
+                            {snapshot?.state.model?.name ??
+                              snapshot?.state.model?.id ??
+                              "Модель"}
+                          </span>
+                          <ChevronDown size={13} />
+                        </button>
+                        {modelMenuOpen && (
+                          <div className="dropdown-menu model-menu">
+                            {snapshot?.models.map((model) => (
+                              <button
+                                key={`${model.provider}/${model.id}`}
+                                className="dropdown-item"
+                                onClick={() => void changeModel(model)}
+                              >
+                                <span>
+                                  <strong>{model.name ?? model.id}</strong>
+                                  <small>{model.provider}</small>
+                                </span>
+                                {snapshot.state.model?.provider ===
+                                  model.provider &&
+                                  snapshot.state.model?.id === model.id && (
+                                    <Check size={15} />
+                                  )}
+                              </button>
+                            ))}
+                          </div>
+                        )}
+                      </div>
+                      <div className="dropdown-wrap thinking-dropdown-wrap">
+                        <button
+                          className="selector-button thinking-selector-button"
+                          title="Уровень рассуждений"
+                          onClick={() => {
+                            setModelMenuOpen(false);
+                            setThinkingMenuOpen((value) => !value);
+                          }}
+                        >
+                          <span className="selector-label">
+                            {
+                              THINKING_LABELS[
+                                snapshot?.state.thinkingLevel ?? "off"
+                              ]
+                            }
+                          </span>
+                          <ChevronDown size={13} />
+                        </button>
+                        {thinkingMenuOpen && (
+                          <div className="dropdown-menu thinking-menu">
+                            {snapshot?.thinkingLevels.map((level) => (
+                              <button
+                                key={level}
+                                className="dropdown-item"
+                                onClick={() => void changeThinking(level)}
+                              >
+                                <span>{THINKING_LABELS[level]}</span>
+                                {snapshot.state.thinkingLevel === level && (
+                                  <Check size={15} />
+                                )}
+                              </button>
+                            ))}
+                          </div>
+                        )}
+                      </div>
+                      {working ? (
+                        <>
+                          <button
+                            className="send-button"
+                            title="Поставить в очередь"
+                            disabled={!input.trim() && !attachments.length}
+                            onClick={() => void submit()}
+                          >
+                            <Send size={17} />
+                          </button>
+                          <button
+                            className="send-button stop"
+                            title="Остановить"
+                            onClick={() =>
+                              void window.piDesktop.abort(activeConversationId)
+                            }
+                          >
+                            <CircleStop size={18} />
+                          </button>
+                        </>
+                      ) : (
+                        <button
+                          className="send-button"
+                          disabled={!input.trim() && !attachments.length}
+                          onClick={() => void submit()}
+                        >
+                          <Send size={17} />
+                        </button>
+                      )}
+                    </div>
                   </div>
-                )}
-                <textarea
-                  value={input}
-                  onChange={(event) => setInput(event.target.value)}
-                  onPaste={(event) => {
-                    const imageFiles = [...event.clipboardData.files].filter((file) => file.type.startsWith("image/"));
-                    if (!imageFiles.length) return;
-                    event.preventDefault();
-                    void Promise.all(imageFiles.map(pastedImageAttachment))
-                      .then((items) => setAttachments((current) => [...current, ...items]))
-                      .catch((error) => addNotice(error instanceof Error ? error.message : String(error), "error"));
-                  }}
-                  onKeyDown={(event) => {
-                    if (event.key === "Enter" && !event.shiftKey) {
-                      event.preventDefault();
-                      void submit();
-                    }
-                  }}
-                  placeholder={working ? "Сообщение будет добавлено в очередь…" : "Спросите что-нибудь или опишите задачу"}
-                  rows={2}
-                />
-                <div className="composer-toolbar">
-                  <button className="icon-button" title="Добавить вложение" onClick={() => void addAttachments()}><Paperclip size={18} /></button>
-                  <button className="icon-button" title="Команды Pi (Ctrl+Shift+P)" onClick={() => setCommandPaletteOpen(true)}><SquareTerminal size={17} /></button>
-                  <span className="access-chip"><Check size={13} /> Полный доступ</span>
-                  <div className="composer-spacer" />
-                  <div className="dropdown-wrap model-dropdown-wrap">
-                    <button className="selector-button model-selector-button" title={snapshot?.state.model?.name ?? snapshot?.state.model?.id ?? "Модель"} onClick={() => { setThinkingMenuOpen(false); setModelMenuOpen((value) => !value); }}>
-                      <span className="selector-label">{snapshot?.state.model?.name ?? snapshot?.state.model?.id ?? "Модель"}</span><ChevronDown size={13} />
-                    </button>
-                    {modelMenuOpen && <div className="dropdown-menu model-menu">
-                      {snapshot?.models.map((model) => <button key={`${model.provider}/${model.id}`} className="dropdown-item" onClick={() => void changeModel(model)}>
-                        <span><strong>{model.name ?? model.id}</strong><small>{model.provider}</small></span>
-                        {snapshot.state.model?.provider === model.provider && snapshot.state.model?.id === model.id && <Check size={15} />}
-                      </button>)}
-                    </div>}
+                  {widgets
+                    .filter((widget) => widget.placement === "belowEditor")
+                    .map((widget) => (
+                      <div className="extension-widget below" key={widget.key}>
+                        {widget.lines.map((line, index) => (
+                          <div key={`${index}-${line}`}>{line}</div>
+                        ))}
+                      </div>
+                    ))}
+                  <div className="status-line">
+                    {snapshot?.state.contextUsage && (
+                      <span className="status-item status-context">
+                        <Gauge size={14} /> Контекст:{" "}
+                        {snapshot.state.contextUsage.tokens === null
+                          ? "—"
+                          : formatTokens(
+                              snapshot.state.contextUsage.tokens,
+                            )}{" "}
+                        /{" "}
+                        {formatTokens(
+                          snapshot.state.contextUsage.contextWindow,
+                        )}
+                        {snapshot.state.contextUsage.percent === null
+                          ? ""
+                          : ` (${Math.round(snapshot.state.contextUsage.percent)}%)`}
+                      </span>
+                    )}
+                    {statuses.tokenSpeed && (
+                      <span
+                        className="status-item"
+                        key="tokenSpeed"
+                        title={statuses.tokenSpeed}
+                      >
+                        {statuses.tokenSpeed}
+                      </span>
+                    )}
+                    {Object.entries(statuses)
+                      .filter(([key]) => key !== "tokenSpeed")
+                      .map(([key, status]) => (
+                        <span className="status-item" key={key} title={status}>
+                          {status}
+                        </span>
+                      ))}
+                    {snapshot?.state.isCompacting && (
+                      <span className="status-item compacting">
+                        <span className="spinner" /> Сжатие контекста
+                      </span>
+                    )}
                   </div>
-                  <div className="dropdown-wrap thinking-dropdown-wrap">
-                    <button className="selector-button thinking-selector-button" title="Уровень рассуждений" onClick={() => { setModelMenuOpen(false); setThinkingMenuOpen((value) => !value); }}>
-                      <span className="selector-label">{THINKING_LABELS[snapshot?.state.thinkingLevel ?? "off"]}</span><ChevronDown size={13} />
-                    </button>
-                    {thinkingMenuOpen && <div className="dropdown-menu thinking-menu">
-                      {snapshot?.thinkingLevels.map((level) => <button key={level} className="dropdown-item" onClick={() => void changeThinking(level)}>
-                        <span>{THINKING_LABELS[level]}</span>{snapshot.state.thinkingLevel === level && <Check size={15} />}
-                      </button>)}
-                    </div>}
-                  </div>
-                  {working ? (
-                    <>
-                      <button className="send-button" title="Поставить в очередь" disabled={!input.trim() && !attachments.length} onClick={() => void submit()}><Send size={17} /></button>
-                      <button className="send-button stop" title="Остановить" onClick={() => void window.piDesktop.abort(activeConversationId)}><CircleStop size={18} /></button>
-                    </>
-                  ) : (
-                    <button className="send-button" disabled={!input.trim() && !attachments.length} onClick={() => void submit()}><Send size={17} /></button>
-                  )}
                 </div>
-              </div>
-              {widgets.filter((widget) => widget.placement === "belowEditor").map((widget) => <div className="extension-widget below" key={widget.key}>{widget.lines.map((line, index) => <div key={`${index}-${line}`}>{line}</div>)}</div>)}
-              <div className="status-line">
-                {snapshot?.state.contextUsage && <span className="status-item status-context"><Gauge size={14} /> Контекст: {snapshot.state.contextUsage.tokens === null ? "—" : formatTokens(snapshot.state.contextUsage.tokens)} / {formatTokens(snapshot.state.contextUsage.contextWindow)}{snapshot.state.contextUsage.percent === null ? "" : ` (${Math.round(snapshot.state.contextUsage.percent)}%)`}</span>}
-                {statuses.tokenSpeed && <span className="status-item" key="tokenSpeed" title={statuses.tokenSpeed}>{statuses.tokenSpeed}</span>}
-                {Object.entries(statuses).filter(([key]) => key !== "tokenSpeed").map(([key, status]) => <span className="status-item" key={key} title={status}>{status}</span>)}
-                {snapshot?.state.isCompacting && <span className="status-item compacting"><span className="spinner" /> Сжатие контекста</span>}
-              </div>
-            </div>
-          )}
-          {loading && <div className="loading-overlay"><span className="spinner" /> Загрузка чата…</div>}
-        </main>
-        {diffOpen && runDiff && <DiffPanel diff={runDiff} onClose={() => setDiffOpen(false)} />}
-        </>
+              )}
+              {loading && (
+                <div className="loading-overlay">
+                  <span className="spinner" /> Загрузка чата…
+                </div>
+              )}
+            </main>
+            {diffOpen && runDiff && (
+              <DiffPanel diff={runDiff} onClose={() => setDiffOpen(false)} />
+            )}
+          </>
         )}
       </div>
 
-      <div className="toast-stack">{notices.map((notice) => <div key={notice.id} className={`toast ${notice.type}`}>{notice.message}</div>)}</div>
-      {extensionDialog && <ExtensionDialog item={extensionDialog} onClose={() => setExtensionDialog(undefined)} />}
-      {projectDialogOpen && <ProjectDialog onClose={() => setProjectDialogOpen(false)} onCreated={(project) => void projectCreated(project)} onError={(message) => addNotice(message, "error")} />}
-      {projectMenu && (() => {
-        const project = projects.find((item) => item.id === projectMenu.projectId);
-        if (!project) return null;
-        return (
-          <div className="context-menu-layer" onPointerDown={() => setProjectMenu(undefined)}>
-            <div className="conversation-menu" style={{ left: projectMenu.x, top: projectMenu.y }} onPointerDown={(event) => event.stopPropagation()}>
-              <button onClick={() => { setRenameProject(project); setProjectMenu(undefined); }}><Pencil size={15} /> Переименовать</button>
-              <button onClick={() => { void window.piDesktop.showItemInFolder(project.path); setProjectMenu(undefined); }}><FolderOpen size={15} /> Показать папку</button>
-              <button onClick={() => { void newChat(project.id); setProjectMenu(undefined); }}><MessageSquarePlus size={15} /> Новый чат</button>
-              <div className="conversation-menu-separator" />
-              <button className="danger" onClick={() => void removeProject(project.id)}><Trash2 size={15} /> Убрать проект</button>
-            </div>
+      <div className="toast-stack">
+        {notices.map((notice) => (
+          <div key={notice.id} className={`toast ${notice.type}`}>
+            {notice.message}
           </div>
-        );
-      })()}
-      {conversationMenu && (() => {
-        const conversation = conversations.find((item) => item.id === conversationMenu.conversationId);
-        if (!conversation) return null;
-        return (
-          <div className="context-menu-layer" onPointerDown={() => setConversationMenu(undefined)}>
-            <div className="conversation-menu" style={{ left: conversationMenu.x, top: conversationMenu.y }} onPointerDown={(event) => event.stopPropagation()}>
-              <button onClick={() => { setRenameConversation(conversation); setConversationMenu(undefined); }}><Pencil size={15} /> Переименовать</button>
-              <button onClick={() => void archiveChat(conversation.id)}><Archive size={15} /> Архивировать</button>
-              <div className="conversation-menu-separator" />
-              <button className="danger" onClick={() => void deleteChat(conversation.id)}><Trash2 size={15} /> Удалить</button>
+        ))}
+      </div>
+      {extensionDialog && (
+        <ExtensionDialog
+          item={extensionDialog}
+          onClose={() => setExtensionDialog(undefined)}
+        />
+      )}
+      {projectDialogOpen && (
+        <ProjectDialog
+          onClose={() => setProjectDialogOpen(false)}
+          onCreated={(project) => void projectCreated(project)}
+          onError={(message) => addNotice(message, "error")}
+        />
+      )}
+      {projectMenu &&
+        (() => {
+          const project = projects.find(
+            (item) => item.id === projectMenu.projectId,
+          );
+          if (!project) return null;
+          return (
+            <div
+              className="context-menu-layer"
+              onPointerDown={() => setProjectMenu(undefined)}
+            >
+              <div
+                className="conversation-menu project-context-menu"
+                style={{ left: projectMenu.x, top: projectMenu.y }}
+                onPointerDown={(event) => event.stopPropagation()}
+              >
+                <button
+                  onClick={() => {
+                    setRenameProject(project);
+                    setProjectMenu(undefined);
+                  }}
+                >
+                  <Pencil size={15} /> Переименовать
+                </button>
+                <button
+                  onClick={() => {
+                    setInstructionsProject(project);
+                    setProjectMenu(undefined);
+                  }}
+                >
+                  <FileText size={15} /> Редактировать инструкции проекта
+                </button>
+                <button
+                  onClick={() => {
+                    void window.piDesktop.showItemInFolder(project.path);
+                    setProjectMenu(undefined);
+                  }}
+                >
+                  <FolderOpen size={15} /> Показать папку
+                </button>
+                <button
+                  onClick={() => {
+                    void newChat(project.id);
+                    setProjectMenu(undefined);
+                  }}
+                >
+                  <MessageSquarePlus size={15} /> Новый чат
+                </button>
+                <div className="conversation-menu-separator" />
+                <button
+                  className="danger"
+                  onClick={() => void removeProject(project.id)}
+                >
+                  <Trash2 size={15} /> Убрать проект
+                </button>
+              </div>
             </div>
-          </div>
-        );
-      })()}
-      {renameConversation && <RenameConversationDialog title={renameConversation.title} onClose={() => setRenameConversation(undefined)} onSave={(title) => void saveConversationTitle(title)} />}
-      {renameProject && <RenameConversationDialog heading="Переименовать проект" title={renameProject.name} onClose={() => setRenameProject(undefined)} onSave={(title) => void saveProjectTitle(title)} />}
-      {commandPaletteOpen && snapshot && <CommandPalette
-        commands={snapshot.commands}
-        busy={working}
-        onClose={() => setCommandPaletteOpen(false)}
-        onCompact={() => { setCommandPaletteOpen(false); setCompactDialogOpen(true); }}
-        onReload={() => void executeReload()}
-        onInsert={insertCommand}
-      />}
-      {compactDialogOpen && <CompactDialog onClose={() => setCompactDialogOpen(false)} onCompact={(instructions) => void executeCompact(instructions)} />}
+          );
+        })()}
+      {conversationMenu &&
+        (() => {
+          const conversation = conversations.find(
+            (item) => item.id === conversationMenu.conversationId,
+          );
+          if (!conversation) return null;
+          return (
+            <div
+              className="context-menu-layer"
+              onPointerDown={() => setConversationMenu(undefined)}
+            >
+              <div
+                className="conversation-menu"
+                style={{ left: conversationMenu.x, top: conversationMenu.y }}
+                onPointerDown={(event) => event.stopPropagation()}
+              >
+                <button
+                  onClick={() => {
+                    setRenameConversation(conversation);
+                    setConversationMenu(undefined);
+                  }}
+                >
+                  <Pencil size={15} /> Переименовать
+                </button>
+                <button onClick={() => void archiveChat(conversation.id)}>
+                  <Archive size={15} /> Архивировать
+                </button>
+                <div className="conversation-menu-separator" />
+                <button
+                  className="danger"
+                  onClick={() => void deleteChat(conversation.id)}
+                >
+                  <Trash2 size={15} /> Удалить
+                </button>
+              </div>
+            </div>
+          );
+        })()}
+      {renameConversation && (
+        <RenameConversationDialog
+          title={renameConversation.title}
+          onClose={() => setRenameConversation(undefined)}
+          onSave={(title) => void saveConversationTitle(title)}
+        />
+      )}
+      {renameProject && (
+        <RenameConversationDialog
+          heading="Переименовать проект"
+          title={renameProject.name}
+          onClose={() => setRenameProject(undefined)}
+          onSave={(title) => void saveProjectTitle(title)}
+        />
+      )}
+      {instructionsProject && (
+        <ProjectInstructionsDialog
+          project={instructionsProject}
+          onClose={() => setInstructionsProject(undefined)}
+        />
+      )}
+      {commandPaletteOpen && snapshot && (
+        <CommandPalette
+          commands={snapshot.commands}
+          busy={working}
+          onClose={() => setCommandPaletteOpen(false)}
+          onCompact={() => {
+            setCommandPaletteOpen(false);
+            setCompactDialogOpen(true);
+          }}
+          onReload={() => void executeReload()}
+          onInsert={insertCommand}
+        />
+      )}
+      {compactDialogOpen && (
+        <CompactDialog
+          onClose={() => setCompactDialogOpen(false)}
+          onCompact={(instructions) => void executeCompact(instructions)}
+        />
+      )}
     </div>
   );
 }
@@ -3126,7 +6195,8 @@ function formatElapsed(milliseconds: number): string {
   const hours = Math.floor(total / 3600);
   const minutes = Math.floor((total % 3600) / 60);
   const seconds = total % 60;
-  if (hours) return `${hours}:${String(minutes).padStart(2, "0")}:${String(seconds).padStart(2, "0")}`;
+  if (hours)
+    return `${hours}:${String(minutes).padStart(2, "0")}:${String(seconds).padStart(2, "0")}`;
   return `${minutes}:${String(seconds).padStart(2, "0")}`;
 }
 
@@ -3143,9 +6213,7 @@ function formatCompactTokens(tokens: number): string {
 
 function sanitizeStatusText(value?: string): string {
   if (!value) return "";
-  return stripTerminalCodes(value)
-    .replace(/\s+/g, " ")
-    .trim();
+  return stripTerminalCodes(value).replace(/\s+/g, " ").trim();
 }
 
 function stripTerminalCodes(value: unknown): string {
@@ -3178,7 +6246,8 @@ function pluralModels(count: number): string {
 function extensionName(extensionPath: string): string {
   const parts = extensionPath.replace(/\\/g, "/").split("/").filter(Boolean);
   const extensionIndex = parts.lastIndexOf("extensions");
-  if (extensionIndex >= 0 && parts[extensionIndex + 1]) return parts[extensionIndex + 1];
+  if (extensionIndex >= 0 && parts[extensionIndex + 1])
+    return parts[extensionIndex + 1];
   return parts.at(-2) ?? parts.at(-1) ?? extensionPath;
 }
 
@@ -3188,21 +6257,34 @@ async function pastedImageAttachment(file: File): Promise<Attachment> {
   canvas.width = bitmap.width;
   canvas.height = bitmap.height;
   const context = canvas.getContext("2d");
-  if (!context) throw new Error("Не удалось подготовить изображение из буфера обмена");
+  if (!context)
+    throw new Error("Не удалось подготовить изображение из буфера обмена");
   context.drawImage(bitmap, 0, 0);
   bitmap.close();
   const png = await new Promise<Blob>((resolve, reject) => {
-    canvas.toBlob((blob) => blob ? resolve(blob) : reject(new Error("Не удалось преобразовать изображение в PNG")), "image/png");
+    canvas.toBlob(
+      (blob) =>
+        blob
+          ? resolve(blob)
+          : reject(new Error("Не удалось преобразовать изображение в PNG")),
+      "image/png",
+    );
   });
   const dataUrl = await new Promise<string>((resolve, reject) => {
     const reader = new FileReader();
-    reader.onerror = () => reject(reader.error ?? new Error("Не удалось прочитать изображение из буфера обмена"));
+    reader.onerror = () =>
+      reject(
+        reader.error ??
+          new Error("Не удалось прочитать изображение из буфера обмена"),
+      );
     reader.onload = () => resolve(String(reader.result ?? ""));
     reader.readAsDataURL(png);
   });
   const separator = dataUrl.indexOf(",");
-  if (separator < 0) throw new Error("Некорректное изображение в буфере обмена");
-  const sourceName = file.name?.replace(/\.[^.]+$/, "") || `clipboard-${Date.now()}`;
+  if (separator < 0)
+    throw new Error("Некорректное изображение в буфере обмена");
+  const sourceName =
+    file.name?.replace(/\.[^.]+$/, "") || `clipboard-${Date.now()}`;
   const name = `${sourceName}.png`;
   return {
     id: crypto.randomUUID(),

@@ -1,4 +1,4 @@
-import { app, BrowserWindow, dialog, ipcMain, Menu, nativeImage, Notification, shell } from "electron";
+import { app, BrowserWindow, dialog, ipcMain, Menu, nativeImage, Notification, shell, protocol } from "electron";
 import { appendFile, mkdir, rename, stat } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -6,6 +6,11 @@ import type { Attachment, BuiltinModuleId, ConfiguredModelUpdate, ModelServerDis
 import { DataStore } from "./data-store.js";
 import { PiManager } from "./pi-manager.js";
 import { UpdateManager } from "./update-manager.js";
+import { loadComfySettings, saveComfySettings, checkComfyConnection, importComfyWorkflow } from "./comfy-client.js";
+import type { ComfySettings } from "../shared/comfy.js";
+import { generatedFile, generatedMediaResponse } from "./generated-media.js";
+
+protocol.registerSchemesAsPrivileged([{ scheme: "pi-generated", privileges: { standard: true, secure: true, supportFetchAPI: true, stream: true, corsEnabled: true } }]);
 
 const currentDir = path.dirname(fileURLToPath(import.meta.url));
 const projectRoot = path.resolve(currentDir, "..", "..");
@@ -37,6 +42,19 @@ async function writeDiagnostic(scope: string, error: unknown): Promise<void> {
   } catch {
     // Diagnostics must never bring down the application.
   }
+}
+
+async function prepareAttachments(paths: string[]): Promise<Attachment[]> {
+  if (!Array.isArray(paths) || paths.some((filePath) => typeof filePath !== "string" || !path.isAbsolute(filePath)))
+    throw new Error("Нужны абсолютные пути к файлам вложений");
+  return Promise.all([...new Set(paths)].map(async (filePath) => {
+    if (!(await stat(filePath)).isFile()) throw new Error(`Можно прикреплять только файлы: ${filePath}`);
+    const image = nativeImage.createFromPath(filePath);
+    return {
+      id: crypto.randomUUID(), name: path.basename(filePath), path: filePath,
+      ...(!image.isEmpty() ? { mimeType: "image/png", data: image.toPNG().toString("base64") } : {}),
+    };
+  }));
 }
 
 function resolveDataDir(): string {
@@ -123,19 +141,9 @@ function registerIpc(): void {
       properties: ["openFile", "multiSelections"],
     });
     if (result.canceled) return [];
-    return result.filePaths.map((filePath) => {
-      const image = nativeImage.createFromPath(filePath);
-      const isImage = !image.isEmpty();
-      return {
-        id: crypto.randomUUID(),
-        name: path.basename(filePath),
-        path: filePath,
-        ...(isImage
-          ? { mimeType: "image/png", data: image.toPNG().toString("base64") }
-          : {}),
-      };
-    });
+    return prepareAttachments(result.filePaths);
   });
+  ipcMain.handle("desktop:attach-file-paths", (_event, paths: string[]) => prepareAttachments(paths));
   ipcMain.handle("desktop:remove-project", async (_event, projectId: string) => {
     const project = store.getProject(projectId);
     const result = await dialog.showMessageBox(mainWindow!, {
@@ -205,6 +213,10 @@ function registerIpc(): void {
     piManager.removeQueuedPrompt(conversationId, promptId),
   );
   ipcMain.handle("pi:abort", (_event, conversationId: string) => piManager.abort(conversationId));
+  ipcMain.handle("pi:set-goal", (_event, id: string, objective: string, attachments: Attachment[]) =>
+    piManager.setGoal(id, objective, attachments));
+  ipcMain.handle("pi:control-goal", (_event, id: string, action: "pause" | "resume" | "remove") =>
+    piManager.controlGoal(id, action));
   ipcMain.handle("pi:set-model", (_event, conversationId: string, provider: string, modelId: string) =>
     piManager.setModel(conversationId, provider, modelId),
   );
@@ -232,7 +244,24 @@ function registerIpc(): void {
       piManager.respondToExtensionUi(conversationId, response),
   );
   ipcMain.handle("desktop:get-global-prompt", () => store.getGlobalPrompt());
-  ipcMain.handle("desktop:save-global-prompt", (_event, prompt: string) => store.saveGlobalPrompt(prompt));
+  ipcMain.handle("desktop:get-comfy-settings", () => loadComfySettings(store.dataDir));
+  ipcMain.handle("desktop:save-comfy-settings", (_event, settings: ComfySettings) => saveComfySettings(store.dataDir, settings));
+  ipcMain.handle("desktop:check-comfy-connection", (_event, url: string) => checkComfyConnection(url));
+  ipcMain.handle("desktop:import-comfy-workflow", async () => {
+    const selection = await dialog.showOpenDialog(mainWindow!, { title: "Workflow ComfyUI в формате API", filters: [{ name: "API workflow", extensions: ["json"] }], properties: ["openFile"] });
+    return selection.canceled || !selection.filePaths[0] ? null : importComfyWorkflow(store.dataDir, selection.filePaths[0]);
+  });
+  ipcMain.handle("desktop:save-global-prompt", async (_event, prompt: string) => {
+    const saved = await store.saveGlobalPrompt(prompt);
+    piManager.invalidateInstructions();
+    return saved;
+  });
+  ipcMain.handle("desktop:get-project-instructions", (_event, projectId: string) => store.getProjectInstructions(projectId));
+  ipcMain.handle("desktop:save-project-instructions", async (_event, projectId: string, content: string) => {
+    const saved = await store.saveProjectInstructions(projectId, content);
+    piManager.invalidateInstructions(projectId);
+    return saved;
+  });
   ipcMain.handle("desktop:get-model-servers", () => store.getModelServers());
   ipcMain.handle("desktop:discover-model-server", (_event, input: ModelServerDiscoveryInput) => store.discoverModelServer(input));
   ipcMain.handle("desktop:update-configured-model", (_event, input: ConfiguredModelUpdate) => store.updateConfiguredModel(input));
@@ -344,6 +373,7 @@ function registerIpc(): void {
     return store.removeUserExtension(extension.name);
   });
   ipcMain.handle("desktop:show-item", (_event, itemPath: string) => shell.showItemInFolder(itemPath));
+  ipcMain.handle("desktop:show-generated", async (_event, kind: string, filename: string) => shell.showItemInFolder(await generatedFile(store.dataDir, kind, filename)));
 }
 
 if (hasSingleInstanceLock) void app.whenReady().then(async () => {
@@ -355,6 +385,9 @@ if (hasSingleInstanceLock) void app.whenReady().then(async () => {
   logPath = path.join(logsDir, "pi-desktop.log");
   store = new DataStore(dataDir, projectRoot, process.execPath);
   await store.initialize();
+  await mkdir(path.join(store.dataDir, "image-generation"), { recursive: true });
+  await mkdir(path.join(store.dataDir, "music-generation"), { recursive: true });
+  protocol.handle("pi-generated", (request) => generatedMediaResponse(store.dataDir, request));
   piManager = new PiManager(store, () => mainWindow, (conversation) => {
     if (!mainWindow?.isFocused() && Notification.isSupported()) {
       new Notification({ title: "Pi Desktop", body: `Задача завершена: ${conversation.title}` }).show();

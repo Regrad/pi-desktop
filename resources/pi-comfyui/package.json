@@ -1,0 +1,12 @@
+{
+  "name": "pi-comfyui",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Editable ComfyUI tools for Pi Desktop",
+  "pi": {
+    "extensions": [
+      "./index.ts"
+    ]
+  }
+}

@@ -11,6 +11,8 @@
  * - Extension UI: Extension UI requests are emitted, client responds with extension_ui_response
  */
 import * as crypto from "node:crypto";
+import { readFileSync, realpathSync, statSync } from "node:fs";
+import path from "node:path";
 import { KeybindingsManager } from "../../core/keybindings.js";
 import { estimateTokens } from "../../core/compaction/compaction.js";
 import { flushRawStdout, takeOverStdout, waitForRawStdoutBackpressure, writeRawStdout, } from "../../core/output-guard.js";
@@ -18,6 +20,47 @@ import { killTrackedDetachedChildren } from "../../utils/shell.js";
 import { theme } from "../interactive/theme/theme.js";
 import { toJsonEvent } from "../json-event.js";
 import { attachJsonlLineReader, serializeJsonLine } from "./jsonl.js";
+
+const MODEL_DIFF_MAX_FILE_BYTES = 4 * 1024 * 1024;
+
+function resolveModelFilePath(cwd, rawPath) {
+    const absolute = path.resolve(cwd, rawPath);
+    try {
+        return realpathSync(absolute);
+    }
+    catch {
+        try {
+            return path.join(realpathSync(path.dirname(absolute)), path.basename(absolute));
+        }
+        catch {
+            return absolute;
+        }
+    }
+}
+
+function captureModelFile(pathname) {
+    try {
+        const info = statSync(pathname);
+        if (!info.isFile() || info.size > MODEL_DIFF_MAX_FILE_BYTES) {
+            return { kind: "unsupported", size: info.size, modified: info.mtimeMs };
+        }
+        const buffer = readFileSync(pathname);
+        if (buffer.subarray(0, Math.min(buffer.length, 8192)).includes(0)) {
+            return { kind: "unsupported", size: info.size, modified: info.mtimeMs };
+        }
+        try {
+            return { kind: "text", text: new TextDecoder("utf-8", { fatal: true }).decode(buffer) };
+        }
+        catch {
+            return { kind: "unsupported", size: info.size, modified: info.mtimeMs };
+        }
+    }
+    catch (captureError) {
+        if (captureError?.code === "ENOENT")
+            return { kind: "missing" };
+        return { kind: "unsupported" };
+    }
+}
 
 function toDesktopJsonEvent(event) {
     const jsonEvent = toJsonEvent(event);
@@ -55,6 +98,7 @@ export async function runRpcMode(runtimeHost) {
     let session = runtimeHost.session;
     let unsubscribe;
     let unsubscribeBackpressure;
+    const pendingModelFileMutations = new Map();
     const output = (obj) => {
         writeRawStdout(serializeJsonLine(obj));
     };
@@ -440,8 +484,37 @@ export async function runRpcMode(runtimeHost) {
         }
         unsubscribe?.();
         unsubscribeBackpressure?.();
+        pendingModelFileMutations.clear();
         unsubscribe = session.subscribe((event) => {
-            output(toDesktopJsonEvent(event));
+            let desktopEvent = toDesktopJsonEvent(event);
+            if (event.type === "tool_execution_start" &&
+                (event.toolName === "write" || event.toolName === "edit") &&
+                typeof event.toolCallId === "string" &&
+                typeof event.args?.path === "string" &&
+                event.args.path.trim()) {
+                const targetPath = resolveModelFilePath(session.sessionManager.getCwd(), event.args.path.trim());
+                pendingModelFileMutations.set(event.toolCallId, {
+                    path: targetPath,
+                    before: captureModelFile(targetPath),
+                });
+            }
+            else if (event.type === "tool_execution_end" &&
+                (event.toolName === "write" || event.toolName === "edit") &&
+                typeof event.toolCallId === "string") {
+                const pending = pendingModelFileMutations.get(event.toolCallId);
+                pendingModelFileMutations.delete(event.toolCallId);
+                if (pending && !event.isError) {
+                    desktopEvent = {
+                        ...desktopEvent,
+                        desktopFileMutation: {
+                            path: pending.path,
+                            before: pending.before,
+                            after: captureModelFile(pending.path),
+                        },
+                    };
+                }
+            }
+            output(desktopEvent);
             if (event.type === "agent_settled") {
                 void checkShutdownRequested();
             }
@@ -559,7 +632,10 @@ export async function runRpcMode(runtimeHost) {
                 });
             }
             case "get_session_entries": {
-                const entries = session.sessionManager.getEntries().map((entry) => {
+                const entries = session.sessionManager.getEntries().flatMap((entry) => {
+                    if (entry.type !== "compaction" && entry.type !== "custom" && entry.type !== "custom_message") {
+                        return [];
+                    }
                     let renderedLines;
                     let estimatedTokensAfter;
                     try {
@@ -587,7 +663,16 @@ export async function runRpcMode(runtimeHost) {
                     catch (renderError) {
                         renderedLines = [`Extension entry render error: ${renderError instanceof Error ? renderError.message : String(renderError)}`];
                     }
-                    return { ...entry, renderedLines, estimatedTokensAfter };
+                    if (entry.type !== "compaction" && !renderedLines?.length) return [];
+                    return [{
+                            type: entry.type,
+                            id: entry.id,
+                            timestamp: entry.timestamp,
+                            customType: entry.customType,
+                            renderedLines,
+                            estimatedTokensAfter,
+                            tokensBefore: entry.tokensBefore,
+                        }];
                 });
                 return success(id, "get_session_entries", { entries });
             }

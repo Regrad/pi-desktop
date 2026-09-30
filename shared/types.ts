@@ -10,7 +10,15 @@ export interface ProjectRecord {
   lastOpenedAt: string;
 }
 
+export interface ProjectInstructions {
+  projectId: string;
+  filePath: string;
+  content: string;
+  exists: boolean;
+}
+
 export interface ConversationRecord {
+  goal?: ConversationGoal;
   id: string;
   projectId?: string;
   title: string;
@@ -22,6 +30,19 @@ export interface ConversationRecord {
   thinkingLevel?: ThinkingLevel;
   archived?: boolean;
   status: "idle" | "starting" | "working" | "error";
+}
+
+export interface ConversationGoal {
+  id: string;
+  objective: string;
+  criteria: string;
+  status: "active" | "paused" | "blocked" | "complete";
+  progress: string;
+  evidence: string;
+  steps: number;
+  maxSteps: number;
+  stalledSteps: number;
+  updatedAt: string;
 }
 
 export interface ModelInfo {
@@ -152,6 +173,7 @@ export interface Attachment {
   path: string;
   mimeType?: string;
   data?: string;
+  maskFor?: string;
 }
 
 export interface QueuedPrompt {
@@ -340,6 +362,8 @@ export interface PiDesktopApi {
   refreshProjectSessions(projectId: string): Promise<ConversationRecord[]>;
   searchConversations(query: string): Promise<string[]>;
   chooseAttachments(): Promise<Attachment[]>;
+  getDroppedFilePath(file: File): string;
+  attachFilePaths(paths: string[]): Promise<Attachment[]>;
   removeProject(projectId: string): Promise<boolean>;
   renameProject(projectId: string, name: string): Promise<ProjectRecord>;
   createConversation(projectId?: string): Promise<ConversationSnapshot>;
@@ -357,6 +381,8 @@ export interface PiDesktopApi {
   sendQueuedPrompt(conversationId: string, promptId: string): Promise<QueuedPrompt[]>;
   removeQueuedPrompt(conversationId: string, promptId: string): Promise<QueuedPrompt[]>;
   abort(conversationId: string): Promise<void>;
+  setGoal(conversationId: string, objective: string, attachments: Attachment[]): Promise<void>;
+  controlGoal(conversationId: string, action: "pause" | "resume" | "remove"): Promise<void>;
   setModel(conversationId: string, provider: string, modelId: string): Promise<RuntimeState>;
   setThinkingLevel(conversationId: string, level: ThinkingLevel): Promise<RuntimeState>;
   setHostEditorText(conversationId: string, text: string): Promise<void>;
@@ -366,7 +392,13 @@ export interface PiDesktopApi {
   renameConversation(conversationId: string, title: string): Promise<void>;
   respondToExtensionUi(conversationId: string, response: Record<string, unknown>): Promise<void>;
   getGlobalPrompt(): Promise<string>;
+  getComfySettings(): Promise<import("./comfy.js").ComfySettings>;
+  saveComfySettings(settings: import("./comfy.js").ComfySettings): Promise<import("./comfy.js").ComfySettings>;
+  checkComfyConnection(url: string): Promise<string>;
+  importComfyWorkflow(): Promise<string | null>;
   saveGlobalPrompt(prompt: string): Promise<string>;
+  getProjectInstructions(projectId: string): Promise<ProjectInstructions>;
+  saveProjectInstructions(projectId: string, content: string): Promise<ProjectInstructions>;
   getModelServers(): Promise<ConfiguredModelServer[]>;
   discoverModelServer(input: ModelServerDiscoveryInput): Promise<ModelServerDiscoveryResult>;
   updateConfiguredModel(input: ConfiguredModelUpdate): Promise<ConfiguredModelServer>;
@@ -380,6 +412,7 @@ export interface PiDesktopApi {
   addUserExtension(kind: "file" | "directory"): Promise<ModuleSettings | null>;
   removeUserExtension(name: string): Promise<ModuleSettings | null>;
   showItemInFolder(path: string): Promise<void>;
+  showGeneratedFile(kind: "image" | "music" | "model3d", filename: string): Promise<void>;
   onPiEvent(listener: (payload: { conversationId: string; event: Record<string, unknown> }) => void): () => void;
   onExtensionUi(listener: (payload: { conversationId: string; request: ExtensionUiRequest }) => void): () => void;
   onConversationChanged(listener: (conversation: ConversationRecord) => void): () => void;

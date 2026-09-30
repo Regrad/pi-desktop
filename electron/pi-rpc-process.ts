@@ -1,5 +1,6 @@
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { StringDecoder } from "node:string_decoder";
+import path from "node:path";
 import type { ExtensionUiRequest } from "../shared/types.js";
 
 type JsonObject = Record<string, unknown>;
@@ -22,6 +23,8 @@ export interface PiRpcProcessOptions {
   model?: string;
   thinkingLevel?: string;
   appendSystemPrompt?: string;
+  goalExtensionPath?: string;
+  appRoot?: string;
   mcpEntryPath: string;
   mcpDirectTools: string[];
   onEvent: (event: JsonObject) => void;
@@ -53,6 +56,9 @@ export class PiRpcProcess {
       args.push("--session-id", this.options.sessionId);
     }
     if (this.options.provider) args.push("--provider", this.options.provider);
+    if (this.options.goalExtensionPath) {
+      args.push("--extension", this.options.goalExtensionPath);
+    }
     if (this.options.model) args.push("--model", this.options.model);
     if (this.options.thinkingLevel) args.push("--thinking", this.options.thinkingLevel);
     if (this.options.appendSystemPrompt) {
@@ -65,6 +71,8 @@ export class PiRpcProcess {
         ...process.env,
         ELECTRON_RUN_AS_NODE: "1",
         PI_CODING_AGENT_DIR: this.options.agentDir,
+        PI_DESKTOP_DATA_DIR: path.dirname(this.options.agentDir),
+        ...(this.options.appRoot ? { PI_DESKTOP_APP_ROOT: this.options.appRoot } : {}),
         PI_DESKTOP_EXECUTABLE: this.options.executablePath,
         PI_DESKTOP_MCP_ENTRY: this.options.mcpEntryPath,
         NO_UPDATE_NOTIFIER: "1",

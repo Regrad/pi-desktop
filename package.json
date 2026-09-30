@@ -10,16 +10,18 @@
     "bridge:apply": "node scripts/apply-rpc-bridge.mjs",
     "electron:build": "npm run bridge:apply && tsc -p tsconfig.electron.json",
     "build": "tsc -p tsconfig.json --noEmit && vite build && npm run electron:build",
-    "release:update": "node scripts/update-unpacked-assets.mjs",
+    "release:update": "npm run pack",
     "start": "npm run bridge:apply && electron .",
-    "pack": "npm run build && node scripts/package-unpacked.mjs",
-    "portable": "npm run build && electron-builder --win portable"
+    "pack": "npm run build && node scripts/package-portable.mjs",
+    "portable": "npm run pack"
   },
   "dependencies": {
     "@earendil-works/pi-coding-agent": "0.84.2",
     "@zavora-ai/computer-use-mcp": "7.1.0",
     "diff": "8.0.4",
+    "image-size": "2.0.4",
     "lucide-react": "1.38.0",
+    "mammoth": "1.12.2",
     "pi-lens": "4.0.0",
     "pi-llama-cpp-stats": "0.1.6",
     "pi-mcp-adapter": "2.26.0",
@@ -28,12 +30,16 @@
     "react": "19.2.8",
     "react-dom": "19.2.8",
     "react-markdown": "10.1.0",
-    "remark-gfm": "4.0.1"
+    "remark-gfm": "4.0.1",
+    "three": "0.186.1",
+    "turndown": "7.2.4",
+    "turndown-plugin-gfm": "1.0.2"
   },
   "devDependencies": {
     "@types/node": "24.10.1",
     "@types/react": "19.2.14",
     "@types/react-dom": "19.2.3",
+    "@types/three": "0.186.0",
     "@vitejs/plugin-react": "6.1.1",
     "concurrently": "9.2.4",
     "cross-env": "10.1.0",
@@ -46,7 +52,11 @@
   "build": {
     "appId": "local.pi.desktop",
     "productName": "Pi Desktop",
-    "asar": false,
+    "asar": true,
+    "electronLanguages": [
+      "ru",
+      "en-US"
+    ],
     "directories": {
       "output": "release"
     },
@@ -66,16 +76,12 @@
     "win": {
       "target": [
         {
-          "target": "portable",
+          "target": "dir",
           "arch": [
             "x64"
           ]
         }
-      ],
-      "artifactName": "Pi-Desktop-${version}-portable.${ext}"
-    },
-    "portable": {
-      "artifactName": "Pi-Desktop-${version}-portable.${ext}"
+      ]
     }
   }
 }

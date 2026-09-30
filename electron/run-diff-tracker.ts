@@ -1,4 +1,4 @@
-import { readdir, readFile, stat } from "node:fs/promises";
+import { realpathSync } from "node:fs";
 import path from "node:path";
 import { structuredPatch } from "diff";
 import type { FileDiff, RunDiff } from "../shared/types.js";
@@ -23,172 +23,327 @@ const EXCLUDED_DIRECTORIES = new Set([
   "temp",
   "tmp",
 ]);
-const MAX_FILE_BYTES = 4 * 1024 * 1024;
-const MAX_TOTAL_BYTES = 96 * 1024 * 1024;
-const MAX_FILES = 30_000;
 
-interface FileFingerprint {
-  size: number;
-  modified: number;
-}
+export type ModelFileSnapshot =
+  | { kind: "missing" }
+  | { kind: "text"; text: string }
+  | { kind: "unsupported"; size?: number; modified?: number };
 
-interface Snapshot {
-  files: Map<string, string>;
-  ignored: Map<string, FileFingerprint>;
-  truncated: boolean;
+export interface ModelFileMutation {
+  path: string;
+  before: ModelFileSnapshot;
+  after: ModelFileSnapshot;
 }
 
 interface RootInfo {
   path: string;
   label: string;
+  aliases: string[];
 }
 
-export class RunDiffTracker {
-  private constructor(
-    private readonly roots: RootInfo[],
-    private readonly before: Snapshot,
-  ) {}
+interface MutationSegment {
+  before: Extract<ModelFileSnapshot, { kind: "missing" | "text" }>;
+  after: Extract<ModelFileSnapshot, { kind: "missing" | "text" }>;
+}
 
-  static async start(rootPaths: string[]): Promise<RunDiffTracker> {
-    const uniqueRoots = [...new Set(rootPaths.map((item) => path.resolve(item)))];
-    const roots = uniqueRoots.map((rootPath) => ({
-      path: rootPath,
-      label: path.basename(rootPath) || rootPath,
-    }));
-    return new RunDiffTracker(roots, await captureSnapshot(roots));
+interface FileMutations {
+  path: string;
+  segments: MutationSegment[];
+}
+
+interface TrackerCallbacks {
+  onLiveChange?: () => void;
+  onScanComplete?: () => void;
+}
+
+function emptyRunDiff(): RunDiff {
+  return { additions: 0, deletions: 0, files: [], incomplete: false };
+}
+
+/**
+ * Tracks only successful write/edit operations reported by the Pi RPC bridge.
+ *
+ * The bridge captures the target file immediately before and after each tool
+ * execution. This tracker never scans or re-reads the workspace, so changes
+ * made before, after, or between model operations cannot leak into the diff.
+ * Contiguous operations on one file are collapsed into a net diff. If an
+ * external process changes the file between model operations, a new segment is
+ * started and the external transition itself is deliberately excluded.
+ */
+export class RunDiffTracker {
+  private readonly roots: RootInfo[];
+  private readonly rootPaths: string[];
+  private readonly files = new Map<string, FileMutations>();
+  private readonly onLiveChange?: () => void;
+  private closed = false;
+  private notifyTimer?: NodeJS.Timeout;
+
+  private constructor(rootPaths: string[], callbacks?: TrackerCallbacks) {
+    this.rootPaths = [...new Set(rootPaths.map((item) => path.resolve(item)))];
+    const byCanonical = new Map<string, RootInfo>();
+    for (const raw of this.rootPaths) {
+      const canonical = canonicalizePath(raw);
+      const key = canonical.toLocaleLowerCase();
+      let info = byCanonical.get(key);
+      if (!info) {
+        info = {
+          path: canonical,
+          label: path.basename(canonical) || canonical,
+          aliases: [],
+        };
+        byCanonical.set(key, info);
+      }
+      if (raw !== canonical && !info.aliases.includes(raw))
+        info.aliases.push(raw);
+    }
+    this.roots = [...byCanonical.values()];
+    this.onLiveChange = callbacks?.onLiveChange;
+    queueMicrotask(() => {
+      if (!this.closed) callbacks?.onScanComplete?.();
+    });
   }
 
-  async finish(): Promise<RunDiff> {
-    const after = await captureSnapshot(this.roots);
+  static start(
+    rootPaths: string[],
+    callbacks?: TrackerCallbacks,
+  ): RunDiffTracker {
+    return new RunDiffTracker(rootPaths, callbacks);
+  }
+
+  covers(rootPaths: string[]): boolean {
+    const wanted = [...new Set(rootPaths.map((item) => path.resolve(item)))];
+    if (wanted.length !== this.rootPaths.length) return false;
+    const known = new Set(
+      this.rootPaths.map((item) => item.toLocaleLowerCase()),
+    );
+    return wanted.every((item) => known.has(item.toLocaleLowerCase()));
+  }
+
+  /** Kept for the runtime lifecycle; no workspace baseline is needed. */
+  async beginRun(): Promise<void> {}
+
+  recordModelMutation(mutation: ModelFileMutation): void {
+    if (this.closed) return;
+    const target = this.resolveTrackablePath(mutation.path);
+    if (!target) return;
+    if (
+      mutation.before.kind === "unsupported" ||
+      mutation.after.kind === "unsupported" ||
+      snapshotsEqual(mutation.before, mutation.after)
+    )
+      return;
+
+    const key = target.toLocaleLowerCase();
+    let file = this.files.get(key);
+    if (!file) {
+      file = { path: target, segments: [] };
+      this.files.set(key, file);
+    }
+    const segment: MutationSegment = {
+      before: mutation.before,
+      after: mutation.after,
+    };
+    const previous = file.segments[file.segments.length - 1];
+    if (previous && snapshotsEqual(previous.after, segment.before)) {
+      previous.after = segment.after;
+      if (snapshotsEqual(previous.before, previous.after)) file.segments.pop();
+    } else {
+      file.segments.push(segment);
+    }
+    if (file.segments.length === 0) this.files.delete(key);
+    this.scheduleLiveChange();
+  }
+
+  async endRun(): Promise<RunDiff> {
+    const diff = this.buildDiff();
+    this.files.clear();
+    return diff;
+  }
+
+  async live(): Promise<RunDiff> {
+    return this.buildDiff();
+  }
+
+  close(): void {
+    if (this.closed) return;
+    this.closed = true;
+    if (this.notifyTimer) clearTimeout(this.notifyTimer);
+    this.notifyTimer = undefined;
+    this.files.clear();
+  }
+
+  private resolveTrackablePath(rawPath: string): string | undefined {
+    if (typeof rawPath !== "string" || !rawPath.trim()) return undefined;
+    const trimmed = rawPath.trim();
+    const candidates = path.isAbsolute(trimmed)
+      ? [path.resolve(trimmed)]
+      : this.roots.map((root) => path.resolve(root.path, trimmed));
+
+    for (let candidate of candidates) {
+      const lowered = candidate.toLocaleLowerCase();
+      for (const root of this.roots) {
+        for (const alias of root.aliases) {
+          const aliasLower = alias.toLocaleLowerCase();
+          if (
+            lowered === aliasLower ||
+            lowered.startsWith(`${aliasLower}${path.sep}`)
+          ) {
+            candidate = path.resolve(
+              root.path,
+              path.relative(alias, candidate),
+            );
+            break;
+          }
+        }
+      }
+      const canonical = canonicalizePath(candidate);
+      const root = this.deepestContainingRoot(canonical);
+      if (root && isTrackablePath(root.path, canonical)) return canonical;
+    }
+    return undefined;
+  }
+
+  private deepestContainingRoot(filePath: string): RootInfo | undefined {
+    const lowered = filePath.toLocaleLowerCase();
+    return this.roots
+      .filter((root) => {
+        const rootLower = root.path.toLocaleLowerCase();
+        return (
+          lowered === rootLower || lowered.startsWith(`${rootLower}${path.sep}`)
+        );
+      })
+      .sort((left, right) => right.path.length - left.path.length)[0];
+  }
+
+  private buildDiff(): RunDiff {
+    if (this.files.size === 0) return emptyRunDiff();
     const files: FileDiff[] = [];
-    const allPaths = new Set([...this.before.files.keys(), ...after.files.keys()]);
+    for (const file of this.files.values()) {
+      const built = this.buildFileDiff(file);
+      if (built) files.push(built);
+    }
+    files.sort((left, right) =>
+      left.relativePath.localeCompare(right.relativePath),
+    );
+    return {
+      additions: files.reduce((sum, file) => sum + file.additions, 0),
+      deletions: files.reduce((sum, file) => sum + file.deletions, 0),
+      files,
+      incomplete: false,
+    };
+  }
 
-    for (const filePath of allPaths) {
-      const oldText = this.before.files.get(filePath);
-      const newText = after.files.get(filePath);
-      if (oldText === newText) continue;
-
+  private buildFileDiff(file: FileMutations): FileDiff | undefined {
+    const hunks = file.segments.flatMap((segment) => {
       const patch = structuredPatch(
-        filePath,
-        filePath,
-        oldText ?? "",
-        newText ?? "",
+        file.path,
+        file.path,
+        snapshotText(segment.before),
+        snapshotText(segment.after),
         "",
         "",
         { context: 3 },
       );
-      const hunks = patch.hunks.map((hunk) => ({
+      return patch.hunks.map((hunk) => ({
         oldStart: hunk.oldStart,
         oldLines: hunk.oldLines,
         newStart: hunk.newStart,
         newLines: hunk.newLines,
         lines: hunk.lines,
       }));
-      const additions = hunks.reduce(
-        (count, hunk) => count + hunk.lines.filter((line) => line.startsWith("+")).length,
-        0,
-      );
-      const deletions = hunks.reduce(
-        (count, hunk) => count + hunk.lines.filter((line) => line.startsWith("-")).length,
-        0,
-      );
-      files.push({
-        path: filePath,
-        relativePath: this.displayPath(filePath),
-        status: oldText === undefined ? "added" : newText === undefined ? "deleted" : "modified",
-        additions,
-        deletions,
-        hunks,
-      });
-    }
-
-    let incomplete = this.before.truncated || after.truncated;
-    const ignoredPaths = new Set([...this.before.ignored.keys(), ...after.ignored.keys()]);
-    for (const filePath of ignoredPaths) {
-      const before = this.before.ignored.get(filePath);
-      const current = after.ignored.get(filePath);
-      if (!before || !current || before.size !== current.size || before.modified !== current.modified) {
-        incomplete = true;
-        break;
-      }
-    }
-
-    files.sort((left, right) => left.relativePath.localeCompare(right.relativePath));
+    });
+    const existenceChanged = file.segments.some(
+      (segment) => segment.before.kind !== segment.after.kind,
+    );
+    if (hunks.length === 0 && !existenceChanged) return undefined;
+    const additions = hunks.reduce(
+      (count, hunk) =>
+        count + hunk.lines.filter((line) => line.startsWith("+")).length,
+      0,
+    );
+    const deletions = hunks.reduce(
+      (count, hunk) =>
+        count + hunk.lines.filter((line) => line.startsWith("-")).length,
+      0,
+    );
+    const first = file.segments[0];
+    const last = file.segments[file.segments.length - 1];
     return {
-      additions: files.reduce((sum, file) => sum + file.additions, 0),
-      deletions: files.reduce((sum, file) => sum + file.deletions, 0),
-      files,
-      incomplete,
+      path: file.path,
+      relativePath: this.displayPath(file.path),
+      status:
+        first.before.kind === "missing" && last.after.kind === "text"
+          ? "added"
+          : first.before.kind === "text" && last.after.kind === "missing"
+            ? "deleted"
+            : "modified",
+      additions,
+      deletions,
+      hunks,
     };
   }
 
   private displayPath(filePath: string): string {
-    const root = this.roots
-      .filter((item) => filePath === item.path || filePath.startsWith(`${item.path}${path.sep}`))
-      .sort((left, right) => right.path.length - left.path.length)[0];
+    const root = this.deepestContainingRoot(filePath);
     if (!root) return filePath;
     const relative = path.relative(root.path, filePath);
     return this.roots.length > 1 ? path.join(root.label, relative) : relative;
   }
+
+  private scheduleLiveChange(): void {
+    if (!this.onLiveChange || this.notifyTimer || this.closed) return;
+    this.notifyTimer = setTimeout(() => {
+      this.notifyTimer = undefined;
+      if (!this.closed) this.onLiveChange?.();
+    }, 50);
+    this.notifyTimer.unref();
+  }
 }
 
-async function captureSnapshot(roots: RootInfo[]): Promise<Snapshot> {
-  const files = new Map<string, string>();
-  const ignored = new Map<string, FileFingerprint>();
-  const visited = new Set<string>();
-  const decoder = new TextDecoder("utf-8", { fatal: true });
-  let totalBytes = 0;
-  let fileCount = 0;
-  let truncated = false;
+function snapshotText(
+  snapshot: Extract<ModelFileSnapshot, { kind: "missing" | "text" }>,
+): string {
+  return snapshot.kind === "text" ? snapshot.text : "";
+}
 
-  const visit = async (directory: string): Promise<void> => {
-    let entries;
-    try {
-      entries = await readdir(directory, { withFileTypes: true });
-    } catch {
-      truncated = true;
-      return;
-    }
-    for (const entry of entries) {
-      if (fileCount >= MAX_FILES) {
-        truncated = true;
-        return;
-      }
-      const absolutePath = path.join(directory, entry.name);
-      const normalized = path.resolve(absolutePath);
-      if (visited.has(normalized)) continue;
-      visited.add(normalized);
-      if (entry.isDirectory()) {
-        if (!EXCLUDED_DIRECTORIES.has(entry.name.toLocaleLowerCase())) await visit(normalized);
-        continue;
-      }
-      if (!entry.isFile()) continue;
-      fileCount += 1;
-      try {
-        const info = await stat(normalized);
-        const fingerprint = { size: info.size, modified: info.mtimeMs };
-        if (info.size > MAX_FILE_BYTES || totalBytes + info.size > MAX_TOTAL_BYTES) {
-          ignored.set(normalized, fingerprint);
-          if (totalBytes + info.size > MAX_TOTAL_BYTES) truncated = true;
-          continue;
-        }
-        const buffer = await readFile(normalized);
-        if (buffer.subarray(0, Math.min(buffer.length, 8192)).includes(0)) {
-          ignored.set(normalized, fingerprint);
-          continue;
-        }
-        try {
-          files.set(normalized, decoder.decode(buffer));
-          totalBytes += buffer.length;
-        } catch {
-          ignored.set(normalized, fingerprint);
-        }
-      } catch {
-        truncated = true;
-      }
-    }
-  };
+function snapshotsEqual(
+  left: ModelFileSnapshot,
+  right: ModelFileSnapshot,
+): boolean {
+  if (left.kind !== right.kind) return false;
+  if (left.kind === "missing") return true;
+  if (left.kind === "text" && right.kind === "text")
+    return left.text === right.text;
+  return (
+    left.kind === "unsupported" &&
+    right.kind === "unsupported" &&
+    left.size === right.size &&
+    left.modified === right.modified
+  );
+}
 
-  for (const root of roots) await visit(root.path);
-  return { files, ignored, truncated };
+function isTrackablePath(rootPath: string, filePath: string): boolean {
+  const relative = path.relative(rootPath, filePath);
+  if (!relative || relative.startsWith("..") || path.isAbsolute(relative))
+    return false;
+  const segments = relative.split(path.sep);
+  return !segments
+    .slice(0, -1)
+    .some((segment) => EXCLUDED_DIRECTORIES.has(segment.toLocaleLowerCase()));
+}
+
+function canonicalizePath(absolute: string): string {
+  try {
+    return realpathSync(absolute);
+  } catch {
+    // A newly created or deleted file itself may not exist.
+  }
+  try {
+    return path.join(
+      realpathSync(path.dirname(absolute)),
+      path.basename(absolute),
+    );
+  } catch {
+    return path.resolve(absolute);
+  }
 }

@@ -1,4 +1,4 @@
-import { contextBridge, ipcRenderer } from "electron";
+import { contextBridge, ipcRenderer, webUtils } from "electron";
 import type { PiDesktopApi } from "../shared/types.js";
 
 function subscribe(channel: string, listener: (...args: any[]) => void): () => void {
@@ -14,6 +14,8 @@ const api: PiDesktopApi = {
   refreshProjectSessions: (projectId) => ipcRenderer.invoke("desktop:refresh-project-sessions", projectId),
   searchConversations: (query) => ipcRenderer.invoke("desktop:search-conversations", query),
   chooseAttachments: () => ipcRenderer.invoke("desktop:choose-attachments"),
+  getDroppedFilePath: (file) => webUtils.getPathForFile(file),
+  attachFilePaths: (paths) => ipcRenderer.invoke("desktop:attach-file-paths", paths),
   removeProject: (projectId) => ipcRenderer.invoke("desktop:remove-project", projectId),
   renameProject: (projectId, name) => ipcRenderer.invoke("desktop:rename-project", projectId, name),
   createConversation: (projectId) => ipcRenderer.invoke("desktop:create-conversation", projectId),
@@ -30,6 +32,8 @@ const api: PiDesktopApi = {
   removeQueuedPrompt: (conversationId, promptId) =>
     ipcRenderer.invoke("desktop:remove-queued-prompt", conversationId, promptId),
   abort: (conversationId) => ipcRenderer.invoke("pi:abort", conversationId),
+  setGoal: (id, objective, attachments) => ipcRenderer.invoke("pi:set-goal", id, objective, attachments),
+  controlGoal: (id, action) => ipcRenderer.invoke("pi:control-goal", id, action),
   setModel: (conversationId, provider, modelId) =>
     ipcRenderer.invoke("pi:set-model", conversationId, provider, modelId),
   setThinkingLevel: (conversationId, level) =>
@@ -44,7 +48,13 @@ const api: PiDesktopApi = {
   respondToExtensionUi: (conversationId, response) =>
     ipcRenderer.invoke("pi:extension-ui-response", conversationId, response),
   getGlobalPrompt: () => ipcRenderer.invoke("desktop:get-global-prompt"),
+  getComfySettings: () => ipcRenderer.invoke("desktop:get-comfy-settings"),
+  saveComfySettings: (settings) => ipcRenderer.invoke("desktop:save-comfy-settings", settings),
+  checkComfyConnection: (url) => ipcRenderer.invoke("desktop:check-comfy-connection", url),
+  importComfyWorkflow: () => ipcRenderer.invoke("desktop:import-comfy-workflow"),
   saveGlobalPrompt: (prompt) => ipcRenderer.invoke("desktop:save-global-prompt", prompt),
+  getProjectInstructions: (projectId) => ipcRenderer.invoke("desktop:get-project-instructions", projectId),
+  saveProjectInstructions: (projectId, content) => ipcRenderer.invoke("desktop:save-project-instructions", projectId, content),
   getModelServers: () => ipcRenderer.invoke("desktop:get-model-servers"),
   discoverModelServer: (input) => ipcRenderer.invoke("desktop:discover-model-server", input),
   updateConfiguredModel: (input) => ipcRenderer.invoke("desktop:update-configured-model", input),
@@ -58,6 +68,7 @@ const api: PiDesktopApi = {
   addUserExtension: (kind) => ipcRenderer.invoke("desktop:add-user-extension", kind),
   removeUserExtension: (name) => ipcRenderer.invoke("desktop:remove-user-extension", name),
   showItemInFolder: (path) => ipcRenderer.invoke("desktop:show-item", path),
+  showGeneratedFile: (kind, filename) => ipcRenderer.invoke("desktop:show-generated", kind, filename),
   onPiEvent: (listener) => subscribe("pi:event", listener),
   onExtensionUi: (listener) => subscribe("pi:extension-ui", listener),
   onConversationChanged: (listener) => subscribe("desktop:conversation-changed", listener),
