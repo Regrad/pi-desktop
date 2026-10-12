@@ -3,6 +3,7 @@ import {
   ArchiveRestore,
   ArrowLeft,
   Bot,
+  BookOpen,
   Boxes,
   Check,
   ChevronDown,
@@ -25,8 +26,10 @@ import {
   Send,
   Settings,
   RefreshCw,
+  RotateCcw,
   SquareTerminal,
   Target,
+  ListChecks,
   Pencil,
   Trash2,
   Wrench,
@@ -48,13 +51,26 @@ import remarkGfm from "remark-gfm";
 import type { Plugin } from "unified";
 import { applyAssistantMessageDelta } from "../shared/live-message";
 import { GoalPanel } from "./GoalPanel";
+import { PlanPanel } from "./PlanPanel";
+import { NotebookPanel } from "./NotebookPanel";
+import { SkillsPanel } from "./SkillsPanel";
+import { historyHasLaterMessages } from "../shared/session-history";
+import { applyMessagePatch } from "../shared/message-sync";
+import { NotebookSettings } from "./NotebookSettings";
+import { BrowserPanel } from "./BrowserPanel";
 import { ComfySettingsPanel } from "./ComfySettings";
+import { WebAccessSettingsPanel } from "./WebAccessSettings";
 import { collectComfyMedia, collectAnswerMedia, answerCanPublishMedia } from "./comfy-images";
 import { ComfyMedia } from "./ComfyMedia";
+import { MediaLink, markdownMediaUrl } from "./MediaLink";
 import { PreviewImage } from "./ImagePreview";
 import { MaskEditor } from "./MaskEditor";
+import { quotedHistoryPrompt } from "./history-quotes";
 import { mergeAttachments } from "./drop-attachments";
+import { nestedToolActivities } from "./nested-tools";
+import { planIsWorking } from "../shared/plan-activity";
 import { visibleGoalText } from "../shared/goal";
+import { visiblePlanRequestText } from "../shared/plan";
 import { visibleImageAttachmentText } from "../shared/image-attachments";
 import type {
   Attachment,
@@ -85,6 +101,7 @@ type JsonObject = Record<string, any>;
 interface ToolActivity {
   id: string;
   name: string;
+  parentToolCallId?: string;
   args?: unknown;
   partialArguments?: string;
   result?: unknown;
@@ -102,6 +119,7 @@ interface Notice {
 
 type SettingsSection =
   | "general"
+  | "web-access"
   | "comfyui"
   | "models"
   | "modules"
@@ -127,6 +145,7 @@ type TranscriptTimelineItem =
   | {
       kind: "message";
       message: JsonObject;
+      fragment?: "thinking" | "answer";
       sourceIndex: number;
       timestamp: number;
       order: number;
@@ -151,7 +170,8 @@ type TranscriptTimelineItem =
  * Timeline as displayed: everything the model produced between the previous
  * answer and the current one (thinking, tool calls and results, intermediate
  * texts, extension output) is collapsed into a single expandable fold above
- * that answer. The answer itself stays visible.
+ * that answer. A committed, tool-free answer closes the fold; automatic
+ * continuation starts a new one without hiding the completed answer.
  */
 type TranscriptDisplayItem =
   | { display: "single"; item: TranscriptTimelineItem }
@@ -173,7 +193,9 @@ const THINKING_LABELS: Record<ThinkingLevel, string> = {
 };
 
 function messageKey(message: JsonObject, index: number): string {
-  return String(message.id ?? message.timestamp ?? `${message.role}-${index}`);
+  // Several tool results can share a timestamp. Position in this session is
+  // part of the identity, not just a fallback for messages without a timestamp.
+  return `message:${index}:${String(message.id ?? message.timestamp ?? message.role)}`;
 }
 
 function transcriptTimestamp(value: unknown, fallback: number): number {
@@ -188,14 +210,14 @@ function transcriptTimestamp(value: unknown, fallback: number): number {
 function messageText(message: JsonObject): string {
   if (typeof message.content === "string")
     return message.role === "user"
-      ? visibleImageAttachmentText(visibleGoalText(message.content))
+      ? visiblePlanRequestText(visibleImageAttachmentText(visibleGoalText(message.content)))
       : message.content;
   if (!Array.isArray(message.content)) return "";
   return message.content
     .filter((part: JsonObject) => part?.type === "text")
     .map((part: JsonObject) =>
       message.role === "user"
-        ? visibleImageAttachmentText(visibleGoalText(String(part.text ?? "")))
+        ? visiblePlanRequestText(visibleImageAttachmentText(visibleGoalText(String(part.text ?? ""))))
         : String(part.text ?? ""),
     )
     .join("\n");
@@ -318,6 +340,11 @@ interface VirtualFilmAnchor {
   stickToBottom: boolean;
 }
 
+function filmScrollOffset(film: HTMLElement, scroll: HTMLElement): number {
+  return film.getBoundingClientRect().top - scroll.getBoundingClientRect().top
+    + scroll.scrollTop - scroll.clientTop;
+}
+
 function VirtualFilm<T>({
   items,
   itemKey,
@@ -340,9 +367,15 @@ function VirtualFilm<T>({
     totalHeight: 0,
   });
   const resizeAnchorRef = useRef<VirtualFilmAnchor | null>(null);
+  const measurementFrameRef = useRef(0);
   const [calibrating, setCalibrating] = useState(true);
   const [layoutRevision, setLayoutRevision] = useState(0);
   const [range, setRange] = useState({ start: 0, end: items.length });
+
+  useLayoutEffect(() => () => {
+    cancelAnimationFrame(measurementFrameRef.current);
+    measurementFrameRef.current = 0;
+  }, [resetKey]);
 
   if (layoutRef.current.resetKey !== resetKey) {
     layoutRef.current = {
@@ -389,27 +422,18 @@ function VirtualFilm<T>({
 
   const layout = layoutRef.current;
   if (!calibrating && layout.resetKey === resetKey) {
-    const previousCount = layout.keys.length;
+    const nextKeys = items.map(itemKey);
     if (
-      items.length > previousCount &&
-      (previousCount === 0 ||
-        itemKey(items[previousCount - 1], previousCount - 1) ===
-          layout.keys[previousCount - 1])
+      nextKeys.length !== layout.keys.length ||
+      nextKeys.some((key, index) => key !== layout.keys[index])
     ) {
-      for (let index = previousCount; index < items.length; index += 1) {
-        layout.keys.push(itemKey(items[index], index));
-        layout.offsets.push(layout.totalHeight);
-        layout.heights.push(120);
-        layout.totalHeight += 120;
-      }
-    } else if (
-      items.length !== previousCount ||
-      (items.length > 0 &&
-        itemKey(items[items.length - 1], items.length - 1) !==
-          layout.keys[items.length - 1])
-    ) {
-      layout.keys = items.map(itemKey);
-      layout.heights = items.map((_, index) => layout.heights[index] ?? 120);
+      // Regrouping can replace an earlier row while the last key stays intact.
+      // A positional cache would then assign another message's height to it.
+      const heightsByKey = new Map(
+        layout.keys.map((key, index) => [key, layout.heights[index]]),
+      );
+      layout.keys = nextKeys;
+      layout.heights = nextKeys.map((key) => heightsByKey.get(key) ?? 120);
       layout.offsets = [];
       layout.totalHeight = 0;
       layout.heights.forEach((height) => {
@@ -425,12 +449,13 @@ function VirtualFilm<T>({
     const film = filmRef.current;
     if (!scroll || !film || items.length === 0) return;
     const overscan = Math.max(700, scroll.clientHeight);
+    const filmTop = filmScrollOffset(film, scroll);
     const viewportTop = Math.max(
       0,
-      scroll.scrollTop - film.offsetTop - overscan,
+      scroll.scrollTop - filmTop - overscan,
     );
     const viewportBottom =
-      scroll.scrollTop - film.offsetTop + scroll.clientHeight + overscan;
+      scroll.scrollTop - filmTop + scroll.clientHeight + overscan;
     const current = layoutRef.current;
     let low = 0;
     let high = current.offsets.length;
@@ -473,7 +498,7 @@ function VirtualFilm<T>({
         );
         scroll.scrollTop = Math.max(
           0,
-          film.offsetTop + current.offsets[index] + offset,
+          filmScrollOffset(film, scroll) + current.offsets[index] + offset,
         );
       }
     }
@@ -499,7 +524,7 @@ function VirtualFilm<T>({
         const film = filmRef.current;
         const current = layoutRef.current;
         if (film && current.keys.length > 0) {
-          const viewportOffset = Math.max(0, scroll.scrollTop - film.offsetTop);
+          const viewportOffset = Math.max(0, scroll.scrollTop - filmScrollOffset(film, scroll));
           let low = 0;
           let high = current.offsets.length;
           while (low < high) {
@@ -538,13 +563,13 @@ function VirtualFilm<T>({
     if (calibrating) return;
     const film = filmRef.current;
     if (!film) return;
-    const observer = new ResizeObserver((entries) => {
+    const measureRows = (rows: HTMLElement[]) => {
       let changed = false;
       const scroll = scrollRef.current;
       const current = layoutRef.current;
       let anchor: VirtualFilmAnchor | null = null;
       if (scroll && current.keys.length > 0) {
-        const viewportOffset = Math.max(0, scroll.scrollTop - film.offsetTop);
+        const viewportOffset = Math.max(0, scroll.scrollTop - filmScrollOffset(film, scroll));
         let low = 0;
         let high = current.offsets.length;
         while (low < high) {
@@ -564,15 +589,15 @@ function VirtualFilm<T>({
             scroll.scrollHeight - scroll.scrollTop - scroll.clientHeight <= 24,
         };
       }
-      for (const entry of entries) {
-        const row = entry.target as HTMLElement;
+      for (const row of rows) {
         const index = Number(row.dataset.virtualIndex);
-        const nextHeight =
-          entry.borderBoxSize?.[0]?.blockSize ??
-          row.getBoundingClientRect().height;
+        const nextHeight = row.getBoundingClientRect().height;
         if (
+          !film.contains(row) ||
           !Number.isInteger(index) ||
           index < 0 ||
+          index >= current.keys.length ||
+          row.dataset.virtualKey !== current.keys[index] ||
           Math.abs((current.heights[index] ?? 0) - nextHeight) < 0.5
         )
           continue;
@@ -584,15 +609,27 @@ function VirtualFilm<T>({
         changed = true;
       }
       if (changed) {
-        resizeAnchorRef.current = anchor;
-        setLayoutRevision((value) => value + 1);
+        if (!resizeAnchorRef.current) resizeAnchorRef.current = anchor;
+        // A collapse can reveal many more rows to measure. Coalesce corrections
+        // instead of recursively committing once for each newly visible row.
+        if (!measurementFrameRef.current) {
+          measurementFrameRef.current = requestAnimationFrame(() => {
+            measurementFrameRef.current = 0;
+            setLayoutRevision((value) => value + 1);
+          });
+        }
       }
-    });
-    film
-      .querySelectorAll<HTMLElement>("[data-virtual-index]")
-      .forEach((row) => observer.observe(row));
+    };
+    const rows = [...film.querySelectorAll<HTMLElement>("[data-virtual-index]")];
+    // Measure replacements synchronously before paint, then watch async growth.
+    // Reattach after every commit: React may replace nodes without changing range.
+    measureRows(rows);
+    const observer = new ResizeObserver((entries) =>
+      measureRows(entries.map((entry) => entry.target as HTMLElement)),
+    );
+    rows.forEach((row) => observer.observe(row));
     return () => observer.disconnect();
-  }, [calibrating, range.start, range.end, scrollRef]);
+  });
 
   if (calibrating) {
     return (
@@ -607,17 +644,19 @@ function VirtualFilm<T>({
   }
 
   const visible: ReactNode[] = [];
+  const start = Math.min(range.start, Math.max(0, items.length - 1));
+  const end = Math.min(items.length, Math.max(start + 1, range.end));
   for (
-    let index = range.start;
-    index < Math.min(range.end, items.length);
+    let index = start;
+    index < end;
     index += 1
   ) {
     visible.push(
       <div
         className="virtual-film-frame"
         data-virtual-index={index}
+        data-virtual-key={itemKey(items[index], index)}
         key={itemKey(items[index], index)}
-        style={{ transform: `translateY(${layout.offsets[index] ?? 0}px)` }}
       >
         {renderItem(items[index], index)}
       </div>,
@@ -627,9 +666,12 @@ function VirtualFilm<T>({
     <div
       className="virtual-film"
       ref={filmRef}
-      style={{ height: `${layout.totalHeight}px` }}
     >
+      <div className="virtual-film-spacer" aria-hidden="true"
+        style={{ height: `${layout.offsets[start] ?? 0}px` }} />
       {visible}
+      <div className="virtual-film-spacer" aria-hidden="true"
+        style={{ height: `${Math.max(0, layout.totalHeight - (layout.offsets[end] ?? layout.totalHeight))}px` }} />
     </div>
   );
 }
@@ -704,13 +746,10 @@ function StreamingMarkdown({ text }: { text: string }) {
     <ReactMarkdown
       remarkPlugins={[remarkGfm]}
       rehypePlugins={[revealTailPlugin]}
+      urlTransform={markdownMediaUrl}
       components={{
         img: ({ src, alt, title }) => <PreviewImage className="content-image" src={src} alt={alt} title={title} />,
-        a: ({ href, children }) => (
-          <a href={href} target="_blank" rel="noreferrer">
-            {children}
-          </a>
-        ),
+        a: ({ href, children }) => <MediaLink href={href}>{children}</MediaLink>,
         code: ({ children, className }) => (
           <code className={className}>{children}</code>
         ),
@@ -738,11 +777,11 @@ function MessageContent({
   const content =
     message.role === "user"
       ? typeof message.content === "string"
-        ? visibleImageAttachmentText(visibleGoalText(message.content))
+        ? visiblePlanRequestText(visibleImageAttachmentText(visibleGoalText(message.content)))
         : Array.isArray(message.content)
           ? message.content.map((part: JsonObject) =>
               part?.type === "text"
-                ? { ...part, text: visibleImageAttachmentText(visibleGoalText(String(part.text ?? ""))) }
+                ? { ...part, text: visiblePlanRequestText(visibleImageAttachmentText(visibleGoalText(String(part.text ?? "")))) }
                 : part,
             )
           : message.content
@@ -853,13 +892,10 @@ function Markdown({ text }: { text: string }) {
   return (
     <ReactMarkdown
       remarkPlugins={[remarkGfm]}
+      urlTransform={markdownMediaUrl}
       components={{
         img: ({ src, alt, title }) => <PreviewImage className="content-image" src={src} alt={alt} title={title} />,
-        a: ({ href, children }) => (
-          <a href={href} target="_blank" rel="noreferrer">
-            {children}
-          </a>
-        ),
+        a: ({ href, children }) => <MediaLink href={href}>{children}</MediaLink>,
         code: ({ children, className }) => (
           <code className={className}>{children}</code>
         ),
@@ -942,8 +978,8 @@ function splitThinkingFromAnswer(
   if (!thinking.length) return { item };
   const rest = content.filter((part) => part?.type !== "thinking");
   return {
-    item: { ...item, message: { ...item.message, content: rest } },
-    thinking: { ...item, message: { ...item.message, content: thinking } },
+    item: { ...item, fragment: "answer", message: { ...item.message, content: rest } },
+    thinking: { ...item, fragment: "thinking", message: { ...item.message, content: thinking } },
   };
 }
 
@@ -970,6 +1006,7 @@ function buildTranscriptDisplay(
       continue;
     }
     const role = String(item.message.role ?? "");
+    if (role === "custom" && item.message.display === false) continue;
     if (role !== "assistant") {
       if (role === "toolResult" || role === "tool") {
         buffer.push(item);
@@ -990,10 +1027,10 @@ function buildTranscriptDisplay(
     const split = splitThinkingFromAnswer(item, streamingMsg);
     if (split.thinking) buffer.push(split.thinking);
     const answer = split.item;
-    const key = messageKey(item.message, item.sourceIndex);
+    const key = `fold:${messageKey(item.message, item.sourceIndex)}`;
     const previous = foldIndex >= 0 ? result[foldIndex] : undefined;
     if (previous?.display === "fold") {
-      // A newer answer supersedes the previous one: it becomes process too.
+      // Only intermediate text in the same unfinished run becomes process.
       result[foldIndex] = {
         display: "fold",
         key,
@@ -1012,6 +1049,16 @@ function buildTranscriptDisplay(
       result.push({ display: "single", item: answer });
     }
     buffer = [];
+    const includesTools = Array.isArray(item.message.content) &&
+      item.message.content.some((part: JsonObject) =>
+        part?.type === "toolCall" || part?.type === "tool_call",
+      );
+    if (item.message !== streamingMsg &&
+        item.message.stopReason !== "toolUse" && !includesTools) {
+      // Checklist/goal continuation does not insert a visible user message.
+      // Keep this completed answer even when the next run emits more text.
+      foldIndex = -1;
+    }
   }
   flush();
   return result;
@@ -1129,6 +1176,7 @@ function toolPresentation(
       comfyui_generate_music: "Генерация музыки YuE2",
       comfyui_generate_instrumental_music: "Инструментальная музыка YuE2",
       comfyui_cover_music: "Кавер YuE2",
+      comfyui_publish_music: "Выбрать треки для ответа",
       comfyui_plan_music: "Нотный план YuE2",
       comfyui_edit_vocals: "Убрать вокал из нот YuE2",
       comfyui_generate_3d: "Генерация 3D-модели",
@@ -2311,6 +2359,7 @@ function SettingsPage({
     icon: typeof Settings;
   }> = [
     { id: "general", label: "Общее", icon: Settings },
+    // Web access is paused: keep its implementation, but hide the settings entry.
     { id: "models", label: "Модели", icon: Cpu },
     { id: "comfyui", label: "ComfyUI", icon: Boxes },
     { id: "modules", label: "Модули", icon: Boxes },
@@ -2678,9 +2727,11 @@ function SettingsPage({
       <main className="settings-content">
         <div className="settings-inner">
           {section === "comfyui" && <ComfySettingsPanel />}
+          {section === "web-access" && <WebAccessSettingsPanel />}
           {section === "general" && (
             <>
               <h1>Общее</h1>
+              <NotebookSettings />
               <h2>Портативность</h2>
               <div className="settings-card">
                 <SettingRow
@@ -3415,6 +3466,8 @@ function SettingsPage({
 export default function App() {
   const [bootstrap, setBootstrap] = useState<BootstrapPayload | null>(null);
   const [projects, setProjects] = useState<ProjectRecord[]>([]);
+  const [notebookOpen, setNotebookOpen] = useState(false);
+  const [skillsOpen, setSkillsOpen] = useState(false);
   const [conversations, setConversations] = useState<ConversationRecord[]>([]);
   const [archivedConversations, setArchivedConversations] = useState<
     ConversationRecord[]
@@ -3434,6 +3487,16 @@ export default function App() {
   const [runDiff, setRunDiff] = useState<RunDiff>();
   const [diffOpen, setDiffOpen] = useState(false);
   const [input, setInput] = useState("");
+  const [historyQuotes, setHistoryQuotes] = useState<string[]>([]);
+  const [historyMenu, setHistoryMenu] = useState<{ text: string; x: number; y: number }>();
+  const [historyAction, setHistoryAction] = useState<{ conversationId: string; entryId: string; mode: "edit" | "rewind"; text: string }>();
+  const [historyBusy, setHistoryBusy] = useState(false);
+  const composerInputRef = useRef<HTMLTextAreaElement>(null);
+  useEffect(() => {
+    setHistoryQuotes([]);
+    setHistoryMenu(undefined);
+    setHistoryAction(undefined);
+  }, [activeConversationId]);
   const [attachments, setAttachments] = useState<Attachment[]>([]);
   const [maskTarget, setMaskTarget] = useState<Attachment | null>(null);
   useEffect(() => setMaskTarget(null), [activeConversationId]);
@@ -3445,6 +3508,7 @@ export default function App() {
   const [thinkingMenuOpen, setThinkingMenuOpen] = useState(false);
   const [addMenuOpen, setAddMenuOpen] = useState(false);
   const [goalMode, setGoalMode] = useState(false);
+  const [planMode, setPlanMode] = useState(false);
   const [search, setSearch] = useState("");
   const [searchMatches, setSearchMatches] = useState<Set<string>>();
   const [extensionDialog, setExtensionDialog] = useState<{
@@ -3486,6 +3550,7 @@ export default function App() {
   const autoScrollRef = useRef(true);
   const userScrollInteractionRef = useRef(false);
   const activeIdRef = useRef<string | undefined>(undefined);
+  const historyRecoveryRef = useRef<string | undefined>(undefined);
   const conversationsRef = useRef<ConversationRecord[]>([]);
   const startedAtRef = useRef<number | undefined>(undefined);
   const editorSyncRef = useRef<ReturnType<typeof setTimeout> | undefined>(
@@ -3498,6 +3563,7 @@ export default function App() {
   useEffect(() => {
     activeIdRef.current = activeConversationId;
     setGoalMode(false);
+    setPlanMode(false);
     setAddMenuOpen(false);
   }, [activeConversationId]);
 
@@ -3594,6 +3660,17 @@ export default function App() {
       }),
     [],
   );
+
+  useEffect(() => window.piDesktop.onControlSelect(async ({ requestId, snapshot: selected }) => {
+    setSettingsOpen(false);
+    setConversations((current) => [selected.conversation, ...current.filter((item) => item.id !== selected.conversation.id)]);
+    const sequence = navigationSequenceRef.current + 1;
+    await openConversation(selected.conversation.id);
+    if (navigationSequenceRef.current !== sequence) return;
+    // Set the ref before acknowledging: model events can arrive immediately.
+    activeIdRef.current = selected.conversation.id;
+    window.piDesktop.controlSelectionReady(requestId);
+  }), []);
 
   useEffect(
     () =>
@@ -3799,6 +3876,7 @@ export default function App() {
 
   const handlePiEvent = (event: JsonObject) => {
     if (event.type === "desktop_run_started" || event.type === "agent_start") {
+      setSnapshot(current => current ? { ...current, planWorkingRevision: event.planWorkingRevision } : current);
       const continuingRun = startedAtRef.current !== undefined;
       const runStartedAt =
         typeof event.run?.startedAt === "string"
@@ -3817,6 +3895,19 @@ export default function App() {
         setRunDiff(undefined);
         setDiffOpen(false);
       }
+    } else if (event.type === "desktop_plan_activity") {
+      setSnapshot(current => current ? { ...current, planWorkingRevision: event.revision } : current);
+    } else if (event.type === "desktop_history_rewound" && event.snapshot) {
+      applyRuntimeSnapshot(event.snapshot as ConversationSnapshot);
+      setWorking(false);
+      setTools({});
+      setRunDiff(undefined);
+      setDiffOpen(false);
+      setLastDuration(undefined);
+      setStartedAt(undefined);
+      startedAtRef.current = undefined;
+      setElapsed(0);
+      autoScrollRef.current = true;
     } else if (event.type === "agent_settled") {
       setWorking(false);
       setWorkingMessage("");
@@ -3832,6 +3923,20 @@ export default function App() {
         startedAtRef.current = undefined;
       }
       setTools({});
+      if (Array.isArray(event.messages)) setMessages(event.messages);
+      else setMessages((current) => {
+        try {
+          const next = event.messagePatch ? applyMessagePatch<JsonObject>(current, event.messagePatch) : current;
+          if (typeof event.messageCount === "number" && next.filter(message => !message.optimistic).length !== event.messageCount)
+            throw new Error("Message stream needs synchronization");
+          return next;
+        } catch {
+          // Opening a chat mid-run can miss events. Recover explicitly rather
+          // than silently dropping messages or restoring every history each turn.
+          queueMicrotask(() => void recoverConversationHistory());
+          return current;
+        }
+      });
       if (event.state) {
         setSnapshot((current) =>
           current
@@ -3842,6 +3947,7 @@ export default function App() {
                   ? event.entries
                   : current.entries,
                 extensionState: event.extensionState ?? current.extensionState,
+                historyTargets: event.historyTargets ?? current.historyTargets,
               }
             : current,
         );
@@ -3849,7 +3955,7 @@ export default function App() {
     } else if (event.type === "message_start") {
       if (event.message?.role === "assistant")
         setStreamingMessage(structuredClone(event.message));
-      else if (event.message) {
+      else if (event.message && event.message.role !== "toolResult" && event.message.role !== "tool") {
         setMessages((current) => {
           const incomingText = messageText(event.message);
           let optimisticIndex = current.findIndex(
@@ -3907,6 +4013,7 @@ export default function App() {
         ...current,
         [event.toolCallId]: {
           id: event.toolCallId,
+          parentToolCallId: event.parentToolCallId,
           name: event.toolName,
           args: event.args,
           running: true,
@@ -3924,6 +4031,7 @@ export default function App() {
             startedAt: Date.now(),
           }),
           result: event.partialResult,
+          ...(typeof event.parentToolCallId === "string" ? { parentToolCallId: event.parentToolCallId } : {}),
         },
       }));
     } else if (event.type === "tool_execution_end") {
@@ -3936,6 +4044,7 @@ export default function App() {
             startedAt: Date.now(),
           }),
           result: event.result,
+          ...(typeof event.parentToolCallId === "string" ? { parentToolCallId: event.parentToolCallId } : {}),
           running: false,
           error: Boolean(event.isError),
         },
@@ -4013,6 +4122,9 @@ export default function App() {
       );
     } else if (event.type === "summarization_retry_finished") {
       setWorkingMessage("");
+    } else if (event.type === "desktop_persistence_error") {
+      addNotice(String(event.error ?? "Не удалось сохранить состояние чата"), "error");
+      // Persistence errors do not terminate the live model process.
     } else if (
       event.type === "runtime_error" ||
       event.type === "extension_error"
@@ -4380,9 +4492,13 @@ export default function App() {
     }
   };
 
-  const submit = async () => {
-    const text =
-      input.trim() || (attachments.length ? "Посмотри вложения." : "");
+  const submit = async (explainQuote?: string) => {
+    const quick = explainQuote !== undefined;
+    const submittedQuotes = quick ? [explainQuote] : historyQuotes;
+    const originalInput = input;
+    const message = quick ? "Объясни подробнее выделенный фрагмент." :
+      input.trim() || (attachments.length ? "Посмотри вложения." : historyQuotes.length ? "Посмотри выделенные фрагменты." : "");
+    const text = message ? quotedHistoryPrompt(message, submittedQuotes) : "";
     if (!text || !activeConversationId) return;
     if (!working && (text === "/compact" || text.startsWith("/compact "))) {
       setInput("");
@@ -4397,24 +4513,32 @@ export default function App() {
       return;
     }
     const conversationId = activeConversationId;
-    const submittedAttachments = attachments;
-    const submittedAsGoal = goalMode;
+    const submittedAttachments = quick ? [] : attachments;
+    const submittedAsGoal = !quick && goalMode;
+    const submittedWithPlan = !quick && planMode;
     autoScrollRef.current = true;
-    setInput("");
-    setAttachments([]);
-    setGoalMode(false);
+    if (!quick) {
+      setInput("");
+      setAttachments([]);
+      setHistoryQuotes([]);
+      setGoalMode(false);
+      setPlanMode(false);
+    }
     if (working) {
       try {
         const queued = await window.piDesktop.queuePrompt(
           conversationId,
           text,
           submittedAttachments,
+          submittedWithPlan,
         );
         if (activeIdRef.current === conversationId) setQueuedPrompts(queued);
       } catch (error) {
-        if (activeIdRef.current === conversationId) {
-          setInput(text);
+        if (!quick && activeIdRef.current === conversationId) {
+          setInput(originalInput);
           setAttachments(submittedAttachments);
+          setHistoryQuotes(submittedQuotes);
+          setPlanMode(submittedWithPlan);
         }
         addNotice(
           error instanceof Error ? error.message : String(error),
@@ -4447,21 +4571,28 @@ export default function App() {
           conversationId,
           text,
           submittedAttachments,
+          submittedWithPlan,
         );
       else
         await window.piDesktop.sendPrompt(
           conversationId,
           text,
           submittedAttachments,
+          undefined,
+          submittedWithPlan,
         );
     } catch (error) {
       if (activeIdRef.current === conversationId) {
         setMessages((current) =>
           current.filter((item) => item.id !== optimistic.id),
         );
-        setInput(text);
-        setAttachments(submittedAttachments);
-        setGoalMode(submittedAsGoal);
+        if (!quick) {
+          setInput(originalInput);
+          setAttachments(submittedAttachments);
+          setHistoryQuotes(submittedQuotes);
+          setGoalMode(submittedAsGoal);
+          setPlanMode(submittedWithPlan);
+        }
       }
       addNotice(
         error instanceof Error ? error.message : String(error),
@@ -4674,6 +4805,42 @@ export default function App() {
     setFooterLines(next.extensionUi.footerLines);
   };
 
+  const recoverConversationHistory = async () => {
+    const id = activeIdRef.current;
+    if (!id || historyRecoveryRef.current === id) return;
+    historyRecoveryRef.current = id;
+    const navigation = navigationSequenceRef.current;
+    try {
+      const next = await window.piDesktop.openConversation(id);
+      if (activeIdRef.current !== id || navigationSequenceRef.current !== navigation) return;
+      setMessages(next.messages as JsonObject[]);
+      setSnapshot(current => current ? { ...current, entries: next.entries, historyTargets: next.historyTargets } : next);
+    } catch (error) {
+      addNotice(error instanceof Error ? error.message : String(error), "error");
+    } finally {
+      if (historyRecoveryRef.current === id) historyRecoveryRef.current = undefined;
+    }
+  };
+
+  const confirmHistoryAction = async () => {
+    const action = historyAction;
+    if (!action || historyBusy || working || activeConversationId !== action.conversationId) return;
+    setHistoryBusy(true);
+    try {
+      if (action.mode === "edit") {
+        await window.piDesktop.editLastMessage(action.conversationId, action.entryId, action.text);
+      } else {
+        const next = await window.piDesktop.rewindConversation(action.conversationId, action.entryId);
+        if (activeIdRef.current === action.conversationId) applyRuntimeSnapshot(next);
+      }
+      if (activeIdRef.current === action.conversationId) setHistoryAction(undefined);
+    } catch (error) {
+      addNotice(error instanceof Error ? error.message : String(error), "error");
+    } finally {
+      setHistoryBusy(false);
+    }
+  };
+
   const executeCompact = async (instructions?: string) => {
     if (!activeConversationId || working) return;
     const started = Date.now();
@@ -4747,6 +4914,7 @@ export default function App() {
           setThinkingMenuOpen(false);
           setConversationMenu(undefined);
           setProjectMenu(undefined);
+          setHistoryMenu(undefined);
           setCommandPaletteOpen(false);
           setCompactDialogOpen(false);
           if (diffOpen) setDiffOpen(false);
@@ -4947,8 +5115,13 @@ export default function App() {
       startedAt: live?.startedAt ?? 0,
     };
   };
+  const nestedFor = (id: string) => nestedToolActivities(id, tools, historicalToolIndex.results);
+  const placedNestedIds = new Set<string>();
+  for (const id of new Set([...historicalToolIndex.calls, ...streamingToolIds])) {
+    for (const child of nestedFor(id)) placedNestedIds.add(child.id);
+  }
   const orphanTools = Object.values(tools).filter(
-    (tool) => !hasTranscriptTool(tool.id),
+    (tool) => !hasTranscriptTool(tool.id) && !placedNestedIds.has(tool.id),
   );
   const runningTool = Object.values(tools).find((tool) => tool.running);
   const streamingParts = Array.isArray(streamingMessage?.content)
@@ -4976,7 +5149,7 @@ export default function App() {
     index: number,
   ): string => {
     if (item.kind === "message")
-      return messageKey(item.message, item.sourceIndex);
+      return `${messageKey(item.message, item.sourceIndex)}:${item.fragment ?? "whole"}`;
     return String(item.entry.id ?? `${item.kind}-${item.sourceIndex}-${index}`);
   };
   const renderTranscriptItem = (item: TranscriptTimelineItem, published?: ReadonlySet<string>, answerMedia?: Record<string, unknown>[]): ReactNode => {
@@ -5009,6 +5182,7 @@ export default function App() {
       );
     }
     const { message, sourceIndex: index } = item;
+    if (message.role === "custom" && message.display === false) return null;
     if (message.role === "toolResult" || message.role === "tool") {
       const id = toolResultIdentifier(message);
       if (id && hasTranscriptTool(id)) return null;
@@ -5029,6 +5203,9 @@ export default function App() {
     const visibleMessage = messageWithoutToolCalls(message);
     const calls = toolCallParts(message);
     const isStreamingMessage = message === streamingMessage;
+    const historyTarget = !isStreamingMessage && !message.optimistic
+      ? snapshot?.historyTargets?.find(target => target.messageIndex === index) : undefined;
+    const canRewind = Boolean(historyTarget) && historyHasLaterMessages(messages, index);
     return (
       <>
         {visibleMessage && (
@@ -5047,9 +5224,22 @@ export default function App() {
                 {answerMedia && answerMedia.length > 0 && <div className="assistant-published-media"><ComfyMedia parts={answerMedia} /></div>}
               </div>
             )}
+            {historyTarget && activeConversationId && (historyTarget.editable || canRewind) && (
+              <div className="message-history-actions">
+                {historyTarget.editable && <button title="Редактировать последнее сообщение" disabled={working || historyBusy}
+                  onClick={() => setHistoryAction({ conversationId: activeConversationId, entryId: historyTarget.entryId, mode: "edit", text: messageText(message) })}>
+                  <Pencil size={13} />Изменить
+                </button>}
+                {canRewind && <button title="Откатить сессию до этого сообщения включительно" disabled={working || historyBusy}
+                  onClick={() => setHistoryAction({ conversationId: activeConversationId, entryId: historyTarget.entryId, mode: "rewind", text: messageText(message) })}>
+                  <RotateCcw size={13} />Откатить сюда
+                </button>}
+              </div>
+            )}
           </article>
         )}
         {calls.map((call, callIndex) => (
+          <Fragment key={toolCallIdentifier(call, `${messageKey(message, index)}-${callIndex}`)}>
           <ToolCard
             hideMedia={published?.has(toolCallIdentifier(call, `${messageKey(message, index)}-${callIndex}`))}
             key={toolCallIdentifier(
@@ -5061,6 +5251,10 @@ export default function App() {
               `${messageKey(message, index)}-${callIndex}`,
             )}
           />
+          {nestedFor(toolCallIdentifier(call, `${messageKey(message, index)}-${callIndex}`)).map(child => (
+            <ToolCard key={child.id} tool={child} />
+          ))}
+          </Fragment>
         ))}
       </>
     );
@@ -5110,6 +5304,9 @@ export default function App() {
           `message-${item.sourceIndex}-tool-${callIndex}`,
         );
         const persisted = historicalToolIndex.results.get(id);
+        const nested = nestedFor(id);
+        calls += nested.length;
+        errors += nested.filter(tool => tool.error).length;
         if (persisted) {
           if (persisted.isError) errors += 1;
         } else if (tools[id]?.error) errors += 1;
@@ -5371,7 +5568,7 @@ export default function App() {
               </aside>
             )}
 
-            <main className="main-panel"
+            <main className={`main-panel${activeConversationId && (notebookOpen || snapshot?.conversation.plan?.steps.length) ? " has-plan" : ""}`}
               onDragEnter={(event) => {
                 if (!Array.from(event.dataTransfer.types).includes("Files")) return;
                 event.preventDefault();
@@ -5410,6 +5607,11 @@ export default function App() {
                     "Pi Desktop"}
                 </strong>
                 <div className="header-spacer" />
+                {activeConversationId && window.piDesktop.webMode !== "remote" && <button className={`notebook-toggle${skillsOpen ? " is-active" : ""}`} title="Навыки — переиспользуемые инструкции"
+                  aria-label="Навыки" aria-expanded={skillsOpen} onClick={() => setSkillsOpen(value => !value)}><Wrench size={17} /><span>Навыки</span></button>}
+                {activeConversationId && <button className={`notebook-toggle${notebookOpen ? " is-active" : ""}`} title="Блокнот — память текущего чата"
+                  aria-label="Блокнот" aria-expanded={notebookOpen} onClick={() => setNotebookOpen(value => !value)}><BookOpen size={17} /><span>Блокнот</span></button>}
+                <BrowserPanel conversationId={activeConversationId ?? undefined} />
                 {activeProject && (
                   <button
                     className="path-button"
@@ -5426,6 +5628,15 @@ export default function App() {
               <div
                 className="conversation-scroll"
                 ref={conversationScrollRef}
+                onContextMenu={(event) => {
+                  const selection = window.getSelection();
+                  const text = selection?.toString().trim();
+                  if (!activeConversationId || !text || !selection?.anchorNode || !selection.focusNode ||
+                      !event.currentTarget.contains(selection.anchorNode) || !event.currentTarget.contains(selection.focusNode)) return;
+                  event.preventDefault();
+                  setHistoryMenu({ text, x: Math.max(8, Math.min(event.clientX, window.innerWidth - 228)),
+                    y: Math.max(8, Math.min(event.clientY, window.innerHeight - 136)) });
+                }}
                 onScroll={handleConversationScroll}
                 onWheel={handleConversationWheel}
                 onPointerDown={handleConversationPointerDown}
@@ -5570,6 +5781,15 @@ export default function App() {
                 )}
               </div>
 
+              {activeConversationId && snapshot && notebookOpen && <aside className="conversation-plan conversation-notebook" aria-label="Блокнот текущего чата">
+                <NotebookPanel key={`notebook-${activeConversationId}`} conversationId={activeConversationId} notebook={snapshot.conversation.notebook} open={notebookOpen} onClose={() => setNotebookOpen(false)} />
+              </aside>}
+              {activeConversationId && skillsOpen && <SkillsPanel key={`skills-${activeConversationId}`} conversationId={activeConversationId} onClose={() => setSkillsOpen(false)} />}
+              {activeConversationId && !notebookOpen && snapshot?.conversation.plan?.steps.length ? (
+                <aside className="conversation-plan" aria-label="План текущего чата">
+                  <PlanPanel key={`plan-${snapshot.conversation.id}`} conversationId={snapshot.conversation.id} plan={snapshot.conversation.plan} working={planIsWorking(snapshot.conversation.plan, working, snapshot.planWorkingRevision)} />
+                </aside>
+              ) : null}
               {activeConversationId && (
                 <div
                   className={`composer-wrap${modelMenuOpen || thinkingMenuOpen || addMenuOpen || slashCommands.length > 0 ? " dropdown-open" : ""}`}
@@ -5696,6 +5916,19 @@ export default function App() {
                       </div>
                     ))}
                   <div className="composer">
+                    {historyQuotes.length > 0 && (
+                      <div className="history-quote-list" aria-label="Цитаты из переписки">
+                        {historyQuotes.map((quote, index) => (
+                          <div className="history-quote" key={index}>
+                            <blockquote title={quote}>{quote}</blockquote>
+                            <button type="button" title="Убрать цитату" aria-label="Убрать цитату"
+                              onClick={() => setHistoryQuotes(current => current.filter((_, i) => i !== index))}>
+                              <X size={14} />
+                            </button>
+                          </div>
+                        ))}
+                      </div>
+                    )}
                     {attachments.length > 0 && (
                       <div className="attachment-list">
                         {attachments.map((attachment) => {
@@ -5754,6 +5987,7 @@ export default function App() {
                       </div>
                     )}
                     <textarea
+                      ref={composerInputRef}
                       value={input}
                       onChange={(event) => setInput(event.target.value)}
                       onPaste={(event) => {
@@ -5834,6 +6068,11 @@ export default function App() {
                                 </small>
                               </span>
                             </button>
+                            <button aria-pressed={planMode} onClick={() => { setAddMenuOpen(false); setPlanMode(value => !value); }}>
+                              <ListChecks size={16} />
+                              <span><strong>Составить план</strong><small>Сначала изучить системы, затем спланировать работу</small></span>
+                              {planMode && <Check size={14} />}
+                            </button>
                           </div>
                         )}
                       </div>
@@ -5856,6 +6095,8 @@ export default function App() {
                           <Target size={14} /> Цель <X size={12} />
                         </button>
                       )}
+                      {planMode && <button className="goal-mode-chip" title="План для следующего сообщения: сначала изучить затрагиваемые системы. Нажмите, чтобы отключить."
+                        onClick={() => setPlanMode(false)}><ListChecks size={14} /> Составить план <X size={12} /></button>}
                       <div className="composer-spacer" />
                       <div className="dropdown-wrap model-dropdown-wrap">
                         <button
@@ -5939,7 +6180,7 @@ export default function App() {
                           <button
                             className="send-button"
                             title="Поставить в очередь"
-                            disabled={!input.trim() && !attachments.length}
+                            disabled={!input.trim() && !attachments.length && !historyQuotes.length}
                             onClick={() => void submit()}
                           >
                             <Send size={17} />
@@ -5948,7 +6189,7 @@ export default function App() {
                             className="send-button stop"
                             title="Остановить"
                             onClick={() =>
-                              void window.piDesktop.abort(activeConversationId)
+                              void window.piDesktop.abort(activeConversationId).catch(error => addNotice(String(error), "error"))
                             }
                           >
                             <CircleStop size={18} />
@@ -5957,7 +6198,7 @@ export default function App() {
                       ) : (
                         <button
                           className="send-button"
-                          disabled={!input.trim() && !attachments.length}
+                          disabled={!input.trim() && !attachments.length && !historyQuotes.length}
                           onClick={() => void submit()}
                         >
                           <Send size={17} />
@@ -6048,6 +6289,57 @@ export default function App() {
           onCreated={(project) => void projectCreated(project)}
           onError={(message) => addNotice(message, "error")}
         />
+      )}
+      {historyAction && (
+        <div className="modal-backdrop" onKeyDown={event => {
+          if (event.key === "Escape" && !historyBusy) setHistoryAction(undefined);
+        }}>
+          <div className="modal-card history-action-dialog" role="dialog" aria-modal="true" aria-labelledby="history-action-title">
+            <div className="modal-head">
+              <strong id="history-action-title">{historyAction.mode === "edit" ? "Изменить последнее сообщение" : "Откатить сессию?"}</strong>
+              <button className="icon-button" aria-label="Закрыть" disabled={historyBusy} onClick={() => setHistoryAction(undefined)}><X size={17} /></button>
+            </div>
+            {historyAction.mode === "edit" ? (
+              <textarea className="modal-editor" aria-label="Текст сообщения" autoFocus disabled={historyBusy}
+                value={historyAction.text} onChange={event => setHistoryAction({ ...historyAction, text: event.target.value })} />
+            ) : <blockquote className="history-rewind-preview">{historyAction.text.slice(0, 500) || "Сообщение с вложением"}</blockquote>}
+            <p>{historyAction.mode === "edit"
+              ? "Этот запрос и последующие ответы будут заменены в текущей ветке. Изображения сохранятся. После отправки модель ответит заново."
+              : "Выбранное сообщение останется, последующие сообщения исчезнут из текущего контекста."}</p>
+            <p>Предыдущая ветка сохранится в файле сессии. Цель и очередь сообщений будут сброшены. Выполненные команды, изменения файлов и созданные медиа не отменяются.</p>
+            <div className="modal-actions">
+              <button disabled={historyBusy} onClick={() => setHistoryAction(undefined)}>Отмена</button>
+              <button className="primary" disabled={working || historyBusy || (historyAction.mode === "edit" && !historyAction.text.trim())}
+                onClick={() => void confirmHistoryAction()}>
+                {historyBusy ? "Применяю…" : historyAction.mode === "edit" ? "Отправить исправленный запрос" : "Откатить"}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+      {historyMenu && (
+        <div className="context-menu-layer" onPointerDown={() => setHistoryMenu(undefined)}
+          onContextMenu={(event) => { event.preventDefault(); setHistoryMenu(undefined); }}>
+          <div className="conversation-menu history-context-menu" role="menu" aria-label="Выделенный текст"
+            style={{ left: historyMenu.x, top: historyMenu.y }}
+            onPointerDown={(event) => { event.stopPropagation(); event.preventDefault(); }}>
+            <button role="menuitem" onClick={() => {
+              const text = historyMenu.text;
+              setHistoryMenu(undefined);
+              void navigator.clipboard.writeText(text).catch(error => addNotice(String(error), "error"));
+            }}>Копировать</button>
+            <button role="menuitem" onClick={() => {
+              setHistoryQuotes(current => [...current, historyMenu.text]);
+              setHistoryMenu(undefined);
+              composerInputRef.current?.focus();
+            }}>Добавить в чат</button>
+            <button role="menuitem" onClick={() => {
+              const text = historyMenu.text;
+              setHistoryMenu(undefined);
+              void submit(text);
+            }}>Подробнее</button>
+          </div>
+        </div>
       )}
       {projectMenu &&
         (() => {

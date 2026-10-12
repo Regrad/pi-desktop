@@ -17,18 +17,17 @@ export default function register(pi: ExtensionAPI, context: ToolContext) {
       "Use masks only when useful: reuse a user mask, scripts for exact geometry, comfyui_create_mask for semantic objects/complex contours. Inspect mask and preview before inpainting. Broad edits may use edit without a mask.",
       "Qwen Image 2.1 handles creation, multi-reference scene composition, identity-preserving person/product edits, pose/outfit/style/background changes, lettering, annotated local edits, inpainting, outpainting and native RGBA. Use compose for a new scene, edit for an existing canvas, inpaint for a mask, outpaint for expansion and extract_subject for semantic cutouts. Do not fall back to script compositing unless the user needs exact pixel/logo placement or Qwen cannot do the requested operation.",
       "For multiple inputs refer to each as <image1>, <image2>, etc., specify their roles and which scene/identity/pose/style comes from each. With one image describe it naturally. Preserve identity, untargeted content and exact requested lettering. Describe edits in English (or Chinese); keep the user's exact rendered text in its original language and in quotes. Transparent edits preserve reference alpha and return RGBA. Do not claim Qwen Image Layered, ControlNet or a separate model is installed.",
-      "Generated images are displayed directly in the chat answer. To show an existing or script-edited image use desktop_show_image, not read alone. Inspect returned image blocks before claiming success; report limitations honestly. Dimensions are multiples of 32; set both width and height together. count produces up to 4 variants in ordinary generation/composition/editing; mask/outpaint use one result per call. Keep default sampling settings unless the user asks or the task needs an explicit adjustment.",
+      "Generated images are displayed directly in the chat answer. To show an existing or script-edited image use desktop_show_image, not read alone. Inspect returned image blocks before claiming success; report limitations honestly. Outpainting uses the first image as the canvas and produces one result per call. Result dimensions come from the original image plus padding. Do not supply width or height; omit count and canvas_image or set them to 1. For multiple variants make separate calls. Keep default sampling settings unless the user asks or the task needs an explicit adjustment.",
     ],
     parameters: Type.Object({
       prompt: Type.Optional(Type.String()), negative_prompt: Type.Optional(Type.String()),
       images: Type.Optional(Type.Array(Type.String({ description: "Original absolute file path or attachment: reference from comfyui_list_attachments" }), { maxItems: 10 })),
-      width: Type.Optional(Type.Integer({ minimum: 32, maximum: 4096 })), height: Type.Optional(Type.Integer({ minimum: 32, maximum: 4096 })),
       seed: Type.Optional(Type.Integer({ minimum: 0 })), transparent_background: Type.Optional(Type.Boolean()),
       ...(tool.mode !== "remove_background" ? {
         steps: Type.Optional(Type.Integer({ minimum: 1, maximum: 100 })), cfg: Type.Optional(Type.Number({ minimum: 0, maximum: 20 })),
         denoise: Type.Optional(Type.Number({ exclusiveMinimum: 0, maximum: 1, description: "Below 1 starts from the first image; needs an image." })),
-        count: Type.Optional(Type.Integer({ minimum: 1, maximum: 4 })),
-        canvas_image: Type.Optional(Type.Integer({ minimum: 1, maximum: 10, description: "Reference index for default canvas dimensions; order stays unchanged." })),
+        count: Type.Optional(Type.Literal(1, { description: "One result per call; omit or set to 1." })),
+        canvas_image: Type.Optional(Type.Literal(1, { description: "The first image is always the canvas; omit or set to 1." })),
         reference_resolution: Type.Optional(Type.Integer({ minimum: 0, maximum: 4096, description: "Reference resize area, multiple of 32; 0 keeps each reference size." })),
       } : {}),
       ...(tool.mode === "inpaint" ? {

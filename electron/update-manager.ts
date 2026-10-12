@@ -4,6 +4,7 @@ import { existsSync } from "node:fs";
 import { copyFile, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
+import { pathToFileURL } from "node:url";
 import type {
   UpdateComponentId,
   UpdateComponentStatus,
@@ -12,6 +13,7 @@ import type {
 } from "../shared/types.js";
 import { DataStore } from "./data-store.js";
 import { PiRpcProcess } from "./pi-rpc-process.js";
+import { npmCommand } from "./npm-command.js";
 
 interface ComponentDefinition {
   id: UpdateComponentId;
@@ -35,7 +37,6 @@ const COMPONENTS: ComponentDefinition[] = [
 ];
 
 const LOCAL_COMPONENTS: Array<Omit<UpdateComponentStatus, "updateAvailable">> = [
-  { id: "pi-lens-all-tools", name: "Lens All Tools", description: "Сразу активирует полный набор инструментов Pi Lens.", updateable: false, source: "local" },
   { id: "pi-single-slot-guard", name: "Single Slot Guard", description: "Защищает KV-кэш при работе с одним слотом llama.cpp.", updateable: false, source: "local" },
   { id: "pi-llama-generation-speed", name: "Generation Speed", description: "Показывает текущую скорость генерации llama.cpp.", updateable: false, source: "local" },
   { id: "pi-loop-police", name: "Loop Police", description: "Локальная настроенная защита от реальных циклов.", updateable: false, source: "local" },
@@ -128,6 +129,8 @@ export class UpdateManager {
           `${definition.packageName}@${assertSafeVersion(component.latestVersion)}`,
         ]);
         if (definition.id === "pi-core") await this.applyRpcBridge();
+        await this.applyAddonCompatibility(definition.packageName);
+        if (definition.packageName === "pi-lens") await this.applyLensGrammarCache();
         await this.store.refreshManagedPackageConfiguration();
         await this.smokeTestRuntime();
         updated.push(definition.name);
@@ -143,6 +146,8 @@ export class UpdateManager {
               `${definition.packageName}@${assertSafeVersion(previousOverrideVersion)}`,
             ]);
             if (definition.id === "pi-core") await this.applyRpcBridge();
+            await this.applyAddonCompatibility(definition.packageName);
+            if (definition.packageName === "pi-lens") await this.applyLensGrammarCache();
           } else {
             await this.runNpm(["uninstall", "--prefix", this.store.runtimePackagesDir, "--no-audit", "--no-fund", definition.packageName]);
           }
@@ -166,7 +171,20 @@ export class UpdateManager {
     }
   }
 
+  private async applyLensGrammarCache(): Promise<void> {
+    const patchFile = path.join(this.appRoot, "resources", "pi-lens", "grammar-cache-patch.mjs");
+    const { applyPiLensGrammarCache } = await import(pathToFileURL(patchFile).href);
+    await applyPiLensGrammarCache(this.store.getEffectivePackagePath("pi-lens"));
+    const grammarFile = path.join(this.appRoot, "resources", "pi-lens", "grammars.mjs");
+    const { ensurePiLensGrammars } = await import(pathToFileURL(grammarFile).href);
+    await ensurePiLensGrammars(this.store.getEffectivePackagePath("pi-lens"));
+  }
+
   private async applyRpcBridge(): Promise<void> {
+    const corePath = this.store.getEffectivePackagePath("@earendil-works/pi-coding-agent");
+    if (await readPackageVersion(corePath) !== "1.0.4") {
+      throw new Error("RPC и отложенные инструменты проверены для Pi 1.0.4; новая версия требует проверки совместимости");
+    }
     const destination = path.join(
       this.store.getEffectivePackagePath("@earendil-works/pi-coding-agent"),
       "dist", "modes", "rpc", "rpc-mode.js",
@@ -174,7 +192,24 @@ export class UpdateManager {
     if (!existsSync(path.join(path.dirname(destination), "jsonl.js"))) {
       throw new Error("Новая версия Pi несовместима с RPC-интерфейсом Pi Desktop");
     }
+    const routingRoot = path.join(this.appRoot, "resources", "tool-routing");
+    const { patchToolRouting } = await import(pathToFileURL(path.join(routingRoot, "patch.js")).href);
+    const loaderPath = path.join(corePath, "dist", "core", "extensions", "loader.js");
+    const source = new TextDecoder("utf-8", { fatal: true }).decode(await readFile(loaderPath));
+    const patched = patchToolRouting(source);
+    await copyFile(path.join(routingRoot, "index.js"), path.join(path.dirname(loaderPath), "desktop-tool-routing.js"));
+    if (patched !== source) await writeFile(loaderPath, patched, "utf8");
     await copyFile(path.join(this.appRoot, "resources", "pi-rpc-bridge", "rpc-mode.js"), destination);
+    const compatibility = path.join(this.appRoot, "resources", "pi-rpc-bridge", "compatibility.js");
+    const { applyCoreRequestCompatibility } = await import(pathToFileURL(compatibility).href);
+    await applyCoreRequestCompatibility(corePath);
+  }
+
+  private async applyAddonCompatibility(name: string): Promise<void> {
+    if (!["pi-mcp-adapter", "pi-llama-cpp-stats"].includes(name)) return;
+    const compatibility = path.join(this.appRoot, "resources", "pi-rpc-bridge", "compatibility.js");
+    const { applyAddonRequestCompatibility } = await import(pathToFileURL(compatibility).href);
+    await applyAddonRequestCompatibility(name, this.store.getEffectivePackagePath(name));
   }
 
   private async smokeTestRuntime(): Promise<void> {
@@ -187,6 +222,7 @@ export class UpdateManager {
       agentDir: this.store.agentDir,
       sessionsDir: smokeDir,
       sessionId: `update-smoke-${randomUUID()}`,
+      appRoot: this.appRoot,
       mcpEntryPath: path.join(this.appRoot, "node_modules", "@zavora-ai", "computer-use-mcp", "dist", "server.js"),
       mcpDirectTools: await this.store.getMcpDirectToolSelectors(),
       onEvent: () => undefined,
@@ -219,12 +255,12 @@ export class UpdateManager {
 
   private runNpm(args: string[], timeoutMs = 180_000): Promise<string> {
     return new Promise((resolve, reject) => {
-      const executable = process.platform === "win32" ? "npm.cmd" : "npm";
-      const child = spawn(executable, args, {
+      const command = npmCommand(args, this.runtimeExecutable);
+      const child = spawn(command.executable, command.args, {
         cwd: this.store.runtimePackagesDir,
-        env: { ...process.env, NO_UPDATE_NOTIFIER: "1" },
+        env: command.env,
         windowsHide: true,
-        shell: process.platform === "win32",
+        shell: false,
       });
       let stdout = "";
       let stderr = "";

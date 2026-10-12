@@ -1,0 +1,208 @@
+// Executes current TypeScript in memory, without compiling or launching Pi Desktop.
+const { app, BrowserWindow, nativeImage } = require("electron");
+const { readFileSync, mkdtempSync, writeFileSync } = require("node:fs");
+const { stripTypeScriptTypes } = require("node:module");
+const { createServer } = require("node:http");
+const { tmpdir } = require("node:os");
+const path = require("node:path");
+const assert = require("node:assert/strict");
+const restore = process.argv.indexOf("--restore");
+const temporary = restore >= 0 ? process.argv[restore + 1] : mkdtempSync(path.join(tmpdir(), "pi-browser-smoke-"));
+app.setPath("userData", temporary);
+app.whenReady().then(async () => {
+  let window, manager, server;
+  let phase = "startup";
+  const watchdog = setTimeout(() => { writeFileSync(path.join(temporary, "result.json"), JSON.stringify({ passed: false, error: "Timed out", phase })); app.exit(1); }, 30000);
+  try {
+    if (restore >= 0) {
+      const cookies = await require("electron").session.fromPath(path.join(temporary, "browser")).cookies.get({ name: "pi-browser-smoke" });
+      assert.equal(cookies[0]?.value, "persisted");
+      writeFileSync(path.join(temporary, "restore.json"), JSON.stringify({ passed: true, sessionSurvivedRestart: true })); app.exit(0); return;
+    }
+    const source = stripTypeScriptTypes(readFileSync(path.join(__dirname, "../electron/browser-manager.ts"), "utf8")).replace(/^import .*;\s*$/gm, "").replace(/^export /gm, "");
+    const electron = require("electron");
+    const automationSource = stripTypeScriptTypes(readFileSync(path.join(__dirname, "../electron/browser-automation.ts"), "utf8")).replace(/^import .*;\s*$/gm, "").replace(/^export /gm, "");
+    const BrowserAutomation = new Function("chromium", `${automationSource};return BrowserAutomation;`)(require("playwright-core").chromium);
+    const siteSource = stripTypeScriptTypes(readFileSync(path.join(__dirname, "../electron/browser-site-tools.ts"), "utf8")).replace(/^import .*;\s*$/gm, "").replace(/^export /gm, "");
+    const { BrowserSiteTools, webMcpBootstrap } = new Function("Ajv", "randomUUID", `${siteSource};return {BrowserSiteTools,webMcpBootstrap};`)(require("ajv").Ajv, require("node:crypto").randomUUID);
+    const packaged = process.argv.indexOf("--packaged");
+    const { BrowserManager } = packaged >= 0 ? require(path.join(process.argv[packaged + 1], "dist-electron", "electron", "browser-manager.js")) : new Function("BrowserWindow", "WebContentsView", "session", "dialog", "shell", "path", "randomUUID", "mkdirSync", "statSync", "BrowserAutomation", "BrowserSiteTools", "webMcpBootstrap", `${source};return {BrowserManager};`)(electron.BrowserWindow, electron.WebContentsView, electron.session, electron.dialog, electron.shell, path, require("node:crypto").randomUUID, require("node:fs").mkdirSync, require("node:fs").statSync, BrowserAutomation, BrowserSiteTools, webMcpBootstrap);
+    server = createServer((request, response) => {
+      if (request.url === "/frame") { response.setHeader("Content-Type", "text/html"); response.end('<!doctype html><button onclick="document.body.dataset.clicked=\'yes\'">Frame action</button><input aria-label="Frame name"><select aria-label="Choice"><option value="a">A</option><option value="b">B</option></select><input type="checkbox" aria-label="Agree">'); return; }
+      if (request.url === "/slow") { setTimeout(() => response.end("Async ready"), 700); return; }
+      if (request.url === "/download") { response.setHeader("Content-Disposition", 'attachment; filename="test.txt"'); response.end("Browser download test"); return; }
+      response.setHeader("Content-Type", "text/html; charset=utf-8"); response.end('<!doctype html><title>Browser test</title><body style="background:#bde;color:#123;font:24px sans-serif"><h1>Visible test</h1><input id="name"><input type="password" value="private-secret"><button id="go" onclick="document.querySelector(\'#result\').textContent=\'Clicked\'">Click</button><p id="result">Ready</p><input type="file" id="file"><button id="confirm" onclick="document.querySelector(\'#result\').textContent=confirm(\'Confirm test?\')?\'Confirmed\':\'Cancelled\'">Confirm</button><a href="/download" id="download">Download</a></body>');
+    });
+    await new Promise(resolve => server.listen(0, "127.0.0.1", resolve));
+    window = new BrowserWindow({ show: false, width: 1200, height: 900 });
+    await window.loadURL("data:text/html,<title>Isolated browser host</title>");
+    manager = new BrowserManager(temporary, () => window, () => {});
+    await manager.ui({ action: "select-chat", conversationId: "test" });
+    const tab = (await manager.request("test", { action: "open", url: `http://127.0.0.1:${server.address().port}` })).tab;
+    const contents = require("electron").webContents.getAllWebContents().find(wc => wc !== window.webContents);
+    assert.equal((await manager.request("test", { action: "wait", tabId: tab.id, timeoutMs: 5000 })).ready, true);
+    if (contents.isLoading()) await new Promise(resolve => contents.once("did-stop-loading", resolve));
+    await manager.request("test", { action: "state", tabId: tab.id, vision: true });
+    const state = await manager.request("test", { action: "state", tabId: tab.id, vision: false });
+    assert.match(state.page.text, /Visible test/); assert.doesNotMatch(JSON.stringify(state.page), /private-secret/);
+    const button = state.page.controls.find(control => control.label === "Click");
+    assert.ok(button);
+    await manager.request("test", { action: "click", tabId: tab.id, x: button.x, y: button.y, vision: false });
+    assert.equal(await contents.executeJavaScript("document.querySelector('#result').textContent"), "Clicked");
+    const input = state.page.controls.find(control => control.tag === "input" && control.type !== "password");
+    await manager.request("test", { action: "click", tabId: tab.id, x: input.x, y: input.y, vision: false });
+    await manager.request("test", { action: "type", tabId: tab.id, text: "Hidden input", vision: true });
+    assert.equal(await contents.executeJavaScript("document.querySelector('#name').value"), "Hidden input");
+    const image = await manager.request("test", { action: "state", tabId: tab.id, vision: true });
+    assert.equal(image.page, undefined);
+    const screenshot = nativeImage.createFromBuffer(Buffer.from(image.image, "base64"));
+    assert.equal(screenshot.isEmpty(), false); assert.ok(screenshot.getSize().width > 0);
+    const pixels = screenshot.toBitmap(); assert.ok(new Set(pixels).size > 10, "Hidden screenshot must not be blank");
+    writeFileSync(path.join(temporary, "hidden.png"), screenshot.toPNG());
+    assert.equal(window.isVisible(), false); assert.equal(window.isFocused(), false);
+    const handoff = await manager.request("test", { action: "handoff", tabId: tab.id });
+    assert.equal(handoff.visible, true);
+    await manager.ui({ action: "bounds", bounds: { x: 10, y: 100, width: 1000, height: 700 } });
+    const view = manager.tabs.get(tab.id).view;
+    assert.ok(window.contentView.children.includes(view)); assert.deepEqual(view.getBounds(), { x: 10, y: 100, width: 1000, height: 700 });
+    phase = "native input";
+    contents.focus();
+    await contents.debugger.sendCommand("Emulation.setFocusEmulationEnabled", { enabled: true });
+    await contents.executeJavaScript("document.querySelector('#name').focus(); document.querySelector('#name').value='mail'");
+    contents.sendInputEvent({ type: "keyDown", keyCode: "." });
+    contents.sendInputEvent({ type: "char", keyCode: "." });
+    contents.sendInputEvent({ type: "keyUp", keyCode: "." });
+    await new Promise(resolve => setTimeout(resolve, 100));
+    assert.equal(await contents.executeJavaScript("document.querySelector('#name').value"), "mail.");
+    await manager.request("test", { action: "type", tabId: tab.id, text: "ru", vision: true });
+    assert.equal(await contents.executeJavaScript("document.querySelector('#name').value"), "mail.ru");
+    await manager.request("test", { action: "key", tabId: tab.id, key: ".", vision: true });
+    assert.equal(await contents.executeJavaScript("document.querySelector('#name').value"), "mail.ru.");
+    await manager.ui({ action: "hide" });
+    assert.ok(view.getBounds().x + view.getBounds().width < 0);
+    assert.ok((await manager.request("test", { action: "state", tabId: tab.id, vision: true })).image);
+    const point = id => contents.executeJavaScript(`(()=>{const r=document.getElementById(${JSON.stringify(id)}).getBoundingClientRect();return {x:r.x+r.width/2,y:r.y+r.height/2}})()`);
+    await manager.request("test", { action: "click", tabId: tab.id, ...await point("file"), vision: true });
+    const chooserDeadline = Date.now() + 2000;
+    while (!manager.state().tabs[0].fileChooser && Date.now() < chooserDeadline) await new Promise(resolve => setTimeout(resolve, 20));
+    assert.ok(manager.state().tabs[0].fileChooser);
+    const uploadPath = path.join(temporary, "upload.txt"); writeFileSync(uploadPath, "Test upload");
+    phase = "upload";
+    await manager.request("test", { action: "upload", tabId: tab.id, files: [uploadPath], vision: true });
+    assert.equal(await contents.executeJavaScript("document.querySelector('#file').files[0].name"), "upload.txt");
+    phase = "confirm click";
+    await manager.request("test", { action: "click", tabId: tab.id, ...await point("confirm"), vision: true });
+    assert.equal(manager.state().tabs[0].dialog?.message, "Confirm test?");
+    phase = "confirm accept";
+    await manager.request("test", { action: "dialog", tabId: tab.id, accept: true, vision: true });
+    assert.equal(await contents.executeJavaScript("document.querySelector('#result').textContent"), "Confirmed");
+    phase = "download";
+    await manager.request("test", { action: "click", tabId: tab.id, ...await point("download"), vision: true });
+    const deadline = Date.now() + 5000;
+    while (!manager.state().downloads?.some(item => item.state === "completed") && Date.now() < deadline) await new Promise(resolve => setTimeout(resolve, 50));
+    const download = (await manager.request("test", { action: "downloads" })).downloads[0];
+    assert.equal(download.state, "completed"); assert.equal(readFileSync(download.path, "utf8"), "Browser download test");
+    phase = "async readiness";
+    await contents.executeJavaScript("setTimeout(()=>fetch('/slow').then(r=>r.text()).then(text=>{const e=document.createElement('p');e.id='async-ready';e.textContent=text;document.body.append(e)}),100)");
+    const waited = await manager.request("test", { action: "wait", tabId: tab.id, waitUntil: "networkidle", selector: "#async-ready", waitForText: "Async ready", timeoutMs: 5000 });
+    assert.equal(waited.ready, true); assert.equal(waited.image, undefined); assert.ok(waited.elapsedMs >= 700);
+    const timeout = await manager.request("test", { action: "wait", tabId: tab.id, selector: "#never-exists", timeoutMs: 100 });
+    assert.equal(timeout.timedOut, true); assert.equal(timeout.ready, false);
+    for (const size of [{ width: 1440, height: 900 }, { width: 390, height: 844 }]) {
+      phase = `viewport ${size.width}`;
+      await manager.request("test", { action: "viewport", tabId: tab.id, ...size });
+      assert.deepEqual(await contents.executeJavaScript("({width:innerWidth,height:innerHeight})"), size);
+      const visual = await manager.request("test", { action: "screenshot", tabId: tab.id, vision: true });
+      assert.deepEqual(nativeImage.createFromBuffer(Buffer.from(visual.image, "base64")).getSize(), size);
+      await manager.request("test", { action: "click", tabId: tab.id, ...await point("go") });
+      assert.equal(await contents.executeJavaScript("document.querySelector('#result').textContent"), "Clicked");
+      await manager.request("test", { action: "show", tabId: tab.id });
+      await manager.request("test", { action: "state", tabId: tab.id, vision: true });
+      assert.deepEqual(await contents.executeJavaScript("({width:innerWidth,height:innerHeight})"), size);
+      await contents.executeJavaScript("document.querySelector('#result').textContent='Ready'");
+      await manager.request("test", { action: "click", tabId: tab.id, ...await point("go") });
+      assert.equal(await contents.executeJavaScript("document.querySelector('#result').textContent"), "Clicked");
+      // Real native mouse input uses the fitted panel coordinates.
+      const position = await point("go"), scale = Math.min(1, 1000/size.width, 700/size.height);
+      await contents.executeJavaScript("document.querySelector('#result').textContent='Ready'");
+      contents.sendInputEvent({ type: "mouseDown", x: Math.round(position.x * scale), y: Math.round(position.y * scale), button: "left", clickCount: 1 });
+      contents.sendInputEvent({ type: "mouseUp", x: Math.round(position.x * scale), y: Math.round(position.y * scale), button: "left", clickCount: 1 });
+      await new Promise(resolve => setTimeout(resolve, 100));
+      assert.equal(await contents.executeJavaScript("document.querySelector('#result').textContent"), "Clicked");
+      await manager.request("test", { action: "hide", tabId: tab.id });
+    }
+    await manager.request("test", { action: "viewport-reset", tabId: tab.id });
+    assert.deepEqual(await contents.executeJavaScript("({width:innerWidth,height:innerHeight})"), { width: 1000, height: 700 });
+    phase = "playwright locator";
+    await contents.executeJavaScript("document.querySelector('#result').textContent='Ready'");
+    await manager.request("test", { action: "click", tabId: tab.id, locator: { role: "button", name: "Click", exact: true } });
+    assert.equal(await contents.executeJavaScript("document.querySelector('#result').textContent"), "Clicked");
+    await manager.request("test", { action: "fill", tabId: tab.id, locator: { selector: "#name" }, text: "Playwright input" });
+    assert.equal(await contents.executeJavaScript("document.querySelector('#name').value"), "Playwright input");
+    phase = "full page screenshot";
+    await contents.executeJavaScript("document.body.style.minHeight='1800px'");
+    await contents.executeJavaScript("const marker=document.createElement('div');marker.style='position:absolute;left:0;top:1700px;width:100px;height:100px;background:rgb(255,0,0)';document.body.append(marker)");
+    await contents.executeJavaScript("window.scrollTo(0,300)");
+    const full = await manager.request("test", { action: "screenshot", tabId: tab.id, fullPage: true, vision: true, timeoutMs: 5000 });
+    const fullImage = nativeImage.createFromBuffer(Buffer.from(full.image, "base64"));
+    assert.ok(fullImage.getSize().height >= 1800);
+    const redPixel = fullImage.toBitmap().subarray((1750 * fullImage.getSize().width + 20) * 4, (1750 * fullImage.getSize().width + 20) * 4 + 4);
+    assert.equal(redPixel[2], 255); assert.equal(redPixel[1], 0); assert.equal(redPixel[0], 0);
+    assert.equal(await contents.executeJavaScript("scrollY"), 300);
+    await contents.executeJavaScript("window.scrollTo(0,0)");
+    phase = "cropped screenshot";
+    const cropped = await manager.request("test", { action: "screenshot", tabId: tab.id, clip: { x: 10, y: 10, width: 250, height: 150 }, vision: true, timeoutMs: 5000 });
+    assert.deepEqual(nativeImage.createFromBuffer(Buffer.from(cropped.image, "base64")).getSize(), { width: 250, height: 150 });
+    phase = "iframe actions";
+    await contents.executeJavaScript(`(()=>{const f=document.createElement('iframe');f.id='same';f.src='/frame';document.body.prepend(f);const cross=document.createElement('iframe');cross.id='cross';cross.src='http://localhost:${server.address().port}/frame';document.body.prepend(cross)})()`);
+    for (const frame of ["#same", "#cross"]) {
+      await manager.request("test", { action: "fill", tabId: tab.id, locator: { frames: [frame], label: "Frame name" }, text: "Frame input", timeoutMs: 5000 });
+      await manager.request("test", { action: "check", tabId: tab.id, locator: { frames: [frame], label: "Agree" }, timeoutMs: 5000 });
+      await manager.request("test", { action: "select-option", tabId: tab.id, locator: { frames: [frame], label: "Choice" }, values: ["b"], timeoutMs: 5000 });
+      await manager.request("test", { action: "click", tabId: tab.id, locator: { frames: [frame], role: "button", name: "Frame action", exact: true }, timeoutMs: 5000 });
+    }
+    const page = await manager.tabs.get(tab.id).automation.page();
+    for (const frame of page.frames().filter(f => f.url().endsWith('/frame'))) {
+      assert.deepEqual(await frame.evaluate(() => ({ clicked: document.body.dataset.clicked, name: document.querySelector('input').value, checked: document.querySelector('[type=checkbox]').checked, option: document.querySelector('select').value })), { clicked: "yes", name: "Frame input", checked: true, option: "b" });
+    }
+    phase = "auto waiting";
+    await contents.executeJavaScript("setTimeout(()=>{const b=document.createElement('button');b.textContent='Delayed action';b.onclick=()=>document.body.dataset.delayed='yes';document.body.append(b)},300)");
+    await manager.request("test", { action: "click", tabId: tab.id, locator: { role: "button", name: "Delayed action" }, timeoutMs: 5000 });
+    assert.equal(await contents.executeJavaScript("document.body.dataset.delayed"), "yes");
+    phase = "cancel pending locator";
+    await contents.executeJavaScript("setTimeout(()=>{const b=document.createElement('button');b.textContent='Cancelled action';b.onclick=()=>document.body.dataset.cancelled='clicked';document.body.append(b)},500)");
+    const pendingClick = manager.request("test", { action: "click", tabId: tab.id, locator: { role: "button", name: "Cancelled action", exact: true }, timeoutMs: 5000 });
+    const cancelled = assert.rejects(pendingClick);
+    await new Promise(resolve => setTimeout(resolve, 100)); manager.cancel("test"); await cancelled;
+    phase = "cancelled click settled";
+    await new Promise(resolve => setTimeout(resolve, 600));
+    assert.equal(await contents.executeJavaScript("document.body.dataset.cancelled"), undefined);
+    // Reconnect to the same native page and its existing out-of-process frame.
+    phase = "reconnect iframe";
+    await manager.request("test", { action: "fill", tabId: tab.id, locator: { frames: ["#cross"], label: "Frame name" }, text: "Reconnected", timeoutMs: 5000 });
+    phase = "safe frame snapshot";
+    const snapshot = await manager.request("test", { action: "snapshot", tabId: tab.id });
+    assert.equal(snapshot.frames.filter(f => f.url.endsWith('/frame')).length, 2, JSON.stringify(snapshot.frames.map(f => ({url:f.url,name:f.name})))); assert.doesNotMatch(JSON.stringify(snapshot), /private-secret/);
+    phase = "console logs";
+    await contents.executeJavaScript("console.error('Browser smoke error')");
+    await new Promise(resolve => setTimeout(resolve, 50));
+    assert.ok((await manager.request("test", { action: "logs", tabId: tab.id, levels: ["error"], filter: "Browser smoke" })).logs.length);
+    phase = "site tools";
+    assert.equal(await contents.executeJavaScript("typeof document.modelContext?.registerTool"), "function");
+    await contents.executeJavaScript("document.modelContext.registerTool({name:'test_tool',description:'Test site tool',inputSchema:{type:'object',properties:{message:{type:'string'}},required:['message'],additionalProperties:false},execute:async input=>{document.body.dataset.siteTool=input.message;return {ok:true}}})");
+    const tool = (await manager.request("test", { action: "webmcp-list", tabId: tab.id })).tools.find(tool => tool.name === "test_tool");
+    assert.ok(tool);
+    await assert.rejects(manager.request("test", { action: "webmcp-call", tabId: tab.id, toolId: tool.id, arguments: {message:"No permission"} }), /подтверждение/);
+    await assert.rejects(manager.request("test", { action: "webmcp-call", tabId: tab.id, toolId: tool.id, arguments: {message:123}, approved:true }), /схеме/);
+    assert.deepEqual((await manager.request("test", { action: "webmcp-call", tabId: tab.id, toolId: tool.id, arguments: {message:"Site tool ran"}, approved:true })).result, {status:"completed",result:{ok:true}});
+    assert.equal(await contents.executeJavaScript("document.body.dataset.siteTool"), "Site tool ran");
+    await manager.request("test", { action: "zoom", tabId: tab.id, zoom: 1.25, vision: true });
+    assert.equal(contents.getZoomFactor(), 1.25);
+    await contents.session.cookies.set({ url: `http://127.0.0.1:${server.address().port}`, name: "pi-browser-smoke", value: "persisted", expirationDate: Math.floor(Date.now()/1000)+3600 });
+    writeFileSync(path.join(temporary, "result.json"), JSON.stringify({ passed: true, playwright: true, crossOriginFrames: true, autoWait: true, cancelledClick: true, reconnect: true, safeSnapshot: true, fullPage: true, clippedScreenshot: true, consoleLogs: true, webMcp: true, asyncWait: true, timeout: true, viewportDesktop: true, viewportPhone: true, viewportNativeInput: true, width: screenshot.getSize().width, hiddenClick: true, hiddenTyping: true, nativeInput: true, sharedPage: true, handoff: true, fileUpload: true, download: true, confirmDialog: true, zoom: true, screenshot: "hidden.png" }));
+    await manager.dispose(); manager = undefined;
+    console.log(temporary); app.exit(0);
+  } catch (error) {
+    writeFileSync(path.join(temporary, "result.json"), JSON.stringify({ passed: false, phase, error: error.stack })); console.error(phase, error); app.exit(1);
+  } finally { clearTimeout(watchdog); await manager?.dispose().catch(() => undefined); if (window && !window.isDestroyed()) window.destroy(); server?.close(); }
+});

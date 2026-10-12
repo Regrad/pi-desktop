@@ -42,6 +42,15 @@ export async function publishImage(dataDir: string, reference: string, resolveAt
 
 export async function imagePathForTool(dataDir: string, reference: string, resolveAttachment?: (reference: string) => HistoryImage) {
   const image = await readImageInput(reference, resolveAttachment);
+  if (process.env.PI_DESKTOP_REMOTE === "1") {
+    // Explicit materialization only: cropping/scripts run on the CLIENT, not the host.
+    const response = await fetch(process.env.PI_DESKTOP_REMOTE_URL!, { method: "POST", headers: { "Content-Type": "application/json", Authorization: `Bearer ${process.env.PI_DESKTOP_REMOTE_TOKEN}` },
+      body: JSON.stringify({ operation: "saveAttachment", args: { data: image.bytes.toString("base64"), extension: image.extension } }),
+    });
+    const result = await response.json() as { result?: { path: string }; error?: string };
+    if (!response.ok || !result.result) throw new Error(result.error || "Не удалось передать выбранное изображение на клиентский ПК");
+    return { path: result.result.path, width: image.width, height: image.height, mimeType: image.mimeType };
+  }
   if (!reference.startsWith("attachment:")) return { path: reference, width: image.width, height: image.height, mimeType: image.mimeType };
   const folder = path.join(dataDir, "chat-attachments");
   await mkdir(folder, { recursive: true });

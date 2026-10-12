@@ -5,3 +5,6 @@ release/
 release-*/
 data/
 *.log
+client-agent/bin/
+client-agent/obj/
+resources/client-agent/*.exe

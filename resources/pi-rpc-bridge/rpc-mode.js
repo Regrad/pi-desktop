@@ -23,6 +23,43 @@ import { attachJsonlLineReader, serializeJsonLine } from "./jsonl.js";
 
 const MODEL_DIFF_MAX_FILE_BYTES = 4 * 1024 * 1024;
 
+// Finalized messages retain object identity in agent state. Opaque runtime IDs
+// let the host acknowledge its prefix without hashing or resending screenshots.
+// Context replacement (compaction/branch/rebind) invalidates that prefix.
+export function createMessageSync() {
+    const ids = new WeakMap();
+    const sourceIds = new Map();
+    const epoch = crypto.randomUUID();
+    let next = 0;
+    const id = (message, sourceKey) => {
+        let value = sourceKey ? sourceIds.get(sourceKey) : undefined;
+        value ??= ids.get(message);
+        if (!value) { value = `${epoch}:${++next}`; ids.set(message, value); }
+        if (sourceKey) { sourceIds.set(sourceKey, value); ids.set(message, value); }
+        return value;
+    };
+    return {
+        id,
+        read(messages, knownIds, sourceKeys = []) {
+            const messageIds = messages.map((message, index) => id(message, sourceKeys[index]));
+            const prefixMatches = Array.isArray(knownIds) && knownIds.length <= messageIds.length &&
+                knownIds.every((value, index) => value === messageIds[index]);
+            const startIndex = prefixMatches ? knownIds.length : 0;
+            return { startIndex, messages: messages.slice(startIndex), messageIds };
+        },
+    };
+}
+
+function projectedMessageKeys(session) {
+    const projection = session.sessionManager.buildSessionProjection();
+    const edits = new Map(projection.entries.filter(entry => entry.sourceEntry.type === "context_edit")
+        .map(entry => [entry.sourceEntry.targetId, entry.sourceEntry.id]));
+    return projection.entries.flatMap(({ sourceEntry, messages }) => messages.map((message, index) => ({
+        message,
+        key: sourceEntry.type === "message" ? undefined : `${sourceEntry.id}:${edits.get(sourceEntry.id) ?? ""}:${index}`,
+    })));
+}
+
 function resolveModelFilePath(cwd, rawPath) {
     const absolute = path.resolve(cwd, rawPath);
     try {
@@ -96,6 +133,7 @@ function toDesktopJsonEvent(event) {
 export async function runRpcMode(runtimeHost) {
     takeOverStdout();
     let session = runtimeHost.session;
+    let messageSync = createMessageSync();
     let unsubscribe;
     let unsubscribeBackpressure;
     const pendingModelFileMutations = new Map();
@@ -444,6 +482,7 @@ export async function runRpcMode(runtimeHost) {
     });
     const rebindSession = async () => {
         session = runtimeHost.session;
+        messageSync = createMessageSync();
         await session.bindExtensions({
             uiContext: createExtensionUIContext(),
             mode: "rpc",
@@ -487,7 +526,16 @@ export async function runRpcMode(runtimeHost) {
         pendingModelFileMutations.clear();
         unsubscribe = session.subscribe((event) => {
             let desktopEvent = toDesktopJsonEvent(event);
-            if (event.type === "tool_execution_start" &&
+            if (event.type === "message_end" && event.message) {
+                const leaf = session.sessionManager.getLeafEntry();
+                // Direct custom messages are persisted before their public events;
+                // their projected objects are recreated whenever context refreshes.
+                const sourceKey = event.message.role === "custom" && leaf?.type === "custom_message" &&
+                    leaf.customType === event.message.customType && leaf.content === event.message.content
+                    ? `${leaf.id}::0` : undefined;
+                desktopEvent = { ...desktopEvent, desktopMessageId: messageSync.id(event.message, sourceKey) };
+            }
+            if (process.env.PI_DESKTOP_REMOTE !== "1" && event.type === "tool_execution_start" &&
                 (event.toolName === "write" || event.toolName === "edit") &&
                 typeof event.toolCallId === "string" &&
                 typeof event.args?.path === "string" &&
@@ -498,7 +546,10 @@ export async function runRpcMode(runtimeHost) {
                     before: captureModelFile(targetPath),
                 });
             }
-            else if (event.type === "tool_execution_end" &&
+            else if (process.env.PI_DESKTOP_REMOTE === "1" && event.type === "tool_execution_end" && !event.isError && event.result?.details?.desktopFileMutation) {
+                desktopEvent = { ...desktopEvent, desktopFileMutation: event.result.details.desktopFileMutation };
+            }
+            else if (process.env.PI_DESKTOP_REMOTE !== "1" && event.type === "tool_execution_end" &&
                 (event.toolName === "write" || event.toolName === "edit") &&
                 typeof event.toolCallId === "string") {
                 const pending = pendingModelFileMutations.get(event.toolCallId);
@@ -543,6 +594,17 @@ export async function runRpcMode(runtimeHost) {
     const handleCommand = async (command) => {
         const id = command.id;
         switch (command.type) {
+            case "desktop_plan_continue":
+            case "desktop_goal_continue": {
+                if (session.isStreaming) return error(id, command.type, "Thread is not idle");
+                await session.sendCustomMessage({
+                    customType: command.type === "desktop_plan_continue" ? "desktop_plan_continuation" : "desktop_goal_continuation",
+                    content: command.message,
+                    display: false,
+                    details: { goalId: command.goalId },
+                }, { triggerTurn: true });
+                return success(id, command.type);
+            }
             // =================================================================
             // Prompting
             // =================================================================
@@ -555,11 +617,9 @@ export async function runRpcMode(runtimeHost) {
                     images: command.images,
                     streamingBehavior: command.streamingBehavior,
                     source: "rpc",
-                    preflightResult: (didSucceed) => {
-                        if (didSucceed) {
-                            preflightSucceeded = true;
-                            output(success(id, "prompt"));
-                        }
+                    preflightResult: (disposition) => {
+                        preflightSucceeded = true;
+                        output(success(id, "prompt", { disposition }));
                     },
                 })
                     .catch((e) => {
@@ -570,15 +630,19 @@ export async function runRpcMode(runtimeHost) {
                 return undefined;
             }
             case "steer": {
-                await session.steer(command.message, command.images);
-                return success(id, "steer");
+                const disposition = await session.steer(command.message, command.images, { source: "rpc" });
+                return success(id, "steer", { disposition });
             }
             case "follow_up": {
-                await session.followUp(command.message, command.images);
-                return success(id, "follow_up");
+                const disposition = await session.followUp(command.message, command.images, { source: "rpc" });
+                return success(id, "follow_up", { disposition });
             }
             case "abort": {
-                await session.abort();
+                const analysisEpoch = Symbol.for("pi.desktop.native.analysis.epoch");
+                globalThis[analysisEpoch] = (globalThis[analysisEpoch] ?? 0) + 1;
+                // Set the agent's abort signal first, then terminate any native
+                // diagnostic executor; its late result must not continue the run.
+                await Promise.all([session.abort(), globalThis[Symbol.for("pi.desktop.cancel.native.analysis")]?.()]);
                 return success(id, "abort");
             }
             case "new_session": {
@@ -632,7 +696,7 @@ export async function runRpcMode(runtimeHost) {
                 });
             }
             case "get_session_entries": {
-                const entries = session.sessionManager.getEntries().flatMap((entry) => {
+                const entries = session.sessionManager.getBranch().flatMap((entry) => {
                     if (entry.type !== "compaction" && entry.type !== "custom" && entry.type !== "custom_message") {
                         return [];
                     }
@@ -863,7 +927,13 @@ export async function runRpcMode(runtimeHost) {
             // Messages
             // =================================================================
             case "get_messages": {
-                return success(id, "get_messages", { messages: session.messages });
+                const projected = projectedMessageKeys(session);
+                const keys = session.messages.map((message, index) => {
+                    const candidate = projected[index];
+                    return candidate?.message.role === message.role && candidate.message.content === message.content
+                        ? candidate.key : undefined;
+                });
+                return success(id, "get_messages", messageSync.read(session.messages, command.knownMessageIds, keys));
             }
             // =================================================================
             // Commands (available for invocation via prompt)

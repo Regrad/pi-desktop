@@ -18,7 +18,9 @@ export interface ProjectInstructions {
 }
 
 export interface ConversationRecord {
+  notebook?: ConversationNotebook;
   goal?: ConversationGoal;
+  plan?: ConversationPlan;
   id: string;
   projectId?: string;
   title: string;
@@ -32,11 +34,34 @@ export interface ConversationRecord {
   status: "idle" | "starting" | "working" | "error";
 }
 
+export interface PlanStep {
+  step: string;
+  status: "pending" | "in_progress" | "completed";
+}
+
+export interface ConversationNotebook {
+  content: string;
+  revision: number;
+  updatedAt: string;
+}
+
+export interface ConversationPlan {
+  steps: PlanStep[];
+  execution?: "active" | "paused";
+  explanation?: string;
+  revision: number;
+  updatedAt: string;
+}
+
 export interface ConversationGoal {
   id: string;
   objective: string;
   criteria: string;
-  status: "active" | "paused" | "blocked" | "complete";
+  status: "active" | "paused" | "blocked" | "complete" | "budget_limited";
+  tokenBudget?: number;
+  tokensUsed?: number;
+  createdAt?: string;
+  timeUsedSeconds?: number;
   progress: string;
   evidence: string;
   steps: number;
@@ -142,7 +167,6 @@ export type BuiltinModuleId =
   | "pi-llama-cpp-stats"
   | "pi-mcp-adapter"
   | "pi-lens"
-  | "pi-lens-all-tools"
   | "pi-single-slot-guard"
   | "pi-llama-generation-speed"
   | "pi-loop-police";
@@ -177,6 +201,7 @@ export interface Attachment {
 }
 
 export interface QueuedPrompt {
+  requestPlan?: boolean;
   id: string;
   message: string;
   attachments: Attachment[];
@@ -285,7 +310,15 @@ export interface BootstrapPayload {
   sessionsDir: string;
 }
 
+export interface SessionHistoryTarget {
+  entryId: string;
+  messageIndex: number;
+  editable: boolean;
+}
+
 export interface ConversationSnapshot {
+  planWorkingRevision?: number;
+  historyTargets?: SessionHistoryTarget[];
   conversation: ConversationRecord;
   state: RuntimeState;
   messages: unknown[];
@@ -305,6 +338,7 @@ export interface ConversationSnapshot {
 export interface LiveToolActivity {
   id: string;
   name: string;
+  parentToolCallId?: string;
   args?: unknown;
   partialArguments?: string;
   result?: unknown;
@@ -356,6 +390,15 @@ export interface ConversationRun {
 }
 
 export interface PiDesktopApi {
+  manageSkills(conversationId: string, command: import("./skills.js").SkillsCommand): Promise<import("./skills.js").SkillsCatalog | import("./skills.js").SkillDocument | { valid: boolean; errors: string[] }>;
+  getNotebookCharacterLimit(): Promise<number>;
+  setNotebookCharacterLimit(value: number): Promise<number>;
+  readonly webClient?: boolean;
+  readonly webMode?: "local" | "remote";
+  getGeneratedMediaUrl?(kind: string, filename: string): string;
+  showGeneratedOnClient?(kind: string, filename: string): Promise<unknown>;
+  getWebAccessSettings(): Promise<import("./web-access.js").WebAccessStatus>;
+  saveWebAccessSettings(settings: import("./web-access.js").WebAccessSettings): Promise<import("./web-access.js").WebAccessStatus>;
   bootstrap(): Promise<BootstrapPayload>;
   chooseProjectFolders(): Promise<string[]>;
   createProject(name: string, paths: string[]): Promise<ProjectRecord>;
@@ -376,13 +419,22 @@ export interface PiDesktopApi {
     message: string,
     attachments: Attachment[],
     behavior?: "steer" | "followUp",
+    requestPlan?: boolean,
   ): Promise<void>;
-  queuePrompt(conversationId: string, message: string, attachments: Attachment[]): Promise<QueuedPrompt[]>;
+  queuePrompt(conversationId: string, message: string, attachments: Attachment[], requestPlan?: boolean): Promise<QueuedPrompt[]>;
   sendQueuedPrompt(conversationId: string, promptId: string): Promise<QueuedPrompt[]>;
   removeQueuedPrompt(conversationId: string, promptId: string): Promise<QueuedPrompt[]>;
   abort(conversationId: string): Promise<void>;
-  setGoal(conversationId: string, objective: string, attachments: Attachment[]): Promise<void>;
+  rewindConversation(conversationId: string, entryId: string): Promise<ConversationSnapshot>;
+  editLastMessage(conversationId: string, entryId: string, text: string): Promise<void>;
+  setGoal(conversationId: string, objective: string, attachments: Attachment[], requestPlan?: boolean): Promise<void>;
   controlGoal(conversationId: string, action: "pause" | "resume" | "remove"): Promise<void>;
+  editGoal(conversationId: string, objective: string): Promise<void>;
+  removePlan(conversationId: string): Promise<void>;
+  controlPlan(conversationId: string, action: "pause" | "resume"): Promise<void>;
+  saveNotebook(conversationId: string, content: string, expectedRevision: number): Promise<ConversationNotebook>;
+  browserUi(command: import("./browser.js").BrowserUiCommand): Promise<import("./browser.js").BrowserState>;
+  onBrowserChanged(listener: (state: import("./browser.js").BrowserState) => void): () => void;
   setModel(conversationId: string, provider: string, modelId: string): Promise<RuntimeState>;
   setThinkingLevel(conversationId: string, level: ThinkingLevel): Promise<RuntimeState>;
   setHostEditorText(conversationId: string, text: string): Promise<void>;
@@ -413,7 +465,10 @@ export interface PiDesktopApi {
   removeUserExtension(name: string): Promise<ModuleSettings | null>;
   showItemInFolder(path: string): Promise<void>;
   showGeneratedFile(kind: "image" | "music" | "model3d", filename: string): Promise<void>;
+  openGeneratedLink(url: string): Promise<void>;
   onPiEvent(listener: (payload: { conversationId: string; event: Record<string, unknown> }) => void): () => void;
   onExtensionUi(listener: (payload: { conversationId: string; request: ExtensionUiRequest }) => void): () => void;
   onConversationChanged(listener: (conversation: ConversationRecord) => void): () => void;
+  onControlSelect(listener: (selection: { requestId: string; snapshot: ConversationSnapshot }) => void): () => void;
+  controlSelectionReady(requestId: string): void;
 }

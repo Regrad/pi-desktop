@@ -18,7 +18,7 @@ export async function generatedMediaResponse(dataDir: string, request: Request):
     const url = new URL(request.url);
     if (url.search || url.hash || !["GET", "HEAD"].includes(request.method)) return new Response(null, { status: 400 });
     const file = await generatedFile(dataDir, url.hostname, decodeURIComponent(url.pathname.slice(1)));
-    const types: Record<string, string> = url.hostname === "model3d" ? { ".glb": "model/gltf-binary" } : { ".flac": "audio/flac", ".wav": "audio/wav", ".mp3": "audio/mpeg", ".opus": "audio/ogg", ".ogg": "audio/ogg" };
+    const types: Record<string, string> = url.hostname === "model3d" ? { ".glb": "model/gltf-binary" } : url.hostname === "image" ? { ".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".webp": "image/webp" } : { ".flac": "audio/flac", ".wav": "audio/wav", ".mp3": "audio/mpeg", ".opus": "audio/ogg", ".ogg": "audio/ogg" };
     const mime = types[path.extname(file).toLowerCase()];
     if (!mime) return new Response(null, { status: 415 });
     const { size } = await stat(file);

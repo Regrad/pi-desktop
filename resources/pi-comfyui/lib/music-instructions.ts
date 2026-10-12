@@ -1,5 +1,12 @@
+export const musicPublicationGuidelines = [
+  "Before the final answer to a music request, call comfyui_publish_music with the complete ordered list of saved tracks to display. Generation and publication are separate: if the user requested three variants, publish all three; if asked to select two out of ten, publish only those two. Never rely on mentioning full or shortened filenames in the answer text to control audio players.",
+  "Use saved absolute music-generation paths returned by the tools or present in chat history. You can show existing tracks on request without regenerating them. Each successful comfyui_publish_music call replaces the previous audio selection for this answer, so include every desired track in the last call. tracks=[] deliberately publishes no audio. Do not publish ABC plans or generation reports as audio.",
+  "Describe selected tracks with short readable labels; the selected audio players and their Show in Explorer buttons provide file access. Do not dump percent-encoded file:/// links into the answer. The language model cannot listen to tracks, so do not invent listening-based rankings or quality judgments.",
+];
+
 // One policy shared by every YuE2 entry point, including planning/recovery.
 export const instrumentalGuidelines = [
+  ...musicPublicationGuidelines,
   "For music without singing, including after separately planning or editing ABC, use comfyui_generate_instrumental_music with mode=instrumental_lead and the saved abc_file. For an explicitly requested minus/backing accompaniment use mode=accompaniment_only. An existing ABC does not justify switching to ordinary song generation without vocal_mode. This tool reuses abc_file without planning a new composition.",
   "[Instrumental] is the lyrics marker, not sung text. The Vocal voice may remain in the ABC with rests only: its presence does not mean singing. Zero Vocal notes verifies only the score, not the generated sound. If the user hears a voice, acknowledge that observation; do not claim the audio is vocal-free based solely on ABC reports.",
   "Do not assert that register C4, a lead melody, or words such as 'no vocals' caused singing without evidence. Lowering pitch, changing seed, or changing wording is not a proven voice-removal method. Do not transpose or remove a requested melody merely to avoid singing. accompaniment_only is not a stronger anti-voice switch when Vocal already contains only rests; it edits the score, not audio stems.",

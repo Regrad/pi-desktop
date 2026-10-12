@@ -75,7 +75,7 @@ test("3D API round trip persists only file metadata and serves a portable model"
     if (req.url === "/upload/image") return res.end('{"name":"upload.png"}');
     if (req.url === "/object_info") return res.end(JSON.stringify(Object.fromEntries(Object.values(MODEL_GRAPHS.model3d).map(n => [n.class_type, { api_node: false }]))));
     if (req.url === "/prompt") { queued++; submitted = JSON.parse(Buffer.concat(chunks)).prompt; return res.end('{"prompt_id":"3d-job"}'); }
-    if (req.url === "/history/3d-job") return res.end(JSON.stringify({ "3d-job": { status: { status_str: "success" }, outputs: { saved: { "3d": [{ filename: "model.glb", subfolder: "3d", type: "output" }] }, preview: { images: [{ filename: "preview.png", type: "temp" }] } } } }));
+    if (req.url === "/history/3d-job") return res.end(JSON.stringify({ "3d-job": { status: { status_str: "success" }, outputs: { pi_model_process: { text: [JSON.stringify({ result: `${submitted.pi_model_process.inputs.output_prefix}/result.glb`, geometry: { triangles: 30000 } })] }, preview: { images: [{ filename: "preview.png", type: "temp" }] } } } }));
     if (req.url.startsWith("/view?")) { res.setHeader("Content-Type", "application/octet-stream"); return res.end(bytes); }
     res.writeHead(404); res.end();
   });

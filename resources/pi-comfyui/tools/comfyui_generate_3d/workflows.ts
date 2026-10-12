@@ -1,5 +1,5 @@
 // Converted from the user's local Pixal3D/Trellis2 workflows. Preserve their sampling and mesh settings.
-export const MODEL_GRAPHS = {
+export const MODEL_GRAPHS: Record<"model3d" | "model3d_multiview", Record<string, { class_type: string; inputs: Record<string, unknown> }>> = {
   "model3d": {
     "3": {
       "class_type": "KSampler",
@@ -1334,3 +1334,16 @@ export const MODEL_GRAPHS = {
     }
   }
 };
+
+// Final processing stage from the updated single-image and four-view workflows.
+for (const [mode, output] of [["model3d", "322"], ["model3d_multiview", "372"]] as const) {
+  MODEL_GRAPHS[mode].pi_model_process = { class_type: "UniversalModelTools", inputs: {
+    source_path: "", target_path: "", source_model: ["285", 0],
+    repair: false, remesh: false, simplify: true, transfer_textures: true,
+    bake_normal: true, bake_ao: false, target_triangles: 30000, remesh_vertices: 5000,
+    repair_resolution: 512, proxy_points: 1000000, components: "keep_all",
+    texture_resolution: 2048, blender_path: "C:\\Program Files\\Blender Foundation\\Blender 5.2\\blender.exe",
+    output_prefix: "3d/pi-desktop/template", repair_position: "after_remesh",
+  } };
+  MODEL_GRAPHS[mode][output].inputs.model_3d = ["pi_model_process", 0];
+}

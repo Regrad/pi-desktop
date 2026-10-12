@@ -1,7 +1,23 @@
 type ToolImageResult = { id: string; name: string; result?: unknown; args?: unknown };
 const publishingTool = (name: string) => name.startsWith("comfyui_") || name === "desktop_show_image";
 
+// Nested executions have no standalone transcript entry. Their media
+// metadata is persisted on the parent result by the native routing extension.
+function expandNestedMedia(tools: ToolImageResult[]): ToolImageResult[] {
+  return tools.flatMap(tool => {
+    const result = tool.result as { details?: { desktopNestedMedia?: unknown } } | undefined;
+    const nested = result?.details?.desktopNestedMedia;
+    if (!Array.isArray(nested)) return [tool];
+    const { desktopNestedMedia: _nested, ...details } = result!.details!;
+    const parent = { ...tool, result: { ...(tool.result as object), details } };
+    return [parent, ...nested.filter((entry): entry is ToolImageResult =>
+      entry && typeof entry.id === "string" && typeof entry.name === "string" && publishingTool(entry.name),
+    )];
+  });
+}
+
 export function collectComfyMedia(tools: ToolImageResult[]): Record<string, unknown>[] {
+  tools = expandNestedMedia(tools);
   const seen = new Set<string>();
   return tools.flatMap((tool) => {
     if (!publishingTool(tool.name) || seen.has(tool.id) || !tool.result || typeof tool.result !== "object") return [];
@@ -18,6 +34,7 @@ export function collectComfyMedia(tools: ToolImageResult[]): Record<string, unkn
 
 // The same tool result can be present in both a call and its persisted result message.
 export function collectComfyImages(tools: ToolImageResult[]): Record<string, unknown>[] {
+  tools = expandNestedMedia(tools);
   const seen = new Set<string>();
   const images: Record<string, unknown>[] = [];
   for (const tool of tools) {
@@ -43,11 +60,19 @@ export function answerCanPublishMedia(state: { streaming: boolean; working: bool
 }
 
 export function collectAnswerMedia(tools: ToolImageResult[], answerComplete = true, answerText = "") {
+  tools = expandNestedMedia(tools);
   // While a turn is in progress, keep media in its original tool, not below the growing answer.
   if (!answerComplete) return { parts: [] as Record<string, unknown>[], toolIds: new Set<string>() };
   const unique = new Map<string, ToolImageResult>();
   for (const tool of tools) if (tool.result !== undefined) unique.set(tool.id, tool);
   const completed = [...unique.values()];
+  // Explicit publication is authoritative, including an empty selection.
+  // Failed calls never replace the last successful selection.
+  const audioSelection = completed.filter(tool => {
+    if (tool.name !== "comfyui_publish_music" || !tool.result || typeof tool.result !== "object") return false;
+    const result = tool.result as { isError?: boolean; details?: { audioSelection?: boolean } };
+    return !result.isError && result.details?.audioSelection === true;
+  }).at(-1);
   const candidates = completed.map(tool => ({ tool, media: collectComfyMedia([tool]) })).filter(item => item.media.length);
   // A historical terminal read is eligible only if the final answer actually
   // names that file. Reading a crop or mask for inspection must not publish it.
@@ -80,6 +105,17 @@ export function collectAnswerMedia(tools: ToolImageResult[], answerComplete = tr
   const parts: Record<string, unknown>[] = [];
   const toolIds = new Set<string>();
   for (const type of new Set(allParts.map(part => String(part.type)))) {
+    if (type === "audio" && audioSelection) {
+      const selected = collectComfyMedia([audioSelection]);
+      const seen = new Set<string>();
+      for (const part of selected.filter(part => part.type === "audio")) {
+        const key = String(part.path).replaceAll("\\", "/").toLowerCase();
+        if (seen.has(key)) continue;
+        seen.add(key);
+        parts.push(part);
+      }
+      continue;
+    }
     const matching = candidates.map(item => ({ ...item, media: item.media.filter(part => part.type === type && namedInAnswer(part)) }))
       .filter(item => item.media.length);
     if (matching.length) {
@@ -94,7 +130,10 @@ export function collectAnswerMedia(tools: ToolImageResult[], answerComplete = tr
     if (final) parts.push(...final.media.filter(part => part.type === type));
   }
   for (const item of candidates) {
-    if (item.media.every(part => parts.includes(part))) toolIds.add(item.tool.id);
+    if (item.media.every(part => parts.includes(part) || (audioSelection && part.type === "audio" && parts.some(selected =>
+      selected.type === "audio" && typeof selected.path === "string" && typeof part.path === "string" &&
+      selected.path.replaceAll("\\", "/").toLowerCase() === part.path.replaceAll("\\", "/").toLowerCase(),
+    )))) toolIds.add(item.tool.id);
   }
   return { parts, toolIds };
 }

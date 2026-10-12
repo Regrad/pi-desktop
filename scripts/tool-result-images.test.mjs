@@ -12,6 +12,7 @@ const agentPackage = pathToFileURL(path.join(root, "node_modules/@earendil-works
 const providerRoot = process.env.PI_TEST_PROVIDER_ROOT || path.dirname(findPackageJSON("@earendil-works/pi-ai", agentPackage));
 const providerPath = path.join(providerRoot, "dist/api/openai-completions.js");
 const { convertMessages, stream } = await import(pathToFileURL(providerPath));
+const { normalizeContext } = await import(pathToFileURL(path.join(providerRoot, "dist/utils/transcript.js")));
 const model = {
   id: "qwen3.8-flash-next-ud-q4-k-xl", name: "Test", provider: "llama-cpp",
   api: "openai-completions", input: ["text", "image"], reasoning: true,
@@ -30,7 +31,7 @@ const assistant = (ids, override = {}) => ({
   stopReason: "toolUse", timestamp: 2, ...override,
 });
 const result = (id, content, override = {}) => ({ role: "toolResult", toolCallId: id, toolName: "desktop_show_image", content, isError: false, timestamp: 3, ...override });
-const context = (messages) => ({ systemPrompt: "Use tool results as evidence.", messages, tools: [] });
+const context = (messages) => normalizeContext({ systemPrompt: "Use tool results as evidence.", messages, tools: [] });
 const convert = (messages, selected = model, compat = {}) => convertMessages(selected, context(messages), compat);
 const url = (data = png, mimeType = "image/png") => `data:${mimeType};base64,${data}`;
 const body = (message) => typeof message.content === "string" ? message.content : message.content.filter(b => b.type === "text").map(b => b.text).join("\n");

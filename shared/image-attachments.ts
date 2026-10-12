@@ -33,6 +33,23 @@ export function visibleImageAttachmentText(text: string): string {
   return block ? text.slice(0, block.offset) + text.slice(block.offset + block.length) : text;
 }
 
+/** Reuse the actual stored image bytes when editing, even if an original path moved. */
+export function historyImageAttachments(message: { content?: unknown }): Attachment[] {
+  if (!Array.isArray(message.content)) return [];
+  const images = message.content.filter((part): part is HistoryImage =>
+    part?.type === "image" && typeof part.data === "string" && typeof part.mimeType === "string",
+  );
+  const text = message.content.filter(part => part?.type === "text").map(part => String(part.text ?? "")).join("\n");
+  const metadata = metadataBlock(text)?.images ?? [];
+  return images.map((image, index) => {
+    const details = metadata.find(item => item.image === index + 1);
+    return { id: `history-image-${index + 1}`, name: details?.name ?? `Image ${index + 1}`,
+      path: details?.path ?? `clipboard:history-image-${index + 1}`, ...image,
+      ...(details?.role === "mask" && details.maskFor && details.maskFor <= images.length
+        ? { maskFor: `history-image-${details.maskFor}` } : {}) };
+  });
+}
+
 function entryImages(entry: HistoryEntry) {
   if (entry.type !== "message" || !entry.message || typeof entry.message !== "object") return;
   const message = entry.message as { role?: string; content?: unknown };

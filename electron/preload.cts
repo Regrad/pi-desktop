@@ -8,6 +8,11 @@ function subscribe(channel: string, listener: (...args: any[]) => void): () => v
 }
 
 const api: PiDesktopApi = {
+  manageSkills: (id, command) => ipcRenderer.invoke("desktop:skills", id, command),
+  getNotebookCharacterLimit: () => ipcRenderer.invoke("desktop:get-notebook-limit"),
+  setNotebookCharacterLimit: (value) => ipcRenderer.invoke("desktop:set-notebook-limit", value),
+  getWebAccessSettings: () => ipcRenderer.invoke("desktop:get-web-access-settings"),
+  saveWebAccessSettings: (settings) => ipcRenderer.invoke("desktop:save-web-access-settings", settings),
   bootstrap: () => ipcRenderer.invoke("desktop:bootstrap"),
   chooseProjectFolders: () => ipcRenderer.invoke("desktop:choose-project-folders"),
   createProject: (name, paths) => ipcRenderer.invoke("desktop:create-project", name, paths),
@@ -23,17 +28,25 @@ const api: PiDesktopApi = {
   deleteConversation: (conversationId) => ipcRenderer.invoke("desktop:delete-conversation", conversationId),
   archiveConversation: (conversationId) => ipcRenderer.invoke("desktop:archive-conversation", conversationId),
   restoreConversation: (conversationId) => ipcRenderer.invoke("desktop:restore-conversation", conversationId),
-  sendPrompt: (conversationId, message, attachments, behavior) =>
-    ipcRenderer.invoke("pi:send-prompt", conversationId, message, attachments, behavior),
-  queuePrompt: (conversationId, message, attachments) =>
-    ipcRenderer.invoke("desktop:queue-prompt", conversationId, message, attachments),
+  sendPrompt: (conversationId, message, attachments, behavior, requestPlan) =>
+    ipcRenderer.invoke("pi:send-prompt", conversationId, message, attachments, behavior, requestPlan),
+  queuePrompt: (conversationId, message, attachments, requestPlan) =>
+    ipcRenderer.invoke("desktop:queue-prompt", conversationId, message, attachments, requestPlan),
   sendQueuedPrompt: (conversationId, promptId) =>
     ipcRenderer.invoke("desktop:send-queued-prompt", conversationId, promptId),
   removeQueuedPrompt: (conversationId, promptId) =>
     ipcRenderer.invoke("desktop:remove-queued-prompt", conversationId, promptId),
   abort: (conversationId) => ipcRenderer.invoke("pi:abort", conversationId),
-  setGoal: (id, objective, attachments) => ipcRenderer.invoke("pi:set-goal", id, objective, attachments),
+  rewindConversation: (conversationId, entryId) => ipcRenderer.invoke("pi:rewind", conversationId, entryId),
+  editLastMessage: (conversationId, entryId, text) => ipcRenderer.invoke("pi:edit-last-message", conversationId, entryId, text),
+  setGoal: (id, objective, attachments, requestPlan) => ipcRenderer.invoke("pi:set-goal", id, objective, attachments, requestPlan),
   controlGoal: (id, action) => ipcRenderer.invoke("pi:control-goal", id, action),
+  editGoal: (id, objective) => ipcRenderer.invoke("pi:edit-goal", id, objective),
+  removePlan: (id) => ipcRenderer.invoke("pi:remove-plan", id),
+  controlPlan: (id, action) => ipcRenderer.invoke("pi:control-plan", id, action),
+  saveNotebook: (id, content, revision) => ipcRenderer.invoke("pi:save-notebook", id, content, revision),
+  browserUi: (command) => ipcRenderer.invoke("desktop:browser", command),
+  onBrowserChanged: (listener) => subscribe("desktop:browser-changed", listener),
   setModel: (conversationId, provider, modelId) =>
     ipcRenderer.invoke("pi:set-model", conversationId, provider, modelId),
   setThinkingLevel: (conversationId, level) =>
@@ -69,9 +82,12 @@ const api: PiDesktopApi = {
   removeUserExtension: (name) => ipcRenderer.invoke("desktop:remove-user-extension", name),
   showItemInFolder: (path) => ipcRenderer.invoke("desktop:show-item", path),
   showGeneratedFile: (kind, filename) => ipcRenderer.invoke("desktop:show-generated", kind, filename),
+  openGeneratedLink: (url) => ipcRenderer.invoke("desktop:open-generated-link", url),
   onPiEvent: (listener) => subscribe("pi:event", listener),
   onExtensionUi: (listener) => subscribe("pi:extension-ui", listener),
   onConversationChanged: (listener) => subscribe("desktop:conversation-changed", listener),
+  onControlSelect: (listener) => subscribe("desktop:control-select", listener),
+  controlSelectionReady: (requestId) => ipcRenderer.send("desktop:control-selected", requestId),
 };
 
 contextBridge.exposeInMainWorld("piDesktop", api);

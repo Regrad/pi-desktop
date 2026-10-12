@@ -78,9 +78,22 @@ export function imageGraph(settings: ComfySettings, mode: ComfyMode, input: Comf
     }
     if ((input.count ?? 1) > 1) latent = add("repeat_canvas", "RepeatLatentBatch", { samples: latent, amount: input.count });
   }
-  add("sample", "KSampler", { model: [refs.length ? "cache" : "model", 0], positive: ["text", 0], negative: ["text", 1], latent_image: latent,
-    seed: input.seed ?? Math.floor(Math.random() * 2 ** 48), steps: input.steps ?? settings.steps, cfg: input.cfg ?? 1,
-    sampler_name: "euler", scheduler: "simple", denoise: input.denoise ?? 1 });
+  const seed = input.seed ?? Math.floor(Math.random() * 2 ** 48);
+  if (settings.diffusionModel.includes("qwen_image_2.1_turbo")) {
+    if (input.steps !== undefined && input.steps !== 8) throw new Error("Qwen Image 2.1 Turbo uses its official fixed 8-step schedule; set steps to 8 or omit it.");
+    const denoise = input.denoise ?? 1;
+    const sigmas = [1, 0.978453, 0.95418, 0.926626, 0.89508, 0.845148, 0.704534, 0.414568, 0];
+    // Partial denoising keeps the trained schedule's tail instead of inventing a new grid.
+    const start = denoise <= 0 ? 8 : 8 - Math.min(8, Math.max(1, Math.ceil(8 * denoise)));
+    add("turbo_sigmas", "ManualSigmas", { sigmas: sigmas.slice(start).join(", ") });
+    add("turbo_sampler", "KSamplerSelect", { sampler_name: "euler" });
+    add("sample", "SamplerCustom", { model: [refs.length ? "cache" : "model", 0], positive: ["text", 0], negative: ["text", 1], latent_image: latent,
+      noise_seed: seed, add_noise: denoise > 0, cfg: input.cfg ?? 1, sampler: ["turbo_sampler", 0], sigmas: ["turbo_sigmas", 0] });
+  } else {
+    add("sample", "KSampler", { model: [refs.length ? "cache" : "model", 0], positive: ["text", 0], negative: ["text", 1], latent_image: latent,
+      seed, steps: input.steps ?? settings.steps, cfg: input.cfg ?? 1,
+      sampler_name: "euler", scheduler: "simple", denoise: input.denoise ?? 1 });
+  }
   let output = add("decode", "VAEDecode", { samples: ["sample", 0], vae: ["vae", 0] });
   if (mask) {
     output = add("restore_size", "ImageScale", { image: output, upscale_method: "lanczos", width: exact.width, height: exact.height, crop: "disabled" });

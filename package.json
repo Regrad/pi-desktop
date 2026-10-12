@@ -16,21 +16,25 @@
     "portable": "npm run pack"
   },
   "dependencies": {
-    "@earendil-works/pi-coding-agent": "0.84.2",
+    "@earendil-works/pi-coding-agent": "1.0.4",
+    "@modelcontextprotocol/sdk": "1.27.1",
     "@zavora-ai/computer-use-mcp": "7.1.0",
+    "ajv": "8.20.0",
     "diff": "8.0.4",
     "image-size": "2.0.4",
     "lucide-react": "1.38.0",
     "mammoth": "1.12.2",
-    "pi-lens": "4.0.0",
+    "pi-lens": "4.3.0",
     "pi-llama-cpp-stats": "0.1.6",
-    "pi-mcp-adapter": "2.26.0",
-    "pi-tool-repair": "0.2.1",
-    "pi-web-access": "0.23.0",
+    "pi-mcp-adapter": "5.1.0",
+    "pi-tool-repair": "0.3.5",
+    "pi-web-access": "0.37.0",
+    "playwright-core": "1.63.0",
     "react": "19.2.8",
     "react-dom": "19.2.8",
     "react-markdown": "10.1.0",
     "remark-gfm": "4.0.1",
+    "selfsigned": "5.5.0",
     "three": "0.186.1",
     "turndown": "7.2.4",
     "turndown-plugin-gfm": "1.0.2"
@@ -71,6 +75,14 @@
       {
         "from": "README.md",
         "to": "README.md"
+      },
+      {
+        "from": "CONNECT_CODEX.md",
+        "to": "CONNECT_CODEX.md"
+      },
+      {
+        "from": "resources/control-api/Invoke-PiDesktop.ps1",
+        "to": "Invoke-PiDesktop.ps1"
       }
     ],
     "win": {

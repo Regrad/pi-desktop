@@ -1,9 +1,12 @@
 import { spawn } from "node:child_process";
-import { cp, mkdir, mkdtemp, rename, rm, stat } from "node:fs/promises";
+import { randomUUID } from "node:crypto";
+import { cp, mkdir, mkdtemp, open, rename, rm, stat } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import process from "node:process";
 import { fileURLToPath } from "node:url";
+import { ensurePiLensGrammars } from "../resources/pi-lens/grammars.mjs";
+import { activatePortableBuild } from "./portable-swap.mjs";
 
 const projectRoot = path.resolve(
   path.dirname(fileURLToPath(import.meta.url)),
@@ -16,8 +19,16 @@ const canonicalTarget = path.join(releaseRoot, "Pi Desktop");
 const targetDir = process.env.PI_PORTABLE_TARGET
   ? path.resolve(projectRoot, process.env.PI_PORTABLE_TARGET)
   : canonicalTarget;
-const nextDir = path.join(releaseRoot, ".pi-desktop-new");
-const previousDir = path.join(releaseRoot, ".pi-desktop-old");
+const relativeTarget = path.relative(releaseRoot, targetDir);
+if (!relativeTarget || relativeTarget.startsWith(`..${path.sep}`) || relativeTarget === ".." || path.isAbsolute(relativeTarget)) {
+  throw new Error("Portable target must be a subdirectory of the release folder.");
+}
+// Independent attempts cannot delete each other's staging or recovery folders.
+const swapId = randomUUID();
+const nextDir = path.join(releaseRoot, `.pi-desktop-new-${swapId}`);
+const previousDir = path.join(releaseRoot, `.pi-desktop-old-${swapId}`);
+const lockPath = path.join(releaseRoot, ".pi-desktop-package.lock");
+let packageLock;
 const builderCli = path.join(
   projectRoot,
   "node_modules",
@@ -187,8 +198,22 @@ async function renameWithRecovery(from, to, label) {
   }
 }
 
-let targetMoved = false;
 try {
+  await mkdir(releaseRoot, { recursive: true });
+  try { packageLock = await open(lockPath, "wx"); }
+  catch (error) {
+    if (error.code === "EEXIST") throw new Error(`Another package operation owns ${lockPath}. If it crashed, verify that no build is running before removing this lock.`);
+    throw error;
+  }
+  await packageLock.writeFile(JSON.stringify({ pid: process.pid, target: targetDir, startedAt: new Date().toISOString() }));
+  const grammars = await ensurePiLensGrammars(path.join(projectRoot, "node_modules", "pi-lens"));
+  process.stdout.write(`Pi Lens: ${grammars.count} grammars verified before packaging.\n`);
+  // The portable distribution includes the standalone client helper automatically.
+  // No runtime is required on client PCs; publishing runs only as part of an explicit pack.
+  const helperOutput = path.join(stagingRoot, "client-agent");
+  await run("dotnet", ["publish", path.join(projectRoot, "client-agent", "PiDesktopAgent.csproj"), "-c", "Release", "-r", "win-x64", "-o", helperOutput]);
+  await mkdir(path.join(projectRoot, "resources", "client-agent"), { recursive: true });
+  await cp(path.join(helperOutput, "Pi Desktop Agent.exe"), path.join(projectRoot, "resources", "client-agent", "Pi Desktop Agent.exe"));
   await closeDesktopInstances();
   await run(process.execPath, [
     builderCli,
@@ -206,9 +231,6 @@ try {
   await mkdir(releaseRoot, { recursive: true });
   await retry("clean next", () =>
     rm(nextDir, { recursive: true, force: true }),
-  );
-  await retry("clean previous", () =>
-    rm(previousDir, { recursive: true, force: true }),
   );
   await retry("copy new build", () =>
     cp(builtDir, nextDir, { recursive: true }),
@@ -228,24 +250,12 @@ try {
     );
   }
 
-  if (await exists(targetDir)) {
-    await renameWithRecovery(targetDir, previousDir, "move old aside");
-    targetMoved = true;
-  }
-  await renameWithRecovery(nextDir, targetDir, "activate new build");
-  targetMoved = false;
+  await activatePortableBuild({ target: targetDir, next: nextDir, previous: previousDir }, { exists, rename: renameWithRecovery });
   await retry("remove old build", () =>
     rm(previousDir, { recursive: true, force: true }),
   );
   process.stdout.write(`Fast portable build updated: ${targetDir}\n`);
 } catch (error) {
-  if (
-    targetMoved &&
-    !(await exists(targetDir)) &&
-    (await exists(previousDir))
-  ) {
-    await rename(previousDir, targetDir).catch(() => {});
-  }
   if (["EPERM", "EBUSY"].includes(error?.code)) {
     process.stderr.write(
       "The portable build folder stayed locked. If this build was started from " +
@@ -258,10 +268,12 @@ try {
   await retry("finally clean next", () =>
     rm(nextDir, { recursive: true, force: true }),
   ).catch(() => {});
-  await retry("finally clean previous", () =>
-    rm(previousDir, { recursive: true, force: true }),
-  ).catch(() => {});
+  // previousDir may be the only surviving copy if rollback failed.
   await retry("finally clean staging", () =>
     rm(stagingRoot, { recursive: true, force: true }),
   ).catch(() => {});
+  if (packageLock) {
+    await packageLock.close();
+    await rm(lockPath, { force: true });
+  }
 }

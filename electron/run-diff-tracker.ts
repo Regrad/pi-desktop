@@ -52,6 +52,7 @@ interface FileMutations {
 }
 
 interface TrackerCallbacks {
+  virtualFilesystem?: boolean;
   onLiveChange?: () => void;
   onScanComplete?: () => void;
 }
@@ -76,13 +77,15 @@ export class RunDiffTracker {
   private readonly files = new Map<string, FileMutations>();
   private readonly onLiveChange?: () => void;
   private closed = false;
+  private readonly virtualFilesystem: boolean;
   private notifyTimer?: NodeJS.Timeout;
 
   private constructor(rootPaths: string[], callbacks?: TrackerCallbacks) {
+    this.virtualFilesystem = callbacks?.virtualFilesystem ?? false;
     this.rootPaths = [...new Set(rootPaths.map((item) => path.resolve(item)))];
     const byCanonical = new Map<string, RootInfo>();
     for (const raw of this.rootPaths) {
-      const canonical = canonicalizePath(raw);
+      const canonical = this.virtualFilesystem ? path.resolve(raw) : canonicalizePath(raw);
       const key = canonical.toLocaleLowerCase();
       let info = byCanonical.get(key);
       if (!info) {
@@ -196,7 +199,7 @@ export class RunDiffTracker {
           }
         }
       }
-      const canonical = canonicalizePath(candidate);
+      const canonical = this.virtualFilesystem ? path.resolve(candidate) : canonicalizePath(candidate);
       const root = this.deepestContainingRoot(canonical);
       if (root && isTrackablePath(root.path, canonical)) return canonical;
     }

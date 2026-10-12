@@ -4,12 +4,14 @@ import { randomUUID } from "node:crypto";
 import { setTimeout as delay } from "node:timers/promises";
 import { loadComfySettings, request, limitedBody, validateGraph } from "./comfy-client.js";
 import { validateLocalGlb } from "../shared/glb.js";
+import { saveModelArtifacts } from "./model3d-artifacts.js";
 
 // Accepts a finished API graph: new models/tools need no changes to ComfyMode or app code.
 export async function runApiWorkflow(dataDir: string, graph: unknown, options: {
   kind: "image" | "audio" | "model";
   outputNodes?: string[];
   timeoutMinutes?: number;
+  modelArtifacts?: { prefix: string; reportNodes: string[] };
 }, signal?: AbortSignal, progress?: (text: string) => void) {
   const settings = await loadComfySettings(dataDir);
   if (!settings.enabled) throw new Error("ComfyUI отключён в настройках Pi Desktop");
@@ -42,6 +44,12 @@ export async function runApiWorkflow(dataDir: string, graph: unknown, options: {
     }
     if (!history) throw new Error(`Время ожидания истекло. Задание: ${id}`);
     if (history.status?.status_str === "error") throw new Error(`Ошибка ComfyUI: ${JSON.stringify(history.status.messages).slice(0, 3000)}`);
+    if (options.modelArtifacts) {
+      if (options.kind !== "model") throw new Error("Отчёты 3D доступны только для моделей");
+      const artifacts = await saveModelArtifacts(dataDir, id, options.modelArtifacts.prefix, history.outputs ?? {}, options.modelArtifacts.reportNodes,
+        async (filename, subfolder, limit) => limitedBody(await request(settings.url, `/view?${new URLSearchParams({ filename, subfolder, type: "output" })}`, {}, signal), limit));
+      return { promptId: id, reports: history.outputs, ...artifacts };
+    }
     const field = options.kind === "image" ? "images" : options.kind === "audio" ? "audio" : "3d";
     const outputs = Object.entries(history.outputs ?? {}).filter(([node]) => !options.outputNodes || options.outputNodes.includes(node))
       .flatMap(([nodeId, value]) => (value[field] ?? []).map(output => ({ ...output, nodeId }))).filter(output => output.type === "output");
@@ -60,7 +68,7 @@ export async function runApiWorkflow(dataDir: string, graph: unknown, options: {
       await writeFile(file, bytes);
       files.push({ path: file, mimeType, nodeId: output.nodeId, ...(options.kind === "image" ? { data: bytes.toString("base64") } : {}) });
     }
-    return { promptId: id, files, totalFiles: outputs.length, reports: history.outputs };
+    return { promptId: id, files, totalFiles: outputs.length, reports: history.outputs, recordFile: undefined, artifactReports: undefined };
   } catch (error) {
     if (signal?.aborted) await request(settings.url, "/queue", {
       method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ delete: [id] }),

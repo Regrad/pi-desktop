@@ -1,4 +1,7 @@
 import { randomUUID } from "node:crypto";
+import { atomicStateWrite } from "./atomic-state.js";
+import { notebookLimit, validateNotebookLimit } from "../shared/notebook.js";
+import { migrateLegacyAdapterConfig, parseMcpConfiguration } from "../shared/mcp-config.js";
 import { existsSync } from "node:fs";
 import { constants } from "node:fs";
 import {
@@ -44,6 +47,7 @@ import { ensureComfyAddon } from "./comfy-addon.js";
 
 interface DesktopState {
   version: 4;
+  notebookCharacterLimit?: number;
   projects: ProjectRecord[];
   conversations: ConversationRecord[];
   queuedPrompts: Record<string, QueuedPrompt[]>;
@@ -85,11 +89,12 @@ const MANAGED_PACKAGE_NAMES = [
 ] as const;
 const RETIRED_PACKAGE_NAMES = ["pi-token-speed", "pi-loop-police"];
 const MANAGED_RESOURCE_NAMES = [
-  "pi-lens-all-tools",
   "pi-single-slot-guard",
   "pi-llama-generation-speed",
   "pi-loop-police",
 ];
+// Remove old managed activation packages without touching custom add-ons.
+const RETIRED_RESOURCE_NAMES = ["pi-lens-all-tools"];
 
 const BUILTIN_MODULES: Array<{
   id: BuiltinModuleId;
@@ -129,13 +134,6 @@ const BUILTIN_MODULES: Array<{
     kind: "package",
   },
   {
-    id: "pi-lens-all-tools",
-    name: "Lens All Tools",
-    description: "Автоматически активирует инструменты Pi Lens.",
-    kind: "resource",
-    dependsOn: "pi-lens",
-  },
-  {
     id: "pi-single-slot-guard",
     name: "Single Slot Guard",
     description: "Защищает KV-кэш сервера с одним слотом.",
@@ -172,14 +170,17 @@ export class DataStore {
     ...DEFAULT_BUILTIN_MODULES,
   };
   private writeQueue: Promise<void> = Promise.resolve();
+  private modelsMutationQueue: Promise<unknown> = Promise.resolve();
 
   constructor(
     dataDir: string,
     private readonly appRoot: string,
     private readonly runtimeExecutable: string,
+    private readonly sharedDataDir?: string,
+    private readonly remoteRoots?: string[],
   ) {
     this.dataDir = dataDir;
-    this.agentDir = path.join(dataDir, "agent");
+    this.agentDir = path.join(sharedDataDir ?? dataDir, "agent");
     this.sessionsDir = portableSessionsDir(dataDir);
     this.runsDir = path.join(dataDir, "runs");
     this.statePath = path.join(dataDir, "desktop-state.json");
@@ -190,15 +191,17 @@ export class DataStore {
     await mkdir(this.agentDir, { recursive: true });
     await mkdir(this.sessionsDir, { recursive: true });
     await mkdir(this.runsDir, { recursive: true });
-    await this.loadBuiltinModuleSettings();
-    await this.initializeAgentDirectory();
+    if (!this.sharedDataDir) {
+      await this.loadBuiltinModuleSettings();
+      await this.initializeAgentDirectory();
+    }
     let loadedState = false;
     try {
       const parsed = JSON.parse(
         await readFile(this.statePath, "utf8"),
       ) as DesktopState;
       loadedState = true;
-      if (Array.isArray(parsed.conversations)) {
+      if (Array.isArray(parsed.conversations) && !this.sharedDataDir) {
         // Preserve the old index and original JSONL files before adopting portable storage.
         await copyFile(this.statePath, `${this.statePath}.before-portable-sessions`, constants.COPYFILE_EXCL).catch((error) => {
           if (error.code !== "EEXIST") throw error;
@@ -241,11 +244,17 @@ export class DataStore {
               const sessionFile = conversation.sessionFile;
               return {
                 ...conversation,
+                plan: conversation.plan?.execution === "active"
+                  ? { ...conversation.plan, execution: "paused", revision: conversation.plan.revision + 1,
+                    updatedAt: new Date().toISOString(),
+                    explanation: "Приложение перезапущено. Дайте команду продолжить работу по плану." }
+                  : conversation.plan ? { ...conversation.plan, execution: "paused" } : undefined,
                 goal:
                   conversation.goal?.status === "active"
                     ? {
                         ...conversation.goal,
                         status: "paused",
+                        updatedAt: new Date().toISOString(),
                         evidence:
                           "Приложение перезапущено. Нажмите «Продолжить».",
                       }
@@ -263,11 +272,11 @@ export class DataStore {
       if (loadedState || (error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
       await this.save();
     }
-    await this.refreshAllProjectSessions();
+    if (!this.sharedDataDir) await this.refreshAllProjectSessions();
   }
 
   get runtimePackagesDir(): string {
-    return path.join(this.dataDir, "runtime");
+    return path.join(this.sharedDataDir ?? this.dataDir, "runtime");
   }
 
   getEffectivePackagePath(packageName: string): string {
@@ -295,9 +304,10 @@ export class DataStore {
 
   private async initializeAgentDirectory(): Promise<void> {
     const templateDir = path.join(this.appRoot, "resources", "agent-template");
+    await this.migrateLegacyAdapterConfiguration();
     for (const fileName of [
       "models.json",
-      "mcp.json",
+      "mcp-adapter.json",
       "auth.json",
       "web-search.json",
     ]) {
@@ -316,7 +326,7 @@ export class DataStore {
       if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
       await writeFile(appendSystemPath, DEFAULT_APPEND_SYSTEM_PROMPT, "utf8");
     }
-    await this.migrateManagedMcpServers(path.join(this.agentDir, "mcp.json"));
+    await this.migrateManagedMcpServers(path.join(this.agentDir, "mcp-adapter.json"));
     await this.migrateLegacyWebSearchProvider(
       path.join(this.agentDir, "web-search.json"),
     );
@@ -376,10 +386,14 @@ export class DataStore {
         !isManagedPackage(
           item,
           [...MANAGED_PACKAGE_NAMES, ...RETIRED_PACKAGE_NAMES],
-          MANAGED_RESOURCE_NAMES,
+          [...MANAGED_RESOURCE_NAMES, ...RETIRED_RESOURCE_NAMES],
         ),
     );
     settings.packages = [...managedPackages, ...customPackages];
+    if (Array.isArray(settings.extensions)) {
+      settings.extensions = settings.extensions.filter(item => typeof item !== "string" ||
+        !isManagedPackage(item.replace(/[\\/]index\.js$/i, ""), [], RETIRED_RESOURCE_NAMES));
+    }
     await writeFile(
       settingsPath,
       `${JSON.stringify(settings, null, 2)}\n`,
@@ -486,8 +500,23 @@ export class DataStore {
     return this.getModuleSettings();
   }
 
+  private async migrateLegacyAdapterConfiguration(): Promise<void> {
+    const nativePath = path.join(this.agentDir, "mcp.json");
+    const adapterPath = path.join(this.agentDir, "mcp-adapter.json");
+    if (!existsSync(nativePath)) return;
+    const native = parseMcpConfiguration(await readFile(nativePath, "utf8"));
+    const adapter = existsSync(adapterPath) ? parseMcpConfiguration(await readFile(adapterPath, "utf8")) : {};
+    const result = migrateLegacyAdapterConfig(native, adapter);
+    if (!result.changed) return;
+    const backupPath = `${nativePath}.before-adapter-migration`;
+    if (!existsSync(backupPath)) await copyFile(nativePath, backupPath, constants.COPYFILE_EXCL);
+    // Save the destination first: interruption must never lose old settings.
+    await atomicStateWrite(adapterPath, `${JSON.stringify(result.adapterConfig, null, 2)}\n`);
+    await atomicStateWrite(nativePath, `${JSON.stringify(result.nativeConfig, null, 2)}\n`);
+  }
+
   private async migrateManagedMcpServers(configPath: string): Promise<void> {
-    const config = JSON.parse(await readFile(configPath, "utf8")) as {
+    const config = parseMcpConfiguration(await readFile(configPath, "utf8")) as {
       settings?: Record<string, unknown>;
       mcpServers?: Record<string, Record<string, unknown>>;
     };
@@ -637,6 +666,10 @@ export class DataStore {
   async discoverModelServer(
     input: ModelServerDiscoveryInput,
   ): Promise<ModelServerDiscoveryResult> {
+    return this.mutateModels(() => this.discoverModelServerSerial(input));
+  }
+
+  private async discoverModelServerSerial(input: ModelServerDiscoveryInput): Promise<ModelServerDiscoveryResult> {
     const discovered = await discoverProvider(input);
     const config = await this.readModelsConfig();
     const providers = config.providers ?? {};
@@ -749,6 +782,10 @@ export class DataStore {
   async updateConfiguredModel(
     input: ConfiguredModelUpdate,
   ): Promise<ConfiguredModelServer> {
+    return this.mutateModels(() => this.updateConfiguredModelSerial(input));
+  }
+
+  private async updateConfiguredModelSerial(input: ConfiguredModelUpdate): Promise<ConfiguredModelServer> {
     const config = await this.readModelsConfig();
     const provider = config.providers?.[input.providerId];
     if (!provider) throw new Error("Сервер модели не найден");
@@ -835,6 +872,10 @@ export class DataStore {
     providerId: string,
     modelId: string,
   ): Promise<ConfiguredModelServer | null> {
+    return this.mutateModels(() => this.deleteConfiguredModelSerial(providerId, modelId));
+  }
+
+  private async deleteConfiguredModelSerial(providerId: string, modelId: string): Promise<ConfiguredModelServer | null> {
     const config = await this.readModelsConfig();
     const provider = config.providers?.[providerId];
     if (!provider) return null;
@@ -854,6 +895,10 @@ export class DataStore {
   }
 
   async deleteModelServer(providerId: string): Promise<boolean> {
+    return this.mutateModels(() => this.deleteModelServerSerial(providerId));
+  }
+
+  private async deleteModelServerSerial(providerId: string): Promise<boolean> {
     const config = await this.readModelsConfig();
     if (!config.providers?.[providerId]) return false;
     delete config.providers[providerId];
@@ -882,6 +927,16 @@ export class DataStore {
     repair.enabled = false;
     repair.leakModels = ["qwen"];
     await writeFile(configPath, `${JSON.stringify(config, null, 2)}\n`, "utf8");
+  }
+
+  getNotebookCharacterLimit(): number {
+    return validateNotebookLimit(this.state.notebookCharacterLimit ?? notebookLimit);
+  }
+
+  async setNotebookCharacterLimit(value: number): Promise<number> {
+    this.state.notebookCharacterLimit = validateNotebookLimit(value);
+    await this.save();
+    return this.getNotebookCharacterLimit();
   }
 
   snapshot(): Omit<DesktopState, "queuedPrompts" | "compactions"> {
@@ -966,7 +1021,7 @@ export class DataStore {
   ): Promise<ConversationRecord[]> {
     const project = this.getProject(projectId);
     const sessionDir = this.getSessionDir(project.path);
-    const sessions = await SessionManager.list(project.path, sessionDir);
+    const sessions = this.sharedDataDir ? [] : await SessionManager.list(project.path, sessionDir);
     for (const session of sessions) this.mergeSession(project.id, session);
     await this.save();
     return this.state.conversations
@@ -1016,8 +1071,8 @@ export class DataStore {
   }
 
   async getMcpDirectToolSelectors(): Promise<string[]> {
-    const config = JSON.parse(
-      await readFile(path.join(this.agentDir, "mcp.json"), "utf8"),
+    const config = parseMcpConfiguration(
+      await readFile(path.join(this.agentDir, "mcp-adapter.json"), "utf8"),
     ) as {
       settings?: { directTools?: boolean };
       mcpServers?: Record<
@@ -1203,7 +1258,7 @@ export class DataStore {
   async getConversationWorkingDirectory(
     conversation: ConversationRecord,
   ): Promise<string> {
-    if (conversation.projectId)
+    if (conversation.projectId && !this.sharedDataDir)
       return this.getProject(conversation.projectId).path;
     const workspace = path.join(
       this.getConversationChatDirectory(conversation),
@@ -1218,6 +1273,7 @@ export class DataStore {
   ): Promise<string[]> {
     if (conversation.projectId)
       return [...this.getProject(conversation.projectId).paths];
+    if (this.sharedDataDir) return this.remoteRoots?.length ? [...this.remoteRoots] : ["C:\\"];
     return [await this.getConversationWorkingDirectory(conversation)];
   }
 
@@ -1248,12 +1304,14 @@ export class DataStore {
     conversationId: string,
     message: string,
     attachments: Attachment[],
+    requestPlan = false,
   ): Promise<QueuedPrompt[]> {
     this.getConversation(conversationId);
     const normalizedMessage = message.trim();
     if (!normalizedMessage)
       throw new Error("Сообщение для очереди не может быть пустым");
     const prompt: QueuedPrompt = {
+      ...(requestPlan ? { requestPlan: true } : {}),
       id: randomUUID(),
       message: normalizedMessage,
       attachments: structuredClone(attachments),
@@ -1319,12 +1377,10 @@ export class DataStore {
     run: ConversationRun,
   ): Promise<void> {
     const destination = this.getRunPath(conversationId);
-    const tempPath = `${destination}.tmp`;
     const content = `${JSON.stringify(run, null, 2)}\n`;
     await this.enqueueWrite(async () => {
       await mkdir(this.runsDir, { recursive: true });
-      await writeFile(tempPath, content, "utf8");
-      await rename(tempPath, destination);
+      await atomicStateWrite(destination, content);
     });
   }
 
@@ -1385,7 +1441,6 @@ export class DataStore {
   }
 
   private async save(): Promise<void> {
-    const tempPath = `${this.statePath}.tmp`;
     const savedState = {
       ...this.state,
       conversations: this.state.conversations.map((conversation) => ({
@@ -1398,8 +1453,7 @@ export class DataStore {
     const content = `${JSON.stringify(savedState, null, 2)}\n`;
     await this.enqueueWrite(async () => {
       await mkdir(this.dataDir, { recursive: true });
-      await writeFile(tempPath, content, "utf8");
-      await rename(tempPath, this.statePath);
+      await atomicStateWrite(this.statePath, content);
     });
   }
 
@@ -1409,12 +1463,17 @@ export class DataStore {
     ) as ModelsFileConfig;
   }
 
+  private mutateModels<T>(task: () => Promise<T>): Promise<T> {
+    // Serialise the entire read-modify-write operation, not just its final write.
+    const next = this.modelsMutationQueue.then(task, task);
+    this.modelsMutationQueue = next.catch(() => undefined);
+    return next;
+  }
+
   private async writeModelsConfig(config: ModelsFileConfig): Promise<void> {
     const destination = path.join(this.agentDir, "models.json");
-    const tempPath = `${destination}.tmp`;
     await this.enqueueWrite(async () => {
-      await writeFile(tempPath, `${JSON.stringify(config, null, 2)}\n`, "utf8");
-      await rename(tempPath, destination);
+      await atomicStateWrite(destination, `${JSON.stringify(config, null, 2)}\n`);
     });
   }
 
@@ -1514,7 +1573,8 @@ function isManagedPackage(
     managedResourceNames.some(
       (name) =>
         normalized.endsWith(`\\resources\\${name}`) ||
-        normalized.endsWith(`\\local-packages\\${name}`),
+        normalized.endsWith(`\\local-packages\\${name}`) ||
+        normalized === `resources\\${name}` || normalized === `local-packages\\${name}`,
     )
   )
     return true;

@@ -11,12 +11,15 @@ import { imageGraph, type ImageDimensions } from "../tools/comfyui_generate_imag
 import { readImageInput } from "./image-input.js";
 import { segmentationGraph, validateSegmentation } from "../tools/comfyui_create_mask/workflow.js";
 import { editYuE2VocalScore, type VocalEditMode } from "./yue2-vocal-edit.js";
+import { processingInputs, type ProcessingOptions } from "./model3d-options.js";
+import { saveModelArtifacts } from "./model3d-artifacts.js";
 
 type Graph = Record<string, { class_type: string; inputs: Record<string, unknown> }>;
 type Output = { filename: string; subfolder?: string; type?: string };
 type Model3dOptions = { target_face_count?: number; remesh_resolution?: number; shape_resolution?: number; texture_resolution?: number; normal_map_resolution?: number; ao_resolution?: number; ao_samples?: number };
 export type ComfyInput = { prompt?: string; lyrics?: string; duration?: number; audio?: string; abc_file?: string; abc_text?: string; plan_only?: boolean; vocal_mode?: VocalEditMode; keep_harmony?: boolean; music_options?: object; negative_prompt?: string; width?: number; height?: number; seed?: number; images?: string[]; transparent_background?: boolean;
   model3d_options?: Model3dOptions;
+  postprocess?: ProcessingOptions;
   mask?: string; mask_channel?: "red" | "green" | "blue" | "alpha"; invert_mask?: boolean; mask_grow?: number; mask_blur?: number;
   padding?: { left: number; top: number; right: number; bottom: number }; feathering?: number;
   canvas_image?: number; reference_resolution?: number; count?: number; steps?: number; cfg?: number; denoise?: number;
@@ -133,6 +136,12 @@ export function builtinGraph(settings: ComfySettings, mode: ComfyMode, input: Co
         throw new Error(`Некорректный параметр 3D ${key}: ${min}–${max}${step ? `, шаг ${step}` : ""}`);
       graph[id].inputs[name] = value;
     }
+    const postprocess = { ...input.postprocess };
+    if (options.target_face_count !== undefined && postprocess.target_triangles === undefined) {
+      if (options.target_face_count >= 100 && options.target_face_count <= 2000000) postprocess.target_triangles = options.target_face_count;
+      else postprocess.simplify ??= false;
+    }
+    Object.assign(graph.pi_model_process.inputs, processingInputs(postprocess), { output_prefix: `3d/pi-desktop/${randomUUID()}` });
     return graph;
   }
   if (mode === "music" || mode === "music_cover") {
@@ -425,6 +434,16 @@ export async function runComfy(dataDir: string, mode: ComfyMode, input: ComfyInp
     }
     if (!history) throw new Error(`Время ожидания истекло. Задание ComfyUI: ${id}`);
     if (history.status?.status_str === "error") throw new Error(`Ошибка ComfyUI: ${JSON.stringify(history.status.messages).slice(0, 3000)}`);
+    if (model3d && !custom) {
+      const prefix = String(graph.pi_model_process.inputs.output_prefix);
+      const artifacts = await saveModelArtifacts(dataDir, id, prefix, history.outputs ?? {}, ["pi_model_process"],
+        async (filename, subfolder, limit) => limitedBody(await request(settings.url, `/view?${new URLSearchParams({ filename, subfolder, type: "output" })}`, {}, signal), limit));
+      const models = artifacts.files.filter(file => file.mimeType === "model/gltf-binary").map(({ path, mimeType }) => ({ path, mimeType }));
+      if (!models.length) throw new Error("Обработка 3D не вернула GLB-модель");
+      return { promptId: id, images: [], audio: [], models, abcFile: undefined, recordFile: artifacts.recordFile,
+        reports: { model_processing: JSON.stringify(artifacts.artifactReports) }, generationLimitReached: null,
+        inputDimensions: sizes, totalImages: 0, totalAudio: 0, totalModels: models.length };
+    }
     const reports: Record<string, string> = {};
     if (vocalReport) reports.vocal_edit = JSON.stringify(vocalReport);
     for (const name of ["analysis", "fit", "lyrics", "modifier", "range", "cleanup", "duration"]) {

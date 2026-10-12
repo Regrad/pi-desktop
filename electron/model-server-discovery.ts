@@ -72,7 +72,9 @@ async function fetchJson(url: string, apiKey?: string, required = false): Promis
       if (!required) return undefined;
       throw new Error(`${response.status} ${response.statusText}`.trim());
     }
-    return objectValue(await response.json());
+    const value = objectValue(await response.json());
+    if (!value && required) throw new Error("Ожидался JSON-объект с описанием моделей");
+    return value;
   } catch (error) {
     if (!required) return undefined;
     const message = error instanceof Error ? error.message : String(error);

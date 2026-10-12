@@ -53,14 +53,30 @@ test("real Pi loader discovers portable addon, new tools and changes; duplicate 
   const load = () => discoverAndLoadExtensions([], data, path.join(data, "agent"));
   let result = await load();
   assert.deepEqual(result.errors, []);
-  assert.equal(result.extensions[0].tools.size, 18);
+  assert.equal(result.extensions[0].tools.size, 25);
+  assert.ok(result.extensions[0].tools.has("comfyui_design_voice"));
+  assert.ok(result.extensions[0].tools.has("comfyui_clone_voice"));
+  for (const name of ["comfyui_inpaint_image", "comfyui_outpaint_image"]) {
+    const definition = result.extensions[0].tools.get(name).definition;
+    assert.equal(definition.parameters.properties.width, undefined);
+    assert.equal(definition.parameters.properties.height, undefined);
+    assert.equal(definition.parameters.properties.count.const, 1);
+    assert.equal(definition.parameters.properties.canvas_image.const, 1);
+    assert.ok(definition.promptGuidelines.some(line => line.includes("Do not supply width or height")));
+    assert.ok(definition.promptGuidelines.every(line => !line.includes("set both width and height together")));
+  }
+  const publication = result.extensions[0].tools.get("comfyui_publish_music").definition;
+  assert.ok(publication.promptGuidelines.some(line => line.includes("two out of ten")));
+  const noTracks = await publication.execute("publish-none", { tracks: [] }, new AbortController().signal);
+  assert.equal(noTracks.details.audioSelection, true);
+  assert.deepEqual(noTracks.details.media, []);
   const tool = path.join(folder, "tools/comfyui_test");
   await mkdir(tool);
   const source = label => `import { Type } from "typebox";\nexport default function(pi) { pi.registerTool({name: "comfyui_test", label: ${JSON.stringify(label)}, description: "test", parameters: Type.Object({}), async execute() { return {content: [{type: "text", text: "ok"}], details: {}}; }}); }\n`;
   await writeFile(path.join(tool, "index.ts"), source("first"), "utf8");
   result = await load();
   assert.deepEqual(result.errors, []);
-  assert.equal(result.extensions[0].tools.size, 19);
+  assert.equal(result.extensions[0].tools.size, 26);
   assert.equal(result.extensions[0].tools.get("comfyui_test").definition.label, "first");
   await writeFile(path.join(tool, "index.ts"), source("changed"), "utf8");
   result = await load();

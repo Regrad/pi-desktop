@@ -24,10 +24,19 @@ export interface PiRpcProcessOptions {
   thinkingLevel?: string;
   appendSystemPrompt?: string;
   goalExtensionPath?: string;
+  planExtensionPath?: string;
+  notebookExtensionPath?: string;
+  skillsExtensionPath?: string;
+  skillsProject?: boolean;
+  browserExtensionPath?: string;
+  goalStatePath?: string;
   appRoot?: string;
+  isolatedExtensions?: string[];
+  remoteEnvironment?: Record<string, string>;
   mcpEntryPath: string;
   mcpDirectTools: string[];
   onEvent: (event: JsonObject) => void;
+  onGoalRequest?: (request: JsonObject) => Promise<unknown>;
   onExtensionUi: (request: ExtensionUiRequest) => void;
   onExit: (error?: Error) => void;
 }
@@ -42,11 +51,14 @@ export class PiRpcProcess {
 
   async start(): Promise<void> {
     if (this.process) return;
+    this.stderr = "";
     const args = [
       this.options.cliPath,
       "--mode",
       "rpc",
       "--approve",
+      // Keep the existing desktop MCP adapter authoritative during the core upgrade.
+      "--no-mcp",
       "--session-dir",
       this.options.sessionsDir,
     ];
@@ -56,8 +68,20 @@ export class PiRpcProcess {
       args.push("--session-id", this.options.sessionId);
     }
     if (this.options.provider) args.push("--provider", this.options.provider);
+    // Skills must remove the dynamic catalog before forced desktop prompt handlers.
+    if (this.options.skillsExtensionPath) args.push("--extension", this.options.skillsExtensionPath);
+    if (this.options.appRoot) {
+      args.push("--extension", "builtin:codemode", "--extension", path.join(this.options.appRoot, "resources", "tool-routing", "index.js"));
+    }
     if (this.options.goalExtensionPath) {
       args.push("--extension", this.options.goalExtensionPath);
+    }
+    if (this.options.planExtensionPath) args.push("--extension", this.options.planExtensionPath);
+    if (this.options.notebookExtensionPath) args.push("--extension", this.options.notebookExtensionPath);
+    if (this.options.browserExtensionPath) args.push("--extension", this.options.browserExtensionPath);
+    if (this.options.isolatedExtensions) {
+      args.push("--no-builtin-tools", "--no-extensions", "--no-skills", "--no-prompt-templates", "--no-themes", "--no-context-files");
+      for (const extension of this.options.isolatedExtensions) args.push("--extension", extension);
     }
     if (this.options.model) args.push("--model", this.options.model);
     if (this.options.thinkingLevel) args.push("--thinking", this.options.thinkingLevel);
@@ -73,25 +97,46 @@ export class PiRpcProcess {
         PI_CODING_AGENT_DIR: this.options.agentDir,
         PI_DESKTOP_DATA_DIR: path.dirname(this.options.agentDir),
         ...(this.options.appRoot ? { PI_DESKTOP_APP_ROOT: this.options.appRoot } : {}),
+        PI_DESKTOP_TOOL_ROUTING: this.options.appRoot ? "1" : "0",
         PI_DESKTOP_EXECUTABLE: this.options.executablePath,
         PI_DESKTOP_MCP_ENTRY: this.options.mcpEntryPath,
         NO_UPDATE_NOTIFIER: "1",
+        ...this.options.remoteEnvironment,
+        PI_DESKTOP_CONVERSATION_ID: this.options.sessionId,
+        PI_DESKTOP_SKILLS_PROJECT: this.options.skillsProject ? "1" : "0",
+        ...(this.options.goalStatePath ? { PI_DESKTOP_GOAL_STATE_FILE: this.options.goalStatePath } : {}),
         ...(this.options.mcpDirectTools.length
           ? { MCP_DIRECT_TOOLS: this.options.mcpDirectTools.join(",") }
           : {}),
       },
-      stdio: ["pipe", "pipe", "pipe"],
+      stdio: ["pipe", "pipe", "pipe", "ipc"],
       windowsHide: true,
-    });
+    }) as ChildProcessWithoutNullStreams;
     this.process = child;
-    this.attachJsonlReader(child.stdout);
+    child.on("message", (message: unknown) => {
+      if (this.process !== child) return;
+      if (!message || typeof message !== "object") return;
+      const request = message as JsonObject;
+      if (request.type !== "desktop_goal_request" || typeof request.id !== "string") return;
+      void Promise.resolve().then(() => {
+        if (!this.options.onGoalRequest) throw new Error("Goal controller unavailable");
+        return this.options.onGoalRequest(request);
+      }).then(data => {
+        if (child.connected) child.send({ type: "desktop_goal_response", id: request.id, data });
+      }, error => {
+        if (child.connected) child.send({ type: "desktop_goal_response", id: request.id, error: String(error) });
+      });
+    });
+    this.attachJsonlReader(child.stdout, child);
+    child.stdin.on("error", (error) => this.handleExit(error, child));
     child.stderr.on("data", (chunk: Buffer) => {
+      if (this.process !== child) return;
       this.stderr = `${this.stderr}${chunk.toString("utf8")}`.slice(-32_000);
     });
-    child.once("error", (error) => this.handleExit(error));
+    child.once("error", (error) => this.handleExit(error, child));
     child.once("exit", (code, signal) => {
-      if (code === 0 || signal === "SIGTERM") this.handleExit();
-      else this.handleExit(new Error(`Pi завершился с кодом ${code ?? signal}. ${this.stderr}`));
+      if (code === 0 || signal === "SIGTERM") this.handleExit(undefined, child);
+      else this.handleExit(new Error(`Pi завершился с кодом ${code ?? signal}. ${this.stderr}`), child);
     });
 
     await new Promise<void>((resolve, reject) => {
@@ -113,6 +158,7 @@ export class PiRpcProcess {
     const child = this.process;
     if (!child) return;
     this.process = undefined;
+    this.rejectPending(new Error("Процесс Pi остановлен"));
     child.kill("SIGTERM");
     await new Promise<void>((resolve) => {
       const timer = setTimeout(() => {
@@ -130,6 +176,7 @@ export class PiRpcProcess {
     const child = this.process;
     if (!child || child.killed) throw new Error("Процесс Pi не запущен");
     const id = `desktop-${++this.sequence}`;
+    const command = `${JSON.stringify({ ...payload, id, type })}\n`;
     const promise = new Promise<T>((resolve, reject) => {
       const timer = setTimeout(() => {
         this.pending.delete(id);
@@ -141,20 +188,30 @@ export class PiRpcProcess {
         timer,
       });
     });
-    child.stdin.write(`${JSON.stringify({ id, type, ...payload })}\n`);
+    const rejectWrite = (error?: Error | null) => {
+      if (!error) return;
+      const pending = this.pending.get(id);
+      if (!pending) return;
+      clearTimeout(pending.timer);
+      this.pending.delete(id);
+      pending.reject(error);
+    };
+    try { child.stdin.write(command, rejectWrite); }
+    catch (error) { rejectWrite(error instanceof Error ? error : new Error(String(error))); }
     return promise;
   }
 
   sendExtensionUiResponse(response: JsonObject): void {
     const child = this.process;
     if (!child || child.killed) return;
-    child.stdin.write(`${JSON.stringify({ type: "extension_ui_response", ...response })}\n`);
+    child.stdin.write(`${JSON.stringify({ ...response, type: "extension_ui_response" })}\n`);
   }
 
-  private attachJsonlReader(stream: NodeJS.ReadableStream): void {
+  private attachJsonlReader(stream: NodeJS.ReadableStream, child: ChildProcessWithoutNullStreams): void {
     const decoder = new StringDecoder("utf8");
     let buffer = "";
     stream.on("data", (chunk: Buffer | string) => {
+      if (this.process !== child) return;
       buffer += typeof chunk === "string" ? chunk : decoder.write(chunk);
       while (true) {
         const index = buffer.indexOf("\n");
@@ -165,6 +222,7 @@ export class PiRpcProcess {
       }
     });
     stream.on("end", () => {
+      if (this.process !== child) return;
       buffer += decoder.end();
       if (buffer) this.handleLine(buffer.replace(/\r$/, ""));
     });
@@ -193,14 +251,22 @@ export class PiRpcProcess {
     this.options.onEvent(message);
   }
 
-  private handleExit(error?: Error): void {
-    if (!this.process && !error) return;
+  private handleExit(error?: Error, child = this.process): void {
+    if (!child || this.process !== child) return;
     this.process = undefined;
+    this.rejectPending(error ?? new Error("Процесс Pi завершён"));
+    if (error && child.exitCode === null && child.signalCode === null && !child.killed) {
+      // A broken stdin is terminal for RPC, but does not itself stop the child.
+      try { child.kill("SIGTERM"); } catch { /* Still report the original transport failure. */ }
+    }
+    this.options.onExit(error);
+  }
+
+  private rejectPending(error: Error): void {
     for (const request of this.pending.values()) {
       clearTimeout(request.timer);
-      request.reject(error ?? new Error("Процесс Pi завершён"));
+      request.reject(error);
     }
     this.pending.clear();
-    this.options.onExit(error);
   }
 }
