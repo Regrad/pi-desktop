@@ -2,9 +2,10 @@ const { spawnSync } = require("node:child_process");
 const path = require("node:path");
 const executable = path.resolve(process.argv[2] || "release/Pi Desktop/Pi Desktop.exe");
 const code = String.raw`
-const fs = require("node:fs/promises"), path = require("node:path"), os = require("node:os"), { pathToFileURL } = require("node:url");
+const fs = require("node:fs/promises"), { existsSync } = require("node:fs"), path = require("node:path"), os = require("node:os"), { pathToFileURL } = require("node:url");
 (async () => {
-  const root = path.join(path.dirname(process.execPath), "resources/app.asar");
+  const resources = path.join(path.dirname(process.execPath), "resources");
+  const root = existsSync(path.join(resources, "app")) ? path.join(resources, "app") : path.join(resources, "app.asar");
   const data = await fs.mkdtemp(path.join(os.tmpdir(), "pi-packaged-comfy-test-"));
   try {
     process.env.PI_DESKTOP_APP_ROOT = root;
@@ -15,9 +16,9 @@ const fs = require("node:fs/promises"), path = require("node:path"), os = requir
     const result = await discoverAndLoadExtensions([], data, path.join(data, "agent"));
     if (result.errors.length) throw new Error(JSON.stringify(result.errors));
     const tools = result.extensions[0].tools;
-    if (tools.size !== 18) throw new Error("Wrong tool count: " + tools.size);
-    if (!tools.get("comfyui_generate_instrumental_music").definition.promptGuidelines.some(text => text.includes("not a proven voice-removal method"))) throw new Error("Updated guidelines missing");
-    console.log("PACKAGED ADDON OK: 18 tools, updated guidelines, bundled dependencies");
+    if (tools.size !== 25) throw new Error("Wrong tool count: " + tools.size);
+    if (!tools.get("comfyui_generate_instrumental_music").definition.promptGuidelines.some(text => text.includes("not proven causes or fixes"))) throw new Error("Updated guidelines missing");
+    console.log("PACKAGED ADDON OK: 25 tools, updated guidelines, bundled dependencies");
   } finally { await fs.rm(data, { recursive: true, force: true }); }
 })().catch(error => { console.error(error); process.exitCode = 1; });
 `;

@@ -12,7 +12,7 @@ if errorlevel 1 (
   exit /b 1
 )
 
-call npm run pack
+call npm run release:update
 if errorlevel 1 (
   echo.
   echo ===== Sborka ne udalas. Smot tekst vyse. =====

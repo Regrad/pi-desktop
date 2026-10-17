@@ -28,17 +28,23 @@ function glb() {
   head.writeUInt32LE(20 + data.length, 8); head.writeUInt32LE(data.length, 12); head.writeUInt32LE(0x4e4f534a, 16);
   return Buffer.concat([head, data]);
 }
-test("processing controls preserve explicit final polygon budgets", () => {
+test("processing runs only when explicitly requested", () => {
   for (const mode of ["model3d", "model3d_multiview"]) {
     const images = mode === "model3d" ? ["one.png"] : ["a.png", "b.png", "c.png", "d.png"];
-    const make = input => builtinGraph(DEFAULT_COMFY_SETTINGS, mode, input, images).pi_model_process.inputs;
-    assert.equal(make({}).target_triangles, 30000);
-    assert.equal(make({ model3d_options: { target_face_count: 20000 } }).target_triangles, 20000);
-    assert.equal(make({ model3d_options: { target_face_count: 0 } }).simplify, false);
-    assert.equal(make({ model3d_options: { target_face_count: 3000000 } }).simplify, false);
-    assert.equal(make({ model3d_options: { target_face_count: 20000 }, postprocess: { target_triangles: 5000, remesh: true } }).target_triangles, 5000);
-    assert.equal(make({ postprocess: { repair: true, bake_ao: true } }).repair, true);
+    const base = builtinGraph(DEFAULT_COMFY_SETTINGS, mode, {}, images);
+    assert.ok(!base.pi_model_process);
+    assert.equal(base[186].inputs.target_face_count, 700000);
+    assert.equal(base[288].inputs.value, 4096);
+    const generatedBudget = builtinGraph(DEFAULT_COMFY_SETTINGS, mode, { model3d_options: { target_face_count: 20000 } }, images);
+    assert.equal(generatedBudget[186].inputs.target_face_count, 20000);
+    assert.ok(!generatedBudget.pi_model_process);
+    const explicit = builtinGraph(DEFAULT_COMFY_SETTINGS, mode, { postprocess: { simplify: true, target_triangles: 5000, transfer_textures: true } }, images).pi_model_process.inputs;
+    assert.equal(explicit.target_triangles, 5000);
+    assert.equal(explicit.simplify, true);
+    assert.equal(explicit.transfer_textures, true);
   }
+  assert.equal(processingInputs({}).simplify, false);
+  assert.equal(processingInputs({}).transfer_textures, false);
   for (const invalid of [{ repair: "yes" }, { target_triangles: 0 }, { texture_resolution: 111 }, { components: "none" }, { unknown: 1 }]) assert.throws(() => processingInputs(invalid));
 });
 

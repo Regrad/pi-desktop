@@ -21,7 +21,7 @@ export default function register(pi: ExtensionAPI, context: ToolContext) {
       lyrics: Type.Optional(Type.String({ description: "Words to sing with English section labels, e.g. [Verse] and [Chorus], or [Instrumental]. Required unless vocal_mode is set." })),
       vocal_mode: Type.Optional(vocalMode),
       keep_harmony: Type.Optional(Type.Boolean({ description: "For cover source audio or ABC: true retains chords; false removes chords for a new accompaniment. Omit to preserve existing behavior." })),
-      duration: Type.Optional(Type.Number({ minimum: 1, maximum: 900, description: "Only when explicitly requested; maximum seconds." })),
+      duration: Type.Optional(Type.Number({ minimum: 1, maximum: 900, description: "Optional maximum for a concrete requested track length or time limit." })),
       seed: Type.Optional(Type.Integer({ minimum: 0 })),
       steps: Type.Optional(Type.Integer({ minimum: 1, maximum: 100 })),
       music_options: Type.Optional(musicOptions),

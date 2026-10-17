@@ -5,9 +5,11 @@ import path from "node:path";
 // Run only isolated test commands inside the staged Electron/ASAR runtime.
 async function smoke() {
   const assert = require("node:assert/strict");
+  const { existsSync } = require("node:fs");
   const path = require("node:path");
   const { pathToFileURL } = require("node:url");
-  const root = path.join(path.dirname(process.execPath), "resources", "app.asar");
+  const resources = path.join(path.dirname(process.execPath), "resources");
+  const root = existsSync(path.join(resources, "app")) ? path.join(resources, "app") : path.join(resources, "app.asar");
   const { createShellToolDefinition, createLocalShellOperations } = await import(pathToFileURL(path.join(root,
     "node_modules/@earendil-works/pi-coding-agent/dist/core/tools/bash.js")).href);
   const calls = [];

@@ -90,7 +90,7 @@
 
 Для STDIO-моста используются файлы из этой же установки:
 - команда: абсолютный путь к `Pi Desktop.exe`;
-- первый аргумент: абсолютный путь к `resources/app.asar/resources/control-api/mcp.mjs`;
+- первый аргумент: абсолютный путь к `resources/app/resources/control-api/mcp.mjs`;
 - второй аргумент: абсолютный путь к `data/control-api/connection.json`;
 - окружение процесса моста: `ELECTRON_RUN_AS_NODE=1`.
 

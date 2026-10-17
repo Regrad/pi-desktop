@@ -29,7 +29,7 @@ const translations: Record<string, string> = {
 const categories = [gender, age, pitch, ["whisper"], accents, Object.values(dialects)];
 const choice = (values: string[], description: string) => Type.Optional(Type.Union(values.map(value => Type.Literal(value)), { description }));
 export const speechParameters = {
-  text: Type.String({ minLength: 1, description: "Exact speech text in its original language. Do not translate dialogue. English ARPABET in brackets and Chinese numbered pinyin are supported; Russian stress marks are NOT guaranteed." }),
+  text: Type.String({ minLength: 1, description: "Exact speech text in its original language. Preserve the dialogue language. English ARPABET in brackets and Chinese numbered pinyin are supported; Russian stress marks are not guaranteed." }),
   language: Type.Optional(Type.String({ description: "Full OmniVoice language name, e.g. Russian, English, Chinese, or Auto. Supports the full installed language list; default Russian." })),
   preset: choice(Object.keys(presets), "Optional starting combination of speaker attributes; explicit attributes override the preset."),
   gender: choice(gender, "Speaker gender."), age: choice(age, "Speaker age group."), pitch: choice(pitch, "Speaker pitch range, not an exact musical frequency."),
@@ -41,7 +41,7 @@ export const speechParameters = {
   num_step: Type.Optional(Type.Integer({ minimum: 1, maximum: 128, description: "Diffusion decoding steps, default 32." })),
   guidance_scale: Type.Optional(Type.Number({ minimum: 0, maximum: 20, description: "Classifier-free guidance, default 2." })),
   speed: Type.Optional(Type.Number({ minimum: 0.05, maximum: 8, description: "Speaking speed multiplier, default 1. Greater than 1 is faster. Used only when duration is 0/omitted." })),
-  duration: Type.Optional(Type.Number({ minimum: 0, maximum: 3600, description: "Requested generation duration in seconds; 0/omitted is automatic. Overrides speed. Do not guess a fixed duration; use only when requested." })),
+  duration: Type.Optional(Type.Number({ minimum: 0, maximum: 3600, description: "Requested generation duration in seconds; 0/omitted is automatic. Overrides speed. Use a fixed duration for a concrete timing target." })),
   t_shift: Type.Optional(Type.Number({ minimum: 0, maximum: 4, description: "Diffusion time-step shift, default 0.1." })),
   denoise: Type.Optional(Type.Boolean({ description: "Denoising conditioning, default true." })),
   preprocess_prompt: Type.Optional(Type.Boolean({ description: "Reference silence cleanup and text punctuation, default true." })),

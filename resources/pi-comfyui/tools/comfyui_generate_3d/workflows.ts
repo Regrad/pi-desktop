@@ -326,7 +326,7 @@ export const MODEL_GRAPHS: Record<"model3d" | "model3d_multiview", Record<string
       "class_type": "DecimateMesh",
       "inputs": {
         "mesh": [
-          "241",
+          "pi_watertight",
           0
         ],
         "target_face_count": 700000,
@@ -426,7 +426,7 @@ export const MODEL_GRAPHS: Record<"model3d" | "model3d_multiview", Record<string
           0
         ],
         "high_poly": [
-          "241",
+          "pi_watertight",
           0
         ],
         "resolution": 2048,
@@ -442,7 +442,7 @@ export const MODEL_GRAPHS: Record<"model3d" | "model3d_multiview", Record<string
           0
         ],
         "high_poly": [
-          "241",
+          "pi_watertight",
           0
         ],
         "resolution": 1024,
@@ -460,26 +460,6 @@ export const MODEL_GRAPHS: Record<"model3d" | "model3d_multiview", Record<string
           0
         ],
         "crease_angle": 180
-      }
-    },
-    "241": {
-      "class_type": "RemeshMesh",
-      "inputs": {
-        "mesh": [
-          "202",
-          0
-        ],
-        "resolution": 768,
-        "sign_mode": "udf",
-        "sign_mode.qef": false,
-        "sign_mode.drop_inverted_components": false,
-        "sign_mode.drop_enclosed_components": false,
-        "band": 1,
-        "project_back": 0,
-        "fix_poles": false,
-        "smooth_iters": 20,
-        "drop_small_components": 0.01,
-        "precluster_max_verts": 20000000
       }
     },
     "242": {
@@ -958,7 +938,7 @@ export const MODEL_GRAPHS: Record<"model3d" | "model3d_multiview", Record<string
       "class_type": "DecimateMesh",
       "inputs": {
         "mesh": [
-          "241",
+          "pi_watertight",
           0
         ],
         "target_face_count": 700000,
@@ -1058,7 +1038,7 @@ export const MODEL_GRAPHS: Record<"model3d" | "model3d_multiview", Record<string
           0
         ],
         "high_poly": [
-          "241",
+          "pi_watertight",
           0
         ],
         "resolution": 2048,
@@ -1074,7 +1054,7 @@ export const MODEL_GRAPHS: Record<"model3d" | "model3d_multiview", Record<string
           0
         ],
         "high_poly": [
-          "241",
+          "pi_watertight",
           0
         ],
         "resolution": 1024,
@@ -1092,26 +1072,6 @@ export const MODEL_GRAPHS: Record<"model3d" | "model3d_multiview", Record<string
           0
         ],
         "crease_angle": 180
-      }
-    },
-    "241": {
-      "class_type": "RemeshMesh",
-      "inputs": {
-        "mesh": [
-          "202",
-          0
-        ],
-        "resolution": 768,
-        "sign_mode": "udf",
-        "sign_mode.qef": false,
-        "sign_mode.drop_inverted_components": false,
-        "sign_mode.drop_enclosed_components": false,
-        "band": 1,
-        "project_back": 0,
-        "fix_poles": false,
-        "smooth_iters": 20,
-        "drop_small_components": 0.01,
-        "precluster_max_verts": 20000000
       }
     },
     "260": {
@@ -1335,15 +1295,15 @@ export const MODEL_GRAPHS: Record<"model3d" | "model3d_multiview", Record<string
   }
 };
 
-// Final processing stage from the updated single-image and four-view workflows.
-for (const [mode, output] of [["model3d", "322"], ["model3d_multiview", "372"]] as const) {
-  MODEL_GRAPHS[mode].pi_model_process = { class_type: "UniversalModelTools", inputs: {
-    source_path: "", target_path: "", source_model: ["285", 0],
-    repair: false, remesh: false, simplify: true, transfer_textures: true,
-    bake_normal: true, bake_ao: false, target_triangles: 30000, remesh_vertices: 5000,
-    repair_resolution: 512, proxy_points: 1000000, components: "keep_all",
-    texture_resolution: 2048, blender_path: "C:\\Program Files\\Blender Foundation\\Blender 5.2\\blender.exe",
-    output_prefix: "3d/pi-desktop/template", repair_position: "after_remesh",
+// Feed the raw mesh directly to the smart repair stage: one reconstruction at most.
+// The standard WTiVo fallback follows the published 1536/16M profile; 2048/25M is opt-in.
+for (const mode of ["model3d", "model3d_multiview"] as const) {
+  MODEL_GRAPHS[mode].pi_memory_clean = { class_type: "MemoryCleaner", inputs: {
+    input_1: ["202", 0], enabled: true, always_run: true, clean_vram: true, clean_ram: true,
   } };
-  MODEL_GRAPHS[mode][output].inputs.model_3d = ["pi_model_process", 0];
+  MODEL_GRAPHS[mode].pi_watertight = { class_type: "SmartWatertightMesh", inputs: {
+    mesh: ["pi_memory_clean", 0], input_res: 1536, final_res: 1536, proxy_points: 16000000,
+    proxy_eps_scale: 1, proxy_feature_weight: 1.5, lambda_fill: 20, threads: 16,
+    thin_iso_vox: 0, faithc_component_mode: "largest",
+  } };
 }

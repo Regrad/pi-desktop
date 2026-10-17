@@ -7,6 +7,7 @@ import process from "node:process";
 import { fileURLToPath } from "node:url";
 import { ensurePiLensGrammars } from "../resources/pi-lens/grammars.mjs";
 import { activatePortableBuild } from "./portable-swap.mjs";
+import { writeFastReleaseManifest } from "./release-update-core.mjs";
 
 const projectRoot = path.resolve(
   path.dirname(fileURLToPath(import.meta.url)),
@@ -250,11 +251,13 @@ try {
     );
   }
 
+  await writeFastReleaseManifest(projectRoot, nextDir);
+
   await activatePortableBuild({ target: targetDir, next: nextDir, previous: previousDir }, { exists, rename: renameWithRecovery });
   await retry("remove old build", () =>
     rm(previousDir, { recursive: true, force: true }),
   );
-  process.stdout.write(`Fast portable build updated: ${targetDir}\n`);
+  process.stdout.write(`Full portable build updated: ${targetDir}\n`);
 } catch (error) {
   if (["EPERM", "EBUSY"].includes(error?.code)) {
     process.stderr.write(

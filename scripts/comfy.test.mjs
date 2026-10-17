@@ -259,13 +259,19 @@ test("extension exposes advanced YuE2 generation and cover through Pi's public r
       assert.equal(typeof tool.execute, "function");
       assert.equal(tool.parameters.type, "object");
     }
+    const model3d = registered.find(tool => tool.name === "comfyui_generate_3d");
+    assert.ok(model3d.promptGuidelines.some(text => text.includes("Before the first generation")));
+    assert.ok(model3d.promptGuidelines.some(text => text.includes("component_mode=largest")));
+    assert.ok(model3d.promptGuidelines.some(text => text.includes("additional rendered views") && text.includes("validation need")));
+    assert.match(model3d.parameters.properties.model3d_options.properties.watertight.description, /Default true/);
+    assert.match(model3d.parameters.properties.model3d_options.properties.component_mode.description, /largest/);
     const music = registered.find(tool => tool.name === "comfyui_generate_music");
     for (const label of ["[Verse]", "[Chorus]", "[Bridge]", "[Outro]"]) {
       assert.ok(music.description.includes(label));
       assert.ok(music.parameters.properties.lyrics.description.includes(label));
     }
-    assert.ok(music.promptGuidelines.some(text => text.includes("Do not remove")));
-    assert.ok(music.description.includes("Omit duration unless explicitly requested"));
+    assert.ok(music.promptGuidelines.some(text => text.includes("Use and preserve English labels")));
+    assert.ok(music.description.includes("automatic ABC budget"));
     assert.ok(music.promptGuidelines.some(text => text.includes("ABC duration budget")));
     assert.ok(music.parameters.properties.duration.description.includes("workflow calculates"));
     const cover = registered.find(tool => tool.name === "comfyui_cover_music");
@@ -284,8 +290,8 @@ test("extension exposes advanced YuE2 generation and cover through Pi's public r
       const tool = registered.find(tool => tool.name === name);
       assert.ok(tool.promptGuidelines.some(text => text.includes("saved abc_file") && text.includes("mode=instrumental_lead")), name);
       assert.ok(tool.promptGuidelines.some(text => text.includes("score, not the generated sound")), name);
-      assert.ok(tool.promptGuidelines.some(text => text.includes("not a proven voice-removal method")), name);
-      assert.ok(tool.promptGuidelines.some(text => text.includes("Do not bypass validation")), name);
+      assert.ok(tool.promptGuidelines.some(text => text.includes("not proven causes or fixes")), name);
+      assert.ok(tool.promptGuidelines.some(text => text.includes("render a valid plan")), name);
     }
     const editVocals = registered.find(tool => tool.name === "comfyui_edit_vocals");
     assert.ok(editVocals.description.includes("comfyui_generate_instrumental_music with the same mode"));

@@ -45,25 +45,42 @@ test("built-in 3D graphs preserve stages, seeds and separately bound views", () 
   for (const n of Object.values(single)) if (n.class_type === "KSampler") assert.equal(n.inputs.seed, 0);
   assert.equal(single[322].class_type, "Save3DAdvanced");
   assert.deepEqual(single[322].inputs.viewport_state, {});
+  assert.ok(!Object.values(single).some(node => node.class_type === "MeshReconstructWithQuad"));
+  assert.deepEqual(single.pi_memory_clean.inputs.input_1, ["202", 0]);
+  assert.equal(single.pi_watertight.class_type, "SmartWatertightMesh");
+  assert.deepEqual(single.pi_watertight.inputs.mesh, ["pi_memory_clean", 0]);
+  assert.deepEqual(single[186].inputs.mesh, ["pi_watertight", 0]);
+  assert.ok(!single.pi_model_process);
   const multi = builtinGraph(DEFAULT_COMFY_SETTINGS, "model3d_multiview", { seed: 42 }, ["front.png", "left.png", "back.png", "right.png"]);
   assert.deepEqual([338, 341, 342, 345].map(id => multi[id].inputs.image), ["front.png", "left.png", "back.png", "right.png"]);
   assert.ok(!Object.values(multi).some(n => ["ImageCropV2", "SaveImageAdvanced"].includes(n.class_type)));
   assert.throws(() => builtinGraph(DEFAULT_COMFY_SETTINGS, "model3d_multiview", {}, ["one.png"]), /image_2/);
   assert.equal(MODEL_GRAPHS.model3d[122].inputs.image, "{{image_1}}");
 });
-test("3D quality controls apply to both built-in workflows without changing defaults", () => {
-  const options = { target_face_count: 20000, remesh_resolution: 512, shape_resolution: 1024, texture_resolution: 2048, normal_map_resolution: 1024, ao_resolution: 512, ao_samples: 32 };
+test("3D quality and watertight controls apply without automatic low-poly postprocessing", () => {
+  const options = { target_face_count: 20000, watertight_resolution: 1024, watertight_proxy_points: 6000000, component_mode: "auto", shape_resolution: 1024, texture_resolution: 2048, normal_map_resolution: 1024, ao_resolution: 512, ao_samples: 32 };
   for (const [mode, images] of [["model3d", ["one.png"]], ["model3d_multiview", ["front.png", "left.png", "back.png", "right.png"]]]) {
     const graph = builtinGraph(DEFAULT_COMFY_SETTINGS, mode, { model3d_options: options }, images);
     assert.equal(graph[186].inputs.target_face_count, 20000);
-    assert.equal(graph[241].inputs.resolution, 512);
+    assert.equal(graph.pi_watertight.inputs.input_res, 1024);
+    assert.equal(graph.pi_watertight.inputs.final_res, 1024);
+    assert.equal(graph.pi_watertight.inputs.proxy_points, 6000000);
+    assert.equal(graph.pi_watertight.inputs.faithc_component_mode, "auto");
     assert.equal(graph[94].inputs.target_resolution, 1024);
     assert.equal(graph[288].inputs.value, 2048);
     assert.equal(graph[224].inputs.resolution, 1024);
     assert.equal(graph[233].inputs.resolution, 512);
     assert.equal(graph[233].inputs.samples, 32);
+    assert.ok(!graph.pi_model_process);
     assert.equal(MODEL_GRAPHS[mode][186].inputs.target_face_count, 700000);
+    assert.equal(MODEL_GRAPHS[mode].pi_watertight.inputs.input_res, 1536);
+    assert.equal(MODEL_GRAPHS[mode].pi_watertight.inputs.final_res, 1536);
+    assert.equal(MODEL_GRAPHS[mode].pi_watertight.inputs.proxy_points, 16000000);
     assert.throws(() => builtinGraph(DEFAULT_COMFY_SETTINGS, mode, { model3d_options: { shape_resolution: 1100 } }, images), /shape_resolution/);
+    const raw = builtinGraph(DEFAULT_COMFY_SETTINGS, mode, { model3d_options: { watertight: false } }, images);
+    assert.ok(!raw.pi_watertight); assert.ok(!raw.pi_memory_clean); assert.deepEqual(raw[186].inputs.mesh, ["202", 0]);
+    for (const node of Object.values(raw)) for (const value of Object.values(node.inputs))
+      assert.ok(!(Array.isArray(value) && value[0] === "pi_watertight"));
   }
 });
 test("3D API round trip persists only file metadata and serves a portable model", async (t) => {
@@ -75,7 +92,7 @@ test("3D API round trip persists only file metadata and serves a portable model"
     if (req.url === "/upload/image") return res.end('{"name":"upload.png"}');
     if (req.url === "/object_info") return res.end(JSON.stringify(Object.fromEntries(Object.values(MODEL_GRAPHS.model3d).map(n => [n.class_type, { api_node: false }]))));
     if (req.url === "/prompt") { queued++; submitted = JSON.parse(Buffer.concat(chunks)).prompt; return res.end('{"prompt_id":"3d-job"}'); }
-    if (req.url === "/history/3d-job") return res.end(JSON.stringify({ "3d-job": { status: { status_str: "success" }, outputs: { pi_model_process: { text: [JSON.stringify({ result: `${submitted.pi_model_process.inputs.output_prefix}/result.glb`, geometry: { triangles: 30000 } })] }, preview: { images: [{ filename: "preview.png", type: "temp" }] } } } }));
+    if (req.url === "/history/3d-job") return res.end(JSON.stringify({ "3d-job": { status: { status_str: "success" }, outputs: { "322": { "3d": [{ filename: "result.glb", subfolder: submitted[322].inputs.filename_prefix, type: "output" }] }, preview: { images: [{ filename: "preview.png", type: "temp" }] } } } }));
     if (req.url.startsWith("/view?")) { res.setHeader("Content-Type", "application/octet-stream"); return res.end(bytes); }
     res.writeHead(404); res.end();
   });

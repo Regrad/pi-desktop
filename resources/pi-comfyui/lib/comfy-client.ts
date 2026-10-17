@@ -16,7 +16,8 @@ import { saveModelArtifacts } from "./model3d-artifacts.js";
 
 type Graph = Record<string, { class_type: string; inputs: Record<string, unknown> }>;
 type Output = { filename: string; subfolder?: string; type?: string };
-type Model3dOptions = { target_face_count?: number; remesh_resolution?: number; shape_resolution?: number; texture_resolution?: number; normal_map_resolution?: number; ao_resolution?: number; ao_samples?: number };
+type Model3dOptions = { target_face_count?: number; watertight?: boolean; watertight_resolution?: number; watertight_proxy_points?: number; component_mode?: "largest" | "auto" | "keep_all"; shape_resolution?: number; texture_resolution?: number; normal_map_resolution?: number; ao_resolution?: number; ao_samples?: number };
+type NumericModel3dOption = Exclude<keyof Model3dOptions, "watertight" | "component_mode">;
 export type ComfyInput = { prompt?: string; lyrics?: string; duration?: number; audio?: string; abc_file?: string; abc_text?: string; plan_only?: boolean; vocal_mode?: VocalEditMode; keep_harmony?: boolean; music_options?: object; negative_prompt?: string; width?: number; height?: number; seed?: number; images?: string[]; transparent_background?: boolean;
   model3d_options?: Model3dOptions;
   postprocess?: ProcessingOptions;
@@ -120,9 +121,10 @@ export function builtinGraph(settings: ComfySettings, mode: ComfyMode, input: Co
   if (mode === "model3d" || mode === "model3d_multiview") {
     const graph = fillWorkflow(MODEL_GRAPHS[mode], input, images, settings.steps);
     const options = input.model3d_options ?? {};
-    const fields: { key: keyof Model3dOptions; id: string; name: string; min: number; max: number; step?: number }[] = [
+    const fields: { key: NumericModel3dOption; id: string; name: string; min: number; max: number; step?: number }[] = [
       { key: "target_face_count", id: "186", name: "target_face_count", min: 0, max: 50_000_000 },
-      { key: "remesh_resolution", id: "241", name: "resolution", min: 32, max: 2048 },
+      { key: "watertight_resolution", id: "pi_watertight", name: "input_res", min: 1024, max: 2048, step: 512 },
+      { key: "watertight_proxy_points", id: "pi_watertight", name: "proxy_points", min: 1_000_000, max: 25_000_000, step: 1_000_000 },
       { key: "shape_resolution", id: "94", name: "target_resolution", min: 1024, max: 2048, step: 128 },
       { key: "texture_resolution", id: "288", name: "value", min: 64, max: 8192, step: 64 },
       { key: "normal_map_resolution", id: "224", name: "resolution", min: 64, max: 8192, step: 64 },
@@ -136,12 +138,30 @@ export function builtinGraph(settings: ComfySettings, mode: ComfyMode, input: Co
         throw new Error(`Некорректный параметр 3D ${key}: ${min}–${max}${step ? `, шаг ${step}` : ""}`);
       graph[id].inputs[name] = value;
     }
-    const postprocess = { ...input.postprocess };
-    if (options.target_face_count !== undefined && postprocess.target_triangles === undefined) {
-      if (options.target_face_count >= 100 && options.target_face_count <= 2000000) postprocess.target_triangles = options.target_face_count;
-      else postprocess.simplify ??= false;
+    if (options.watertight_resolution !== undefined) graph.pi_watertight.inputs.final_res = options.watertight_resolution;
+    if (options.watertight !== undefined && typeof options.watertight !== "boolean") throw new Error("Некорректный параметр 3D watertight");
+    if (options.component_mode !== undefined) {
+      if (!["largest", "auto", "keep_all"].includes(options.component_mode)) throw new Error("Некорректный параметр 3D component_mode");
+      graph.pi_watertight.inputs.faithc_component_mode = options.component_mode;
     }
-    Object.assign(graph.pi_model_process.inputs, processingInputs(postprocess), { output_prefix: `3d/pi-desktop/${randomUUID()}` });
+    if (options.watertight === false) {
+      for (const node of Object.values(graph)) {
+        for (const [name, value] of Object.entries(node.inputs)) {
+          if (Array.isArray(value) && value[0] === "pi_watertight") node.inputs[name] = ["202", value[1]];
+        }
+      }
+      delete graph.pi_memory_clean;
+      delete graph.pi_watertight;
+    }
+    const output = mode === "model3d" ? "322" : "372";
+    const outputPrefix = `3d/pi-desktop/${randomUUID()}`;
+    graph[output].inputs.filename_prefix = outputPrefix;
+    if (input.postprocess && Object.keys(input.postprocess).length) {
+      graph.pi_model_process = { class_type: "UniversalModelTools", inputs: {
+        ...processingInputs(input.postprocess), source_path: "", target_path: "", source_model: ["285", 0], output_prefix: outputPrefix,
+      } };
+      graph[output].inputs.model_3d = ["pi_model_process", 0];
+    }
     return graph;
   }
   if (mode === "music" || mode === "music_cover") {
@@ -434,7 +454,7 @@ export async function runComfy(dataDir: string, mode: ComfyMode, input: ComfyInp
     }
     if (!history) throw new Error(`Время ожидания истекло. Задание ComfyUI: ${id}`);
     if (history.status?.status_str === "error") throw new Error(`Ошибка ComfyUI: ${JSON.stringify(history.status.messages).slice(0, 3000)}`);
-    if (model3d && !custom) {
+    if (model3d && !custom && graph.pi_model_process) {
       const prefix = String(graph.pi_model_process.inputs.output_prefix);
       const artifacts = await saveModelArtifacts(dataDir, id, prefix, history.outputs ?? {}, ["pi_model_process"],
         async (filename, subfolder, limit) => limitedBody(await request(settings.url, `/view?${new URLSearchParams({ filename, subfolder, type: "output" })}`, {}, signal), limit));
