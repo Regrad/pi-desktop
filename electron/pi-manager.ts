@@ -643,7 +643,7 @@ export class PiManager {
     if (request.action === "update_plan") {
       const current = this.store.getConversation(conversationId).plan;
       const params = request.params as JsonObject | undefined;
-      if (params?.plan === undefined && params?.execution === undefined && params?.explanation === undefined) return { plan: current ?? null };
+      if (params?.plan === undefined && params?.execution === undefined && params?.explanation === undefined && params?.mark === undefined && params?.status === undefined) return { plan: current ?? null };
       const plan = updatedPlan(params!, current);
       await this.updateConversation(conversationId, { plan });
       const runtime = this.runtimes.get(conversationId);
@@ -1003,7 +1003,7 @@ export class PiManager {
     await Promise.all(
       [...this.runtimes.values()].map(async (runtime) => {
         runtime.diffTracker?.close();
-        runtime.diffTracker = undefined;
+        return void (runtime.diffTracker = undefined);
       }),
     );
     await Promise.all(
@@ -1112,6 +1112,7 @@ export class PiManager {
       );
       const context = manager.buildSessionContext();
       messages = context.messages;
+      // SAFETY: ветка сессии всегда читается теми же записьми, что рисуются в entries снапшота.
       entries = manager
         .getBranch()
         .map((entry) =>

@@ -4,7 +4,7 @@ import { readFileSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { registerHooks, stripTypeScriptTypes } from "node:module";
-import { updatedPlan, planContext, planPolicy, canContinuePlan, planRequestSuffix, planRequestText, requestedPlanContext, visiblePlanRequestText } from "../shared/plan.ts";
+import { updatedPlan, planContext, planPolicy, planTick, canContinuePlan, planRequestSuffix, planRequestText, requestedPlanContext, visiblePlanRequestText } from "../shared/plan.ts";
 import { confirmedPlanRevision } from "../shared/plan-activity.ts";
 
 const hooks = registerHooks({ resolve(specifier, context, next) {
@@ -390,7 +390,72 @@ test("delayed old plan reminder cannot overwrite a newer tool acknowledgement", 
   assert.equal(sent.length, 0);
 });
 
-test("paused checklist gets one short factual reminder per new user message, not per tool", () => {
+test("single step marks rewrite one row without resending the checklist", () => {
+  const current = updatedPlan({ plan: [step("Investigate", "completed"), step("Implement"), step("Build")], execution: "active" });
+  const marked = updatedPlan({ mark: 2, status: "in_progress" }, current);
+  assert.deepEqual(marked.steps, [step("Investigate", "completed"), step("Implement", "in_progress"), step("Build")]);
+  assert.equal(marked.execution, "active");
+  assert.equal(marked.revision, current.revision + 1);
+  assert.equal(updatedPlan({ mark: 3, status: "completed" }, marked).steps[2].status, "completed");
+  assert.throws(() => updatedPlan({ mark: 3, status: "in_progress" }, marked), /Only one step may be in_progress/);
+  assert.throws(() => updatedPlan({ mark: 0, status: "completed" }, current), /step number/);
+  assert.throws(() => updatedPlan({ mark: 4, status: "completed" }, current), /step number from 1 to 3/);
+  assert.throws(() => updatedPlan({ mark: 1.5, status: "completed" }, current), /step number/);
+  assert.throws(() => updatedPlan({ mark: 1 }, current), /mark needs the new status/);
+  assert.throws(() => updatedPlan({ status: "completed" }, current), /status writes a single marked step/);
+  assert.throws(() => updatedPlan({ mark: 1, status: "completed", plan: current.steps }, current), /either mark/);
+  assert.throws(() => updatedPlan({ mark: 1, status: "completed" }), /no checklist to mark/);
+  assert.throws(() => updatedPlan({ mark: 1, status: "done" }, current), /pending, in_progress or completed/);
+  assert.equal(updatedPlan({ mark: 1, status: "completed", expectedRevision: current.revision }, current).revision, current.revision + 1);
+});
+
+test("mark-only writes keep the revision guard and confirm working state like plan writes", async () => {
+  const tools = [], calls = [];
+  const current = { steps: [step("Work", "in_progress")], execution: "active", revision: 4 };
+  planExtension({ on() {}, registerTool(tool) { tools.push(tool); } }, () => current,
+    async (_action, params) => { calls.push(params); return { plan: updatedPlan(params, current) }; });
+  const result = await tools[0].execute("call", { mark: 1, status: "completed" });
+  assert.equal(calls[0].expectedRevision, 4);
+  assert.equal(JSON.parse(result.content[0].text).plan.steps[0].status, "completed");
+  assert.deepEqual(tools[0].parameters.properties.mark.anyOf, undefined);
+  assert.equal(tools[0].parameters.properties.mark.minimum, 1);
+  assert.deepEqual(tools[0].parameters.properties.status.anyOf.map(value => value.const), ["pending", "in_progress", "completed"]);
+  assert.match(tools[0].description, /\{mark: N, status\} where N is the 1-based position/);
+  const source = readFileSync(new URL("../electron/pi-manager.ts", import.meta.url), "utf8");
+  assert.match(source, /params\?\.explanation === undefined && params\?\.mark === undefined && params\?\.status === undefined\) return \{ plan: current \?\? null \}/);
+  assert.equal(confirmedPlanRevision({ mark: 1, status: "completed" }, updatedPlan({ plan: [step("Work", "in_progress")], execution: "active" }), true), 1);
+});
+
+test("checklist tick reports progress without repeating the whole list", () => {
+  const running = updatedPlan({ plan: [step("Investigate", "completed"), step("Implement", "in_progress"), step("Build")], execution: "active" });
+  assert.match(planTick(running), /1\/3 completed, in progress: Implement, execution active/);
+  assert.doesNotMatch(planTick(running), /"steps":\[/);
+  assert.match(planTick(running), /revision 1/);
+  assert.match(planTick(updatedPlan({ execution: "paused" }, running)), /execution paused/);
+  assert.match(planTick(updatedPlan({ plan: [step("Short"), step("Second")] })), /0\/2 completed, next: Short/);
+  assert.match(planTick(updatedPlan({ plan: [step("Д".repeat(120))] })), new RegExp(`${"Д".repeat(77)}…`));
+});
+
+test("active checklist gets a compact tick on a new user turn so marks cannot lag behind", () => {
+  const current = updatedPlan({ plan: [step("Investigate", "completed"), step("Implement", "in_progress"), step("Build")], execution: "active" });
+  const handlers = new Map(), persisted = [];
+  planExtension({ on(name, handler) { handlers.set(name, handler); }, registerTool() {},
+    sendMessage(message, options) { assert.deepEqual(options, { triggerTurn: false }); persisted.push(message); } }, () => current);
+  const run = messages => handlers.get("context")({ messages }).messages;
+  let history = run([{ role: "user", content: "Делай", timestamp: 1 }]);
+  assert.match(history.at(-1).content, /Checklist snapshot/);
+  history.push({ role: "assistant", content: [] }, { role: "toolResult", toolName: "edit", content: [] });
+  assert.deepEqual(run(history), history);
+  history.push({ role: "user", content: "Продолжай", timestamp: 2 });
+  history = run(history);
+  assert.match(history.at(-1).content, /Checklist tick/);
+  assert.match(history.at(-1).content, /1\/3 completed/);
+  history.push({ role: "toolResult", toolName: "read", content: [] });
+  assert.deepEqual(run(history), history);
+  assert.equal(persisted.length, 2);
+});
+
+test("checklist gets one short factual reminder per new user message, not per tool", () => {
   let current = updatedPlan({ plan: [step("Work")] });
   const handlers = new Map(), persisted = [];
   planExtension({ on(name, handler) { handlers.set(name, handler); }, registerTool() {},
@@ -403,7 +468,8 @@ test("paused checklist gets one short factual reminder per new user message, not
   assert.deepEqual(run(history), history);
   history.push({ role: "user", content: "What is the status?", timestamp: 2 });
   history = run(history);
-  assert.equal(history.at(-1).content, '<pi_desktop_service_context source="plan">Состояние чеклиста: на паузе.</pi_desktop_service_context>');
+  assert.equal(history.at(-1).content, planTick(current));
+  assert.match(history.at(-1).content, /execution paused/);
   assert.equal(history.at(-1).details.workState.revision, current.revision);
   history.push({ role: "toolResult", toolName: "read", content: [] });
   assert.deepEqual(run(history), history);
@@ -412,7 +478,9 @@ test("paused checklist gets one short factual reminder per new user message, not
   history = run(history);
   assert.match(history.at(-1).content, /"execution":"active"/);
   history.push({ role: "user", content: "Another question", timestamp: 3 });
-  assert.deepEqual(run(history), history);
+  history = run(history);
+  assert.match(history.at(-1).content, /Checklist tick/);
+  assert.match(history.at(-1).content, /execution active/);
   current = updatedPlan({ plan: [] }, current);
   history = run(history);
   history.push({ role: "user", content: "One more question", timestamp: 4 });

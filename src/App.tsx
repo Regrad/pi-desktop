@@ -3524,7 +3524,7 @@ export default function App() {
   const [notices, setNotices] = useState<Notice[]>([]);
   const [statuses, setStatuses] = useState<Record<string, string>>({});
   const [workingMessage, setWorkingMessage] = useState("");
-  const [workingVisible, setWorkingVisible] = useState(true);
+  const [, setWorkingVisible] = useState(true);
   const [workingIndicator, setWorkingIndicator] = useState<{
     frames?: string[];
     intervalMs?: number;
