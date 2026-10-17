@@ -1,6 +1,7 @@
 import {
   Archive,
   ArchiveRestore,
+  ArrowDown,
   ArrowLeft,
   Bot,
   BookOpen,
@@ -339,6 +340,11 @@ interface VirtualFilmAnchor {
   offset: number;
   stickToBottom: boolean;
 }
+
+// Стрелка «вниз» показывается, только когда до конца чата осталось больше
+// порога: он же отсекает кратковременные отставания автопрокрутки при стриминге.
+const SCROLL_HINT_THRESHOLD_PX = 120;
+const SCROLL_GLIDE_MS = 320;
 
 function filmScrollOffset(film: HTMLElement, scroll: HTMLElement): number {
   return film.getBoundingClientRect().top - scroll.getBoundingClientRect().top
@@ -3549,6 +3555,8 @@ export default function App() {
   const conversationThreadRef = useRef<HTMLDivElement>(null);
   const autoScrollRef = useRef(true);
   const userScrollInteractionRef = useRef(false);
+  const glideFrameRef = useRef(0);
+  const [showScrollToBottom, setShowScrollToBottom] = useState(false);
   const activeIdRef = useRef<string | undefined>(undefined);
   const historyRecoveryRef = useRef<string | undefined>(undefined);
   const conversationsRef = useRef<ConversationRecord[]>([]);
@@ -3799,15 +3807,75 @@ export default function App() {
     return () => clearInterval(timer);
   }, [working, startedAt]);
 
+  const stopConversationGlide = useCallback(() => {
+    if (!glideFrameRef.current) return;
+    cancelAnimationFrame(glideFrameRef.current);
+    glideFrameRef.current = 0;
+  }, []);
+
+  const syncScrollToBottomHint = useCallback(() => {
+    const element = conversationScrollRef.current;
+    if (!element) {
+      setShowScrollToBottom(false);
+      return;
+    }
+    const distanceFromBottom =
+      element.scrollHeight - element.scrollTop - element.clientHeight;
+    setShowScrollToBottom(
+      element.scrollHeight - element.clientHeight > SCROLL_HINT_THRESHOLD_PX &&
+        distanceFromBottom > SCROLL_HINT_THRESHOLD_PX,
+    );
+  }, []);
+
   const scrollConversationToBottom = useCallback(() => {
+    // Пока идёт glide, позиция принадлежит анимации: мгновенный скачок из
+    // автопрокрутки или от ResizeObserver сбивал бы её на середине.
+    if (glideFrameRef.current) return;
     const element = conversationScrollRef.current;
     if (!element) return;
     element.scrollTop = element.scrollHeight;
   }, []);
 
+  // Плавный спуск в конец. Цель пересчитывается каждый кадр: виртуальный
+  // список оценивает невидимые строки в 120 px, поэтому за время анимации
+  // scrollHeight ещё меняется, и к концу нужно доехать по актуальной высоте.
+  const scrollConversationToBottomSmooth = useCallback(() => {
+    stopConversationGlide();
+    const element = conversationScrollRef.current;
+    if (!element) return;
+    const start = element.scrollTop;
+    const distance =
+      element.scrollHeight - element.clientHeight - start;
+    autoScrollRef.current = true;
+    setShowScrollToBottom(false);
+    if (distance <= SCROLL_HINT_THRESHOLD_PX) {
+      element.scrollTop = element.scrollHeight;
+      return;
+    }
+    const startedAt = performance.now();
+    const stepFrame = (now: number) => {
+      const progress = Math.min(1, (now - startedAt) / SCROLL_GLIDE_MS);
+      const eased = 1 - Math.pow(1 - progress, 3);
+      const goal = element.scrollHeight - element.clientHeight;
+      element.scrollTop = start + (goal - start) * eased;
+      if (progress < 1) {
+        glideFrameRef.current = requestAnimationFrame(stepFrame);
+        return;
+      }
+      glideFrameRef.current = 0;
+      element.scrollTop = element.scrollHeight;
+    };
+    glideFrameRef.current = requestAnimationFrame(stepFrame);
+  }, [stopConversationGlide]);
+
+  useEffect(() => () => stopConversationGlide(), [stopConversationGlide]);
+
   useEffect(() => {
     if (!autoScrollRef.current) return;
-    const frame = requestAnimationFrame(scrollConversationToBottom);
+    const frame = requestAnimationFrame(() => {
+      scrollConversationToBottom();
+      syncScrollToBottomHint();
+    });
     return () => cancelAnimationFrame(frame);
   }, [
     messages,
@@ -3816,6 +3884,7 @@ export default function App() {
     working,
     workingMessage,
     scrollConversationToBottom,
+    syncScrollToBottomHint,
   ]);
 
   useEffect(() => {
@@ -3824,17 +3893,32 @@ export default function App() {
     if (!thread || !scroll) return;
     const observer = new ResizeObserver(() => {
       if (autoScrollRef.current) scrollConversationToBottom();
+      syncScrollToBottomHint();
     });
     observer.observe(thread);
     observer.observe(scroll);
     return () => observer.disconnect();
-  }, [activeConversationId, scrollConversationToBottom]);
+  }, [
+    activeConversationId,
+    scrollConversationToBottom,
+    syncScrollToBottomHint,
+  ]);
 
   useEffect(() => {
+    stopConversationGlide();
     autoScrollRef.current = true;
-    const frame = requestAnimationFrame(scrollConversationToBottom);
+    setShowScrollToBottom(false);
+    const frame = requestAnimationFrame(() => {
+      scrollConversationToBottom();
+      syncScrollToBottomHint();
+    });
     return () => cancelAnimationFrame(frame);
-  }, [activeConversationId, scrollConversationToBottom]);
+  }, [
+    activeConversationId,
+    scrollConversationToBottom,
+    stopConversationGlide,
+    syncScrollToBottomHint,
+  ]);
 
   const handleConversationScroll = useCallback(() => {
     const element = conversationScrollRef.current;
@@ -3843,13 +3927,17 @@ export default function App() {
       element.scrollHeight - element.scrollTop - element.clientHeight;
     if (distanceFromBottom <= 24) autoScrollRef.current = true;
     else if (userScrollInteractionRef.current) autoScrollRef.current = false;
-  }, []);
+    syncScrollToBottomHint();
+  }, [syncScrollToBottomHint]);
 
   const handleConversationWheel = useCallback(
     (event: React.WheelEvent<HTMLDivElement>) => {
-      if (event.deltaY < 0) autoScrollRef.current = false;
+      if (event.deltaY < 0) {
+        stopConversationGlide();
+        autoScrollRef.current = false;
+      }
     },
-    [],
+    [stopConversationGlide],
   );
 
   const handleConversationPointerDown = useCallback(
@@ -3864,10 +3952,11 @@ export default function App() {
         event.pointerType === "touch" ||
         event.clientX >= rect.right - scrollbarArea
       ) {
+        stopConversationGlide();
         userScrollInteractionRef.current = true;
       }
     },
-    [],
+    [stopConversationGlide],
   );
 
   const handleConversationPointerEnd = useCallback(() => {
@@ -5794,6 +5883,17 @@ export default function App() {
                 <div
                   className={`composer-wrap${modelMenuOpen || thinkingMenuOpen || addMenuOpen || slashCommands.length > 0 ? " dropdown-open" : ""}`}
                 >
+                  {showScrollToBottom && (
+                    <button
+                      className="scroll-to-bottom"
+                      type="button"
+                      title="К концу чата"
+                      aria-label="Прокрутить чат до конца"
+                      onClick={() => scrollConversationToBottomSmooth()}
+                    >
+                      <ArrowDown size={17} />
+                    </button>
+                  )}
                   {snapshot && (
                     <GoalPanel
                       key={snapshot.conversation.id}
