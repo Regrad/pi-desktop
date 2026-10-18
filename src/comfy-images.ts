@@ -26,9 +26,10 @@ export function collectComfyMedia(tools: ToolImageResult[]): Record<string, unkn
     const images = collectComfyImages([tool]).map((image, i) => ({ ...image, path: result.details?.files?.[i] }));
     const audio = (Array.isArray(result.details?.media) ? result.details.media : []).filter((part) => part && part.type === "audio" && typeof part.path === "string" && typeof part.mimeType === "string" && part.mimeType.startsWith("audio/"));
     const models = (Array.isArray(result.details?.media) ? result.details.media : []).filter((part) => part && part.type === "model3d" && typeof part.path === "string" && part.mimeType === "model/gltf-binary");
-    if (!images.length && !audio.length && !models.length) return [];
+    const others = (Array.isArray(result.details?.media) ? result.details.media : []).filter((part) => part && typeof part.path === "string" && ((part.type === "video" && ["video/mp4", "video/webm"].includes(String(part.mimeType))) || part.type === "file"));
+    if (!images.length && !audio.length && !models.length && !others.length) return [];
     seen.add(tool.id);
-    return [...images, ...audio, ...models];
+    return [...images, ...audio, ...models, ...others];
   });
 }
 

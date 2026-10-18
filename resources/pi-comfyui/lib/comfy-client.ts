@@ -42,6 +42,8 @@ function normalizeSettings(value: ComfySettings): ComfySettings {
   if (!value || typeof value.enabled !== "boolean") throw new Error("Некорректные настройки ComfyUI");
   const merged = { ...DEFAULT_COMFY_SETTINGS, ...value, workflows: { ...DEFAULT_COMFY_SETTINGS.workflows, ...value.workflows } };
   merged.url = localComfyUrl(merged.url);
+  if (merged.workflowFolders !== undefined && (!Array.isArray(merged.workflowFolders) || merged.workflowFolders.length > 20 || merged.workflowFolders.some(folder => typeof folder !== "string" || !path.isAbsolute(folder))))
+    throw new Error("Папки workflow: не более 20 абсолютных путей");
   if (!Number.isInteger(merged.steps) || merged.steps < 1 || merged.steps > 100) throw new Error("Количество шагов: от 1 до 100");
   if (!Number.isInteger(merged.musicSteps) || merged.musicSteps < 1 || merged.musicSteps > 100) throw new Error("Шаги YuE2: от 1 до 100");
   for (const key of ["diffusionModel", "textEncoder", "vae", "backgroundModel", "musicCheckpoint", "segmentationCheckpoint"] as const)

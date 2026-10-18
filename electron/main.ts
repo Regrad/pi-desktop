@@ -10,6 +10,8 @@ import type { BrowserUiCommand } from "../shared/browser.js";
 import { UpdateManager } from "./update-manager.js";
 import { loadComfySettings, saveComfySettings, checkComfyConnection, importComfyWorkflow } from "./comfy-client.js";
 import type { ComfySettings } from "../shared/comfy.js";
+import { ComfyWorkflowCompiler } from "./comfy-workflow-compiler.js";
+import { findWorkflows, inspectWorkflow } from "../resources/pi-comfyui/lib/workflow-catalog.js";
 import { generatedFile, generatedMediaResponse } from "./generated-media.js";
 import { parseGeneratedLink } from "../shared/generated-links.js";
 import { randomUUID } from "node:crypto";
@@ -25,6 +27,7 @@ let mainWindow: BrowserWindow | null = null;
 let store: DataStore;
 let piManager: PiManager;
 let browserManager: BrowserManager;
+let comfyCompiler: ComfyWorkflowCompiler;
 let shuttingDown = false;
 let updateManager: UpdateManager;
 let logPath = "";
@@ -300,6 +303,8 @@ function registerIpc(): void {
   ipcMain.handle("desktop:get-comfy-settings", () => loadComfySettings(store.dataDir));
   ipcMain.handle("desktop:save-comfy-settings", (_event, settings: ComfySettings) => saveComfySettings(store.dataDir, settings));
   ipcMain.handle("desktop:check-comfy-connection", (_event, url: string) => checkComfyConnection(url));
+  ipcMain.handle("desktop:list-comfy-workflows", (_event, query?: string, offset?: number) => findWorkflows(store.dataDir, query, offset));
+  ipcMain.handle("desktop:inspect-comfy-workflow", (_event, id: string) => inspectWorkflow(store.dataDir, id, workflow => comfyCompiler.compile("settings", workflow)));
   ipcMain.handle("desktop:import-comfy-workflow", async () => {
     const selection = await dialog.showOpenDialog(mainWindow!, { title: "Workflow ComfyUI в формате API", filters: [{ name: "API workflow", extensions: ["json"] }], properties: ["openFile"] });
     return selection.canceled || !selection.filePaths[0] ? null : importComfyWorkflow(store.dataDir, selection.filePaths[0]);
@@ -452,13 +457,14 @@ async function initializeDesktop(): Promise<void> {
   await mkdir(path.join(store.dataDir, "music-generation"), { recursive: true });
   protocol.handle("pi-generated", (request) => generatedMediaResponse(store.dataDir, request));
   browserManager = new BrowserManager(store.dataDir, () => mainWindow, state => mainWindow?.webContents.send("desktop:browser-changed", state));
+  comfyCompiler = new ComfyWorkflowCompiler(store.dataDir);
   piManager = new PiManager(store, () => mainWindow, (conversation) => {
     // inspectConversation captures the snapshot before Pi launches queued work.
     void piManager.inspectConversation(conversation.id).then((snapshot) => controlApi?.settled(conversation.id, snapshot)).catch((error) => writeDiagnostic("control-api-result", error));
     if (!mainWindow?.isFocused() && Notification.isSupported()) {
       new Notification({ title: "Pi Desktop", body: `Задача завершена: ${conversation.title}` }).show();
     }
-  }, (channel, payload) => webAccess?.publish(channel, payload), undefined, (id, params) => browserManager.request(id, params), id => browserManager.cancel(id));
+  }, (channel, payload) => webAccess?.publish(channel, payload), undefined, (id, params) => browserManager.request(id, params), id => { browserManager.cancel(id); comfyCompiler.cancel(id); }, (id, workflow) => comfyCompiler.compile(id, workflow));
   updateManager = new UpdateManager(store, projectRoot, process.execPath);
   registerIpc();
   await createWindow();
@@ -498,6 +504,7 @@ async function ensureWebAccess() {
     return createWebAccess({ dataDir, rendererDir: path.join(projectRoot, "dist"), backend: webBackend(store, piManager, { methods: {
       chooseProjectFolders: async () => { const result = await dialog.showOpenDialog(mainWindow!, { properties: ["openDirectory", "multiSelections"] }); return result.canceled ? [] : result.filePaths; },
       createProject: (name: string, paths: string[]) => store.addProject(name, paths),
+      inspectComfyWorkflow: (id: string) => inspectWorkflow(store.dataDir, id, workflow => comfyCompiler.compile("web-settings", workflow)),
       refreshProjectSessions: (id: string) => store.refreshProjectSessions(id),
       renameProject: (id: string, name: string) => piManager.renameProject(id, name),
       removeProject: async (id: string) => { await piManager.removeProject(id); return true; },
@@ -570,6 +577,7 @@ app.on("before-quit", (event) => {
   if (shuttingDown) return;
   shuttingDown = true;
   startupAbort.abort();
+  comfyCompiler?.close();
   void Promise.all([startupTasks.close(), piManager.shutdown(), browserManager?.dispose()]).finally(() => remoteRuntime?.close()).finally(() => {
     piManager = undefined as unknown as PiManager;
     app.exit(0);

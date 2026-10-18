@@ -225,7 +225,7 @@ test("path tool resolves the selected chat image without publishing it", async (
   try {
     process.env.PI_DESKTOP_DATA_DIR = dir;
     const registered = [];
-    await (await import("../electron/comfy-extension.ts")).default({ registerTool: tool => registered.push(tool) });
+    await (await import("../electron/comfy-extension.ts")).default({ registerTool: tool => registered.push(tool), on() {} });
     const tool = registered.find(item => item.name === "desktop_get_image_path");
     const result = await tool.execute("test", { image: "attachment:entry123:1" }, undefined, undefined, { sessionManager: { getBranch: () => entries } });
     assert.equal(result.content.length, 1);
@@ -253,8 +253,8 @@ test("extension exposes advanced YuE2 generation and cover through Pi's public r
   try {
     process.env.PI_DESKTOP_DATA_DIR = os.tmpdir();
     const registered = [];
-    await extension({ registerTool: (tool) => registered.push(tool) });
-    assert.deepEqual(registered.map(tool => tool.name).sort(), ["desktop_show_image", "comfyui_list_attachments", "desktop_get_image_path", "comfyui_status", "comfyui_generate_instrumental_music", "comfyui_generate_music", "comfyui_cover_music", "comfyui_plan_music", "comfyui_edit_vocals", "comfyui_generate_3d", "comfyui_create_mask", "comfyui_generate_image", "comfyui_edit_image", "comfyui_compose_image", "comfyui_inpaint_image", "comfyui_outpaint_image", "comfyui_extract_subject", "comfyui_remove_background", "comfyui_asset_3d", "comfyui_clone_voice", "comfyui_design_voice", "comfyui_lod_3d", "comfyui_process_3d", "comfyui_publish_music", "comfyui_texture_3d"].sort());
+    await extension({ registerTool: (tool) => registered.push(tool), on() {} });
+    assert.deepEqual(registered.map(tool => tool.name).sort(), ["desktop_show_image", "comfyui_list_attachments", "desktop_get_image_path", "comfyui_status", "comfyui_generate_instrumental_music", "comfyui_generate_music", "comfyui_cover_music", "comfyui_plan_music", "comfyui_edit_vocals", "comfyui_generate_3d", "comfyui_create_mask", "comfyui_generate_image", "comfyui_edit_image", "comfyui_compose_image", "comfyui_inpaint_image", "comfyui_outpaint_image", "comfyui_extract_subject", "comfyui_remove_background", "comfyui_asset_3d", "comfyui_clone_voice", "comfyui_design_voice", "comfyui_lod_3d", "comfyui_process_3d", "comfyui_publish_music", "comfyui_texture_3d", "comfyui_workflows", "comfyui_run_workflow", "comfyui_job"].sort());
     for (const tool of registered) {
       assert.equal(typeof tool.execute, "function");
       assert.equal(tool.parameters.type, "object");

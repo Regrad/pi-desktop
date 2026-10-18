@@ -176,7 +176,7 @@ export async function createWebAccess({ dataDir, rendererDir, backend, remoteBac
             if (generation !== startedGeneration) return send(503, { error: "Доступ отключён" });
             broker.result(bearer, value.id, value.result, value.error); return send(200, { ok: true });
           }
-          const media = /^\/api\/agent\/media\/(image|music|model3d)\/([^/]+)$/.exec(url.pathname);
+          const media = /^\/api\/agent\/media\/(image|music|model3d|video|artifact)\/([^/]+)$/.exec(url.pathname);
           if (media && ["GET", "HEAD"].includes(req.method)) return await streamMedia(await (await clientBackend(connection.deviceId)).media(media[1], decodeURIComponent(media[2]), req.method, req.headers.range));
           return send(404, { error: "Не найдено" });
         }
@@ -240,7 +240,7 @@ export async function createWebAccess({ dataDir, rendererDir, backend, remoteBac
         if (["GET", "HEAD"].includes(req.method) && url.pathname.startsWith("/api/media/")) {
           const mode = url.searchParams.get("mode") ?? "local";
           if (!(["local", "remote"].includes(mode) && (mode === "local" ? config.localEnabled : config.remoteEnabled))) return send(403, { error: "Этот режим выключен" });
-          const match = /^\/api\/media\/(image|music|model3d)\/([^/]+)$/.exec(url.pathname);
+          const match = /^\/api\/media\/(image|music|model3d|video|artifact)\/([^/]+)$/.exec(url.pathname);
           if (!match) return send(404, { error: "Файл не найден" });
           return await streamMedia(await (mode === "remote" ? await clientBackend(session.deviceId) : backend).media(match[1], decodeURIComponent(match[2]), req.method, req.headers.range));
         }

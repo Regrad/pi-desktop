@@ -53,7 +53,17 @@ test("real Pi loader discovers portable addon, new tools and changes; duplicate 
   const load = () => discoverAndLoadExtensions([], data, path.join(data, "agent"));
   let result = await load();
   assert.deepEqual(result.errors, []);
-  assert.equal(result.extensions[0].tools.size, 25);
+  assert.equal(result.extensions[0].tools.size, 28);
+  for (const name of ["comfyui_workflows", "comfyui_run_workflow", "comfyui_job"]) assert.ok(result.extensions[0].tools.has(name));
+  const contextHook = result.extensions[0].handlers.get("before_agent_start")[0];
+  assert.equal(await contextHook({ systemPrompt: "base" }, {}), undefined);
+  await saveComfySettings(data, { ...DEFAULT_COMFY_SETTINGS, enabled: true });
+  const firstContext = await contextHook({ systemPrompt: "base" }, {});
+  await mkdir(path.join(data, "comfy-workflows"), { recursive: true });
+  await writeFile(path.join(data, "comfy-workflows/new-image.json"), JSON.stringify({ workflow: "new graph data" }));
+  assert.deepEqual(await contextHook({ systemPrompt: "base" }, {}), firstContext, "Catalog edits must not rewrite the system prefix");
+  assert.match(firstContext.systemPrompt, /comfyui_workflows/);
+  assert.doesNotMatch(firstContext.systemPrompt, /new-image|new graph data|127\.0\.0\.1/);
   assert.ok(result.extensions[0].tools.has("comfyui_design_voice"));
   assert.ok(result.extensions[0].tools.has("comfyui_clone_voice"));
   for (const name of ["comfyui_inpaint_image", "comfyui_outpaint_image"]) {
@@ -62,11 +72,11 @@ test("real Pi loader discovers portable addon, new tools and changes; duplicate 
     assert.equal(definition.parameters.properties.height, undefined);
     assert.equal(definition.parameters.properties.count.const, 1);
     assert.equal(definition.parameters.properties.canvas_image.const, 1);
-    assert.ok(definition.promptGuidelines.some(line => line.includes("Do not supply width or height")));
+    assert.ok(definition.promptGuidelines.some(line => line.includes("first image") && line.includes("width and height")));
     assert.ok(definition.promptGuidelines.every(line => !line.includes("set both width and height together")));
   }
   const publication = result.extensions[0].tools.get("comfyui_publish_music").definition;
-  assert.ok(publication.promptGuidelines.some(line => line.includes("two out of ten")));
+  assert.match(publication.description, /2 selected variants from 10 generated tracks/);
   const noTracks = await publication.execute("publish-none", { tracks: [] }, new AbortController().signal);
   assert.equal(noTracks.details.audioSelection, true);
   assert.deepEqual(noTracks.details.media, []);
@@ -76,7 +86,7 @@ test("real Pi loader discovers portable addon, new tools and changes; duplicate 
   await writeFile(path.join(tool, "index.ts"), source("first"), "utf8");
   result = await load();
   assert.deepEqual(result.errors, []);
-  assert.equal(result.extensions[0].tools.size, 26);
+  assert.equal(result.extensions[0].tools.size, 29);
   assert.equal(result.extensions[0].tools.get("comfyui_test").definition.label, "first");
   await writeFile(path.join(tool, "index.ts"), source("changed"), "utf8");
   result = await load();

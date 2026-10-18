@@ -90,7 +90,7 @@ test("mask tool returns correct roles regardless of history output order and sta
   const old = process.env.PI_DESKTOP_DATA_DIR;
   process.env.PI_DESKTOP_DATA_DIR = dir;
   t.after(() => { if (old === undefined) delete process.env.PI_DESKTOP_DATA_DIR; else process.env.PI_DESKTOP_DATA_DIR = old; });
-  const tools = []; await extension({ registerTool: tool => tools.push(tool) });
+  const tools = []; await extension({ registerTool: tool => tools.push(tool), on() {} });
   const tool = tools.find(tool => tool.name === "comfyui_create_mask");
   const history = [{ id: "a", type: "message", message: { role: "user", content: [{ type: "image", data: png.toString("base64"), mimeType: "image/png" }] } }];
   const result = await tool.execute("id", { image: "attachment:a:1", targets: ["person"] }, undefined, undefined, { sessionManager: { getBranch: () => history } });

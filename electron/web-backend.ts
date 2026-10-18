@@ -2,6 +2,7 @@ import type { DataStore } from "./data-store.js";
 import type { PiManager } from "./pi-manager.js";
 import type { Attachment, ThinkingLevel } from "../shared/types.js";
 import { loadComfySettings } from "./comfy-client.js";
+import { findWorkflows, inspectWorkflow } from "../resources/pi-comfyui/lib/workflow-catalog.js";
 import { generatedMediaResponse } from "./generated-media.js";
 import { nativeImage } from "electron";
 import { randomUUID } from "node:crypto";
@@ -58,6 +59,8 @@ export function webBackend(store: DataStore, manager: PiManager, options?: { met
     getGlobalPrompt: () => store.getGlobalPrompt(),
     getProjectInstructions: (id: string) => store.getProjectInstructions(id),
     getComfySettings: () => loadComfySettings(store.dataDir),
+    listComfyWorkflows: (query?: string, offset?: number) => findWorkflows(store.dataDir, query, offset),
+    inspectComfyWorkflow: (id: string) => inspectWorkflow(store.dataDir, id),
     getModelServers: () => store.getModelServers(),
     getModuleSettings: () => store.getModuleSettings(),
     manageSkills: (id: string, command: import("../shared/skills.js").SkillsCommand) => manager.manageSkills(id, command),

@@ -4,9 +4,9 @@ import { createReadStream } from "node:fs";
 import { Readable } from "node:stream";
 
 export async function generatedFile(dataDir: string, kind: string, filename: string): Promise<string> {
-  if (!["image", "music", "model3d"].includes(kind) || !filename || filename === "." || filename === ".." || /[\\/\0:]/.test(filename))
+  if (!["image", "music", "model3d", "video", "artifact"].includes(kind) || !filename || filename === "." || filename === ".." || /[\\/\0:]/.test(filename))
     throw new Error("Некорректный файл генерации");
-  const folder = await realpath(path.join(dataDir, kind === "model3d" ? "3d-generation" : kind === "music" ? "music-generation" : "image-generation"));
+  const folder = await realpath(path.join(dataDir, kind === "artifact" ? "comfy-results" : kind === "video" ? "video-generation" : kind === "model3d" ? "3d-generation" : kind === "music" ? "music-generation" : "image-generation"));
   const file = await realpath(path.join(folder, filename));
   if (path.dirname(file) !== folder || !(await stat(file)).isFile()) throw new Error("Файл генерации не найден");
   return file;
@@ -19,7 +19,7 @@ export async function generatedMediaResponse(dataDir: string, request: Request):
     if (url.search || url.hash || !["GET", "HEAD"].includes(request.method)) return new Response(null, { status: 400 });
     const file = await generatedFile(dataDir, url.hostname, decodeURIComponent(url.pathname.slice(1)));
     const types: Record<string, string> = url.hostname === "model3d" ? { ".glb": "model/gltf-binary" } : url.hostname === "image" ? { ".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".webp": "image/webp" } : { ".flac": "audio/flac", ".wav": "audio/wav", ".mp3": "audio/mpeg", ".opus": "audio/ogg", ".ogg": "audio/ogg" };
-    const mime = types[path.extname(file).toLowerCase()];
+    const mime = url.hostname === "artifact" ? "application/octet-stream" : url.hostname === "video" ? ({ ".mp4": "video/mp4", ".webm": "video/webm" } as Record<string, string>)[path.extname(file).toLowerCase()] : types[path.extname(file).toLowerCase()];
     if (!mime) return new Response(null, { status: 415 });
     const { size } = await stat(file);
     let start = 0, end = size - 1;
@@ -32,6 +32,7 @@ export async function generatedMediaResponse(dataDir: string, request: Request):
       if (start > end || start >= size) return new Response(null, { status: 416, headers: { "Content-Range": `bytes */${size}` } });
     }
     const headers: Record<string, string> = { "Content-Type": mime, "Content-Length": String(Math.max(0, end - start + 1)), "Accept-Ranges": "bytes" };
+    if (url.hostname === "artifact") headers["Content-Disposition"] = "attachment";
     const origin = request.headers.get("origin");
     if (origin === "null" || origin === "http://127.0.0.1:5173") headers["Access-Control-Allow-Origin"] = origin;
     if (range) headers["Content-Range"] = `bytes ${start}-${end}/${size}`;
