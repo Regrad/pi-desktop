@@ -34,7 +34,7 @@ function fixture(status = "active", working = true) {
   const runtime = { activeRun: run, snapshot: { state: { isStreaming: working } }, rpc: { async request(command) { requests.push(command); } } };
   const launches = [];
   const context = {
-    store: { getConversation() { return conversation; } },
+    store: { getConversation() { return conversation; }, async saveConversationRun() {} },
     runtimes: new Map([["chat", runtime]]),
     goalLaunching: new Set(), goalContinuationRequested: new Set(["chat"]),
     async updateConversation(id, patch) { assert.equal(id, "chat"); Object.assign(conversation, patch); },

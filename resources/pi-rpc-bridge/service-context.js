@@ -55,7 +55,7 @@ export function discardDelayedStateSnapshots(messages) {
 
 function host(message) {
   return ["user", "toolResult", "compactionSummary", "branchSummary"].includes(message.role)
-    || (message.role === "custom" && ["desktop_goal_continuation", "desktop_plan_continuation"].includes(message.customType));
+    || (message.role === "custom" && ["desktop_goal_continuation", "desktop_plan_continuation", "desktop_run_continuation"].includes(message.customType));
 }
 
 function attach(message, state) {

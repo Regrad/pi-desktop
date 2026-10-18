@@ -1524,7 +1524,7 @@ button:not(:disabled) {
   color: white;
   background: #111;
 }
-.send-button:not(.stop) > svg {
+.send-button:not(.stop):not(.resume) > svg {
   transform: translate(-1px, 1px);
 }
 .send-button:disabled {
@@ -1532,6 +1532,14 @@ button:not(:disabled) {
 }
 .send-button.stop {
   background: #222;
+}
+.send-button.resume {
+  width: auto;
+  padding: 0 10px;
+  grid-auto-flow: column;
+  gap: 5px;
+  border-radius: 16px;
+  white-space: nowrap;
 }
 .status-line {
   display: grid;

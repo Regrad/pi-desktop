@@ -1,7 +1,5 @@
 import { spawn } from "node:child_process";
-import { randomUUID } from "node:crypto";
-import { copyFile, cp, mkdir, mkdtemp, open, readFile, rename, rm, stat } from "node:fs/promises";
-import os from "node:os";
+import { cp, mkdir, mkdtemp, open, readFile, rm, stat } from "node:fs/promises";
 import path from "node:path";
 import process from "node:process";
 import { fileURLToPath } from "node:url";
@@ -10,10 +8,12 @@ import {
   FAST_RELEASE_MANIFEST,
   changedReleaseInputs,
   classifyReleaseChanges,
-  collectReleaseInputs,
-  packagingFingerprint,
+  createFastReleaseManifest,
+  assertReleaseInputsUnchanged,
   writeFastReleaseManifest,
 } from "./release-update-core.mjs";
+import { createReleaseTransaction } from "./release-transaction.mjs";
+import { planComfyAddonUpdate, stageComfyAddonUpdate, assertComfyAddonState } from "./release-addon.mjs";
 import { treeIsolationFiles } from "../resources/pi-lens/tree-isolation-patch.mjs";
 
 const projectRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
@@ -22,10 +22,10 @@ const appDir = path.join(targetDir, "resources", "app");
 const manifestPath = path.join(targetDir, FAST_RELEASE_MANIFEST);
 const lockPath = path.join(projectRoot, "release", ".pi-desktop-package.lock");
 const cacheDir = path.join(projectRoot, ".cache", "release-update");
-const operationId = randomUUID();
-const stagingRoot = await mkdtemp(path.join(os.tmpdir(), "pi-desktop-update-"));
+await mkdir(path.join(projectRoot, "release"), { recursive: true });
+const stagingRoot = await mkdtemp(path.join(projectRoot, "release", ".pi-desktop-build-"));
 let packageLock;
-const transientPaths = new Set();
+let transaction;
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
@@ -105,6 +105,10 @@ async function runFullBuild(reason) {
   process.stdout.write(`${reason} Running one full portable build.\n`);
   const npmCli = process.env.npm_execpath;
   if (!npmCli) throw new Error("npm_execpath is unavailable; run npm run pack once.");
+  // The full pack acquires the same lock before capturing inputs and compiling.
+  await packageLock.close();
+  await rm(lockPath);
+  packageLock = undefined;
   await run(process.execPath, [npmCli, "run", "pack"]);
 }
 
@@ -112,59 +116,9 @@ async function readManifest() {
   if (!(await exists(manifestPath))) return null;
   try {
     const value = JSON.parse(await readFile(manifestPath, "utf8"));
-    return value?.format === FAST_RELEASE_FORMAT && value.files ? value : null;
+    return [1, FAST_RELEASE_FORMAT].includes(value?.format) && value.files ? value : null;
   } catch {
     return null;
-  }
-}
-
-async function replaceDirectory(source, target, label) {
-  const old = `${target}.old-${operationId}`;
-  await rm(old, { recursive: true, force: true });
-  if (await exists(target)) await rename(target, old);
-  try {
-    await rename(source, target);
-  } catch (error) {
-    if (await exists(old)) {
-      try {
-        await rename(old, target);
-      } catch (rollbackError) {
-        throw new AggregateError([error, rollbackError], `Module activation and rollback failed. Original module preserved at: ${old}`);
-      }
-    }
-    throw error;
-  }
-  transientPaths.add(old);
-  await rm(old, { recursive: true, force: true });
-  transientPaths.delete(old);
-  process.stdout.write(`${label} updated.\n`);
-}
-
-async function copyAtomic(source, target) {
-  const temporary = `${target}.new-${operationId}`;
-  const old = `${target}.old-${operationId}`;
-  transientPaths.add(temporary);
-  await mkdir(path.dirname(target), { recursive: true });
-  await copyFile(source, temporary);
-  const hadTarget = await exists(target);
-  if (hadTarget) await rename(target, old);
-  try {
-    await rename(temporary, target);
-  } catch (error) {
-    if (hadTarget) {
-      try {
-        await rename(old, target);
-      } catch (rollbackError) {
-        throw new AggregateError([error, rollbackError], `File activation and rollback failed. Original file preserved at: ${old}`);
-      }
-    }
-    throw error;
-  }
-  transientPaths.delete(temporary);
-  if (hadTarget) {
-    transientPaths.add(old);
-    await rm(old, { force: true });
-    transientPaths.delete(old);
   }
 }
 
@@ -172,8 +126,8 @@ async function syncChangedFiles(paths, sourceRoot, targetRoot) {
   for (const relative of paths) {
     const source = path.join(sourceRoot, relative);
     const target = path.join(targetRoot, relative);
-    if (await exists(source)) await copyAtomic(source, target);
-    else await rm(target, { recursive: true, force: true });
+    if (await exists(source)) await transaction.replace(source, target);
+    else await transaction.remove(target);
   }
 }
 
@@ -256,7 +210,7 @@ async function syncBridgeOutputs() {
     ...["analysis-host.mjs", "analysis-worker.mjs", "analysis-observations.mjs", "analysis-watchdog.mjs", "tree-operations.mjs", "analysis-context.mjs", "executable-path.mjs"].map((name) => `dist/desktop-analysis/${name}`),
   ])];
   await syncChangedFiles(lensFiles, await findPackage(projectRoot, "pi-lens"), await findPackage(appDir, "pi-lens"));
-  process.stdout.write("Compatibility bridge files updated.\n");
+  process.stdout.write("Compatibility bridge files staged.\n");
 }
 
 async function prepareClientAgent() {
@@ -266,11 +220,16 @@ async function prepareClientAgent() {
 }
 
 try {
-  const [manifest, currentFiles, currentFingerprint] = await Promise.all([
-    readManifest(),
-    collectReleaseInputs(projectRoot),
-    packagingFingerprint(projectRoot),
-  ]);
+  try { packageLock = await open(lockPath, "wx"); }
+  catch (error) {
+    if (error.code === "EEXIST") throw new Error(`Another package operation owns ${lockPath}.`);
+    throw error;
+  }
+  await packageLock.writeFile(JSON.stringify({ pid: process.pid, target: targetDir, startedAt: new Date().toISOString() }));
+  const manifest = await readManifest();
+  const snapshot = await createFastReleaseManifest(projectRoot);
+  const currentFiles = snapshot.files;
+  const currentFingerprint = snapshot.packagingFingerprint;
   if (!manifest || !(await exists(appDir))) {
     await runFullBuild("The release is not initialized for modular updates.");
     process.exitCode = 0;
@@ -280,50 +239,50 @@ try {
   } else {
     const changedPaths = changedReleaseInputs(manifest.files, currentFiles);
     const changes = classifyReleaseChanges(changedPaths);
+    const addonPlan = await planComfyAddonUpdate(projectRoot, targetDir, snapshot);
+    if (addonPlan.preserved.length) process.stdout.write(`Preserving local addon edits/deletions: ${addonPlan.preserved.join(", ")}\n`);
     if (changes.fullRequired) {
       await runFullBuild("package-lock.json changed.");
       process.exitCode = 0;
-    } else if (changedPaths.length === 0) {
+    } else if (changedPaths.length === 0 && addonPlan.changes.length === 0 && manifest.format === FAST_RELEASE_FORMAT) {
       process.stdout.write("Release is already current.\n");
     } else {
-      await mkdir(path.dirname(lockPath), { recursive: true });
-      try {
-        packageLock = await open(lockPath, "wx");
-      } catch (error) {
-        if (error?.code === "EEXIST") throw new Error(`Another package operation owns ${lockPath}.`);
-        throw error;
-      }
-      await packageLock.writeFile(JSON.stringify({ pid: process.pid, target: targetDir, startedAt: new Date().toISOString() }));
-
       // Finish compilation first so the running release is closed only for the
       // short replacement phase, and a failed build cannot damage it.
       const rendererOutput = changes.renderer ? await prepareRenderer() : null;
       const electronOutput = changes.electron ? await prepareElectron(changedPaths, currentFiles) : null;
       if (changes.bridge) await prepareBridgeOutputs();
       const clientAgentOutput = changes.clientAgent ? await prepareClientAgent() : null;
-      await closeTargetProcesses();
+      await assertReleaseInputsUnchanged(projectRoot, snapshot);
+      transaction = await createReleaseTransaction(path.join(projectRoot, "release"));
 
-      if (rendererOutput) await replaceDirectory(rendererOutput, path.join(appDir, "dist"), "Renderer");
-      if (electronOutput) await replaceDirectory(electronOutput, path.join(appDir, "dist-electron"), "Electron module");
+      if (rendererOutput) await transaction.replace(rendererOutput, path.join(appDir, "dist"));
+      if (electronOutput) await transaction.replace(electronOutput, path.join(appDir, "dist-electron"));
       if (changes.resources.length) await syncChangedFiles(changes.resources, projectRoot, appDir);
-      if (changes.activeAddon.length) await syncChangedFiles(changes.activeAddon.map((name) => name.slice("resources/pi-comfyui/".length)), path.join(projectRoot, "resources", "pi-comfyui"), path.join(targetDir, "data", "agent", "extensions", "pi-comfyui"));
+      await stageComfyAddonUpdate(transaction, addonPlan, targetDir);
       if (changes.bridge) await syncBridgeOutputs();
       if (clientAgentOutput) {
-        await copyAtomic(clientAgentOutput, path.join(appDir, "resources", "client-agent", "Pi Desktop Agent.exe"));
-        process.stdout.write("Client agent updated.\n");
+        await transaction.replace(clientAgentOutput, path.join(appDir, "resources", "client-agent", "Pi Desktop Agent.exe"));
       }
-      if (changes.packageMetadata) await copyAtomic(path.join(projectRoot, "package.json"), path.join(appDir, "package.json"));
+      if (changes.packageMetadata) await transaction.replace(path.join(projectRoot, "package.json"), path.join(appDir, "package.json"));
       if (changes.rootFiles.length) await syncChangedFiles(changes.rootFiles, projectRoot, targetDir);
-      if (changes.resources.includes("resources/control-api/Invoke-PiDesktop.ps1")) await copyAtomic(path.join(projectRoot, "resources", "control-api", "Invoke-PiDesktop.ps1"), path.join(targetDir, "Invoke-PiDesktop.ps1"));
-      await writeFastReleaseManifest(projectRoot, targetDir);
-      process.stdout.write(`Modular release update complete (${changedPaths.length} changed input file(s)).\n`);
+      if (changes.resources.includes("resources/control-api/Invoke-PiDesktop.ps1")) await transaction.replace(path.join(projectRoot, "resources", "control-api", "Invoke-PiDesktop.ps1"), path.join(targetDir, "Invoke-PiDesktop.ps1"));
+      await writeFastReleaseManifest(projectRoot, stagingRoot, snapshot);
+      await transaction.replace(path.join(stagingRoot, FAST_RELEASE_MANIFEST), manifestPath);
+      await assertReleaseInputsUnchanged(projectRoot, snapshot);
+      await closeTargetProcesses();
+      await transaction.commit(async phase => {
+        await assertReleaseInputsUnchanged(projectRoot, snapshot);
+        await assertComfyAddonState(addonPlan, targetDir, phase === "after");
+      });
+      process.stdout.write(`Modular release update complete (${changedPaths.length} changed input file(s), ${addonPlan.changes.length} active addon file(s)).\n`);
     }
   }
 } finally {
+  await transaction?.dispose();
   if (packageLock) {
     await packageLock.close().catch(() => {});
     await rm(lockPath, { force: true }).catch(() => {});
   }
-  for (const target of transientPaths) await rm(target, { recursive: true, force: true }).catch(() => {});
   await rm(stagingRoot, { recursive: true, force: true }).catch(() => {});
 }

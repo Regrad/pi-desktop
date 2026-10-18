@@ -382,6 +382,7 @@ export interface ExtensionUiRequest {
 }
 
 export interface ConversationRun {
+  interruption?: { planRevision?: number; goalId?: string };
   startedAt: string;
   completedAt?: string;
   durationMs?: number;
@@ -400,6 +401,7 @@ export interface PiDesktopApi {
   getWebAccessSettings(): Promise<import("./web-access.js").WebAccessStatus>;
   saveWebAccessSettings(settings: import("./web-access.js").WebAccessSettings): Promise<import("./web-access.js").WebAccessStatus>;
   bootstrap(): Promise<BootstrapPayload>;
+  rendererReady(): void;
   chooseProjectFolders(): Promise<string[]>;
   createProject(name: string, paths: string[]): Promise<ProjectRecord>;
   refreshProjectSessions(projectId: string): Promise<ConversationRecord[]>;
@@ -425,6 +427,7 @@ export interface PiDesktopApi {
   sendQueuedPrompt(conversationId: string, promptId: string): Promise<QueuedPrompt[]>;
   removeQueuedPrompt(conversationId: string, promptId: string): Promise<QueuedPrompt[]>;
   abort(conversationId: string): Promise<void>;
+  resumeConversation(conversationId: string): Promise<void>;
   rewindConversation(conversationId: string, entryId: string): Promise<ConversationSnapshot>;
   editLastMessage(conversationId: string, entryId: string, text: string): Promise<void>;
   setGoal(conversationId: string, objective: string, attachments: Attachment[], requestPlan?: boolean): Promise<void>;

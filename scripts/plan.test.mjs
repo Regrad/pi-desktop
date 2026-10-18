@@ -86,7 +86,7 @@ test("real dispatcher uses one launch for goal and checklist, prioritizes user q
   const start = source.indexOf("  private launchGoal(");
   const begin = source.indexOf("): void {", start) + "): void {".length;
   const end = source.indexOf("\n  }", begin);
-  const body = stripTypeScriptTypes(`function launch(conversationId, attachments = [], requestPlan = false) {${source.slice(begin, end)}\n}`);
+  const body = stripTypeScriptTypes(`function launch(conversationId, attachments = [], requestPlan = false, resumeBeforeQueue = false) {${source.slice(begin, end)}\n}`);
   const timers = [];
   const launch = new Function("canContinuePlan", "setTimeout", `${body};return launch;`)(canContinuePlan, callback => timers.push(callback));
   const conversation = { status: "idle", plan: updatedPlan({ plan: [step("Work")], execution: "active" }) };
@@ -103,6 +103,11 @@ test("real dispatcher uses one launch for goal and checklist, prioritizes user q
   assert.equal(calls[1][4], "goal"); assert.equal(calls[1][7], undefined);
   conversation.goal.status = "paused"; launch.call(host, "chat"); assert.equal(timers.length, 0);
   delete conversation.goal; queued = [{}]; launch.call(host, "chat"); assert.equal(timers.length, 0);
+  launch.call(host, "chat", [], false, true);
+  assert.equal(timers.length, 1, "Explicit resume is not blocked by a held queue");
+  timers.shift()(); await new Promise(resolve => setImmediate(resolve));
+  assert.equal(calls[2][8], true);
+  assert.equal(queued.length, 1);
   queued = []; runtime.snapshot.state.isStreaming = true; launch.call(host, "chat"); assert.equal(timers.length, 0);
 });
 
@@ -129,37 +134,45 @@ test("actual continuation sends service RPC, not another user prompt, and rechec
   const start = source.indexOf("  async sendPrompt(");
   const begin = source.indexOf("): Promise<void> {", start) + "): Promise<void> {".length;
   const end = source.indexOf("\n  }", begin);
-  const body = stripTypeScriptTypes(`async function send(conversationId, message, attachments, behavior, expectedGoalId, historyEdit = false, requestPlan = false, expectedPlanRevision) {${source.slice(begin, end)}\n}`);
+  const body = stripTypeScriptTypes(`async function send(conversationId, message, attachments, behavior, expectedGoalId, historyEdit = false, requestPlan = false, expectedPlanRevision, resumeBeforeQueue = false) {${source.slice(begin, end)}\n}`);
   const send = new Function("canContinuePlan", "planContext", "imageAttachmentPrompt", `${body};return send;`)(canContinuePlan, planContext, () => "");
   const chat = { title: "Existing chat", plan: updatedPlan({ plan: [step("Work")], execution: "active" }) }, calls = [];
   const runtime = { snapshot: { state: { isStreaming: false } }, diffTracker: { covers: () => true, async beginRun() {} }, rpc: { async request(type, payload) { calls.push({ type, payload }); } } };
+  let queue = [];
   const host = { historyMutations: new Set(), runtimes: new Map([["chat", runtime]]), async ensureRuntime() { return runtime; }, async reloadPendingInstructions() {}, publish() {},
-    store: { getConversation: () => chat, getQueuedPrompts: () => [], async saveConversationRun() {}, async getConversationWorkspacePaths() { return []; } } };
+    store: { getConversation: () => chat, getQueuedPrompts: () => queue, async saveConversationRun() {}, async getConversationWorkspacePaths() { return []; } } };
   await send.call(host, "chat", "Service", [], undefined, undefined, false, false, chat.plan.revision);
   assert.equal(calls.length, 1); assert.equal(calls[0].type, "desktop_plan_continue");
   assert.match(calls[0].payload.message, /source="plan"/);
+  queue = [{ id: "waiting" }];
+  await send.call(host, "chat", "Service", [], undefined, undefined, false, false, chat.plan.revision);
+  assert.equal(calls.length, 1, "Automatic continuation cannot jump ahead of queued input");
+  await send.call(host, "chat", "Service", [], undefined, undefined, false, false, chat.plan.revision, true);
+  assert.equal(calls.length, 2, "Explicit manual resume continues the interrupted task before queued input");
+  assert.equal(queue.length, 1);
+  assert.equal(runtime.runAborted, false);
   const revision = chat.plan.revision; chat.plan = updatedPlan({ plan: [] }, chat.plan);
   await send.call(host, "chat", "Service", [], undefined, undefined, false, false, revision);
-  assert.equal(calls.length, 1);
+  assert.equal(calls.length, 2);
 });
 
 test("plan continuation is not paused for turns without tools; errors and interruptions still pause", async () => {
   const source = readFileSync(new URL("../electron/pi-manager.ts", import.meta.url), "utf8");
   const queueStart = source.indexOf("      const hasQueued = this.store.getQueuedPrompts(conversationId).length > 0;");
   const guardStart = source.indexOf("      const currentPlan =", queueStart);
-  const end = source.indexOf("      if (hasQueued)", guardStart);
+  const end = source.indexOf("      if (!completedNormally ||", guardStart);
   assert.ok(guardStart >= 0 && end > guardStart);
-  const body = stripTypeScriptTypes(`async function settle(conversationId, runtime) {${source.slice(guardStart, end)}\n}`);
+  const body = stripTypeScriptTypes(`async function settle(conversationId, runtime) { const completedNormally = !runtime.runAborted && runtime.runStopReason === "stop"; ${source.slice(guardStart, end)}\n}`);
   const settle = new Function("updatedPlan", `${body};return settle;`)(updatedPlan);
   const chat = { plan: updatedPlan({ plan: [step("Work")], execution: "active" }) };
   const host = { store: { getConversation: () => chat }, async updateConversation(_id, changes) { Object.assign(chat, changes); } };
-  const runtime = { snapshot: { messages: [{ role: "assistant", stopReason: "stop" }] } };
+  const runtime = { runStopReason: "stop" };
   for (let turn = 0; turn < 10; turn++) {
     await settle.call(host, "chat", runtime); assert.equal(chat.plan.execution, "active");
   }
   for (const reason of ["error", "aborted"]) {
     chat.plan = updatedPlan({ execution: "active" }, chat.plan);
-    runtime.snapshot.messages[0].stopReason = reason;
+    runtime.runStopReason = reason;
     await settle.call(host, "chat", runtime); assert.equal(chat.plan.execution, "paused");
   }
 });

@@ -4,6 +4,7 @@ import { Type } from "typebox";
 import path from "node:path";
 import { readFile, mkdir, open, rename, unlink } from "node:fs/promises";
 import { createHash, randomUUID } from "node:crypto";
+import { defaultShellTimeout } from "../pi-rpc-bridge/shell-timeout-policy.js";
 
 export default function remoteExecution(pi: ExtensionAPI) {
   const url = process.env.PI_DESKTOP_REMOTE_URL;
@@ -90,14 +91,14 @@ export default function remoteExecution(pi: ExtensionAPI) {
   }}));
   const bash = createBashToolDefinition(cwd, { exposeSessionEnvironment: false, operations: {
     exec: async (command, directory, options) => {
-      const seconds = options.timeout ?? 300;
+      const seconds = options.timeout ?? defaultShellTimeout(command);
       const result = await invoke("exec", { command, cwd: directory, timeout: seconds }, options.signal, seconds * 1000 + 10000);
       options.onData(Buffer.from(result.output, "utf8")); return { exitCode: result.exitCode };
     },
   }});
-  pi.registerTool({ ...bash, promptSnippet: "Execute PowerShell commands on the client Windows PC", description: "Execute PowerShell commands on the CLIENT Windows computer. This is not bash; use PowerShell syntax. No command executes on the Pi host. Timeout defaults to 300 seconds; an explicit timeout overrides it.",
+  pi.registerTool({ ...bash, promptSnippet: "Execute PowerShell commands on the client Windows PC", description: "Execute PowerShell commands on the CLIENT Windows computer. This is not bash; use PowerShell syntax. No command executes on the Pi host. Timeout defaults to 60 seconds for simple inspections and 3600 seconds for other commands, including builds and scripts. An explicit timeout overrides the default.",
     async execute(id, parameters, signal, update, context) {
-      const result = await bash.execute(id, parameters, signal, update, context);
+      const result = await bash.execute(id, { ...parameters, timeout: parameters.timeout === undefined ? defaultShellTimeout(parameters.command) : parameters.timeout }, signal, update, context);
       if (result.details?.fullOutputPath) permittedOutput.add(path.resolve(result.details.fullOutputPath));
       return result;
     },

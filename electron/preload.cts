@@ -14,6 +14,7 @@ const api: PiDesktopApi = {
   getWebAccessSettings: () => ipcRenderer.invoke("desktop:get-web-access-settings"),
   saveWebAccessSettings: (settings) => ipcRenderer.invoke("desktop:save-web-access-settings", settings),
   bootstrap: () => ipcRenderer.invoke("desktop:bootstrap"),
+  rendererReady: () => ipcRenderer.send("desktop:renderer-ready"),
   chooseProjectFolders: () => ipcRenderer.invoke("desktop:choose-project-folders"),
   createProject: (name, paths) => ipcRenderer.invoke("desktop:create-project", name, paths),
   refreshProjectSessions: (projectId) => ipcRenderer.invoke("desktop:refresh-project-sessions", projectId),
@@ -37,6 +38,7 @@ const api: PiDesktopApi = {
   removeQueuedPrompt: (conversationId, promptId) =>
     ipcRenderer.invoke("desktop:remove-queued-prompt", conversationId, promptId),
   abort: (conversationId) => ipcRenderer.invoke("pi:abort", conversationId),
+  resumeConversation: (conversationId) => ipcRenderer.invoke("pi:resume", conversationId),
   rewindConversation: (conversationId, entryId) => ipcRenderer.invoke("pi:rewind", conversationId, entryId),
   editLastMessage: (conversationId, entryId, text) => ipcRenderer.invoke("pi:edit-last-message", conversationId, entryId, text),
   setGoal: (id, objective, attachments, requestPlan) => ipcRenderer.invoke("pi:set-goal", id, objective, attachments, requestPlan),

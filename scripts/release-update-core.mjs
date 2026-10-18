@@ -3,7 +3,7 @@ import { mkdir, readFile, readdir, rename, rm, stat, writeFile } from "node:fs/p
 import path from "node:path";
 
 export const FAST_RELEASE_MANIFEST = ".pi-desktop-fast-update.json";
-export const FAST_RELEASE_FORMAT = 1;
+export const FAST_RELEASE_FORMAT = 2;
 
 const ROOT_FILES = [
   "index.html",
@@ -101,6 +101,10 @@ export function classifyReleaseChanges(changedPaths) {
     fullRequired: false,
   };
   for (const name of changedPaths) {
+    if (typeof name !== "string" || path.isAbsolute(name) || /[\\:]/.test(name)
+      || name.split("/").some(part => !part || part === "." || part === "..")) {
+      throw new Error(`Invalid release input path: ${name}`);
+    }
     if (name === "package-lock.json") result.fullRequired = true;
     else if (name === "package.json") result.packageMetadata = true;
     else if (name === "index.html" || name === "vite.config.ts" || name === "tsconfig.json" || name.startsWith("src/")) result.renderer = true;
@@ -142,8 +146,17 @@ export async function createFastReleaseManifest(projectRoot) {
   };
 }
 
-export async function writeFastReleaseManifest(projectRoot, portableRoot) {
-  const manifest = await createFastReleaseManifest(projectRoot);
+export async function assertReleaseInputsUnchanged(projectRoot, snapshot) {
+  const current = await createFastReleaseManifest(projectRoot);
+  const changed = changedReleaseInputs(snapshot.files, current.files);
+  if (changed.length || snapshot.packagingFingerprint !== current.packagingFingerprint) {
+    throw new Error(`Sources changed during the build; release was not updated. Run the update again. Changed inputs: ${changed.join(", ") || "package metadata"}`);
+  }
+}
+
+export async function writeFastReleaseManifest(projectRoot, portableRoot, snapshot) {
+  if (!snapshot?.files || snapshot.format !== FAST_RELEASE_FORMAT) throw new Error("A captured build-input snapshot is required to write the release manifest.");
+  const manifest = snapshot;
   const target = path.join(portableRoot, FAST_RELEASE_MANIFEST);
   const temporary = `${target}.tmp-${process.pid}`;
   const old = `${target}.old-${process.pid}`;

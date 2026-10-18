@@ -23,6 +23,7 @@ import {
   PanelLeft,
   Paperclip,
   Plus,
+  Play,
   Search,
   Send,
   Settings,
@@ -70,6 +71,8 @@ import { quotedHistoryPrompt } from "./history-quotes";
 import { mergeAttachments } from "./drop-attachments";
 import { nestedToolActivities } from "./nested-tools";
 import { planIsWorking } from "../shared/plan-activity";
+import { composerAction } from "../shared/run-state";
+import { afterFirstPaint } from "./after-first-paint";
 import { visibleGoalText } from "../shared/goal";
 import { visiblePlanRequestText } from "../shared/plan";
 import { visibleImageAttachmentText } from "../shared/image-attachments";
@@ -3487,6 +3490,9 @@ export default function App() {
   );
   const [tools, setTools] = useState<Record<string, ToolActivity>>({});
   const [working, setWorking] = useState(false);
+  const [pendingRequests, setPendingRequests] = useState<Record<string, true>>({});
+  const pendingRequestIdsRef = useRef(new Set<string>());
+  const requestPending = Boolean(activeConversationId && pendingRequests[activeConversationId]);
   const [startedAt, setStartedAt] = useState<number>();
   const [elapsed, setElapsed] = useState(0);
   const [lastDuration, setLastDuration] = useState<number>();
@@ -3630,9 +3636,12 @@ export default function App() {
   }, [search, addNotice]);
 
   useEffect(() => {
+    let disposed = false;
+    let cancelPaint = () => {};
     void window.piDesktop
       .bootstrap()
       .then((payload) => {
+        if (disposed) return;
         setBootstrap(payload);
         setProjects(payload.projects);
         setConversations(payload.conversations);
@@ -3640,13 +3649,20 @@ export default function App() {
         setActiveProjectId(payload.activeProjectId);
         setActiveConversationId(payload.activeConversationId);
         setLoading(false);
-        if (payload.activeConversationId)
-          void openConversation(payload.activeConversationId);
+        const navigation = navigationSequenceRef.current;
+        cancelPaint = afterFirstPaint(() => {
+          if (disposed) return;
+          if (!window.piDesktop.webClient) window.piDesktop.rendererReady();
+          if (payload.activeConversationId && navigationSequenceRef.current === navigation)
+            void openConversation(payload.activeConversationId);
+        });
       })
       .catch((error) => {
+        if (disposed) return;
         setLoading(false);
         addNotice(String(error), "error");
       });
+    return () => { disposed = true; cancelPaint(); };
   }, [addNotice]);
 
   useEffect(
@@ -3882,6 +3898,7 @@ export default function App() {
     streamingMessage,
     tools,
     working,
+    requestPending,
     workingMessage,
     scrollConversationToBottom,
     syncScrollToBottomHint,
@@ -3964,6 +3981,20 @@ export default function App() {
   }, []);
 
   const handlePiEvent = (event: JsonObject) => {
+    if (event.run) setSnapshot(current => current ? { ...current, run: event.run } : current);
+    if (event.type === "desktop_run_state" && event.stopped === true) {
+      setWorking(false);
+      setWorkingMessage("");
+      setStreamingMessage(null);
+      setTools({});
+      setSnapshot(current => current ? { ...current, state: { ...current.state, isStreaming: false, isCompacting: false } } : current);
+      if (typeof event.run?.durationMs === "number") {
+        setLastDuration(event.run.durationMs);
+        setElapsed(event.run.durationMs);
+      }
+      startedAtRef.current = undefined;
+      return;
+    }
     if (event.type === "desktop_run_started" || event.type === "agent_start") {
       setSnapshot(current => current ? { ...current, planWorkingRevision: event.planWorkingRevision } : current);
       const continuingRun = startedAtRef.current !== undefined;
@@ -4581,6 +4612,34 @@ export default function App() {
     }
   };
 
+  const beginRequest = (conversationId: string): boolean => {
+    if (pendingRequestIdsRef.current.has(conversationId)) return false;
+    pendingRequestIdsRef.current.add(conversationId);
+    setPendingRequests(current => ({ ...current, [conversationId]: true }));
+    return true;
+  };
+  const finishRequest = (conversationId: string) => {
+    pendingRequestIdsRef.current.delete(conversationId);
+    setPendingRequests(current => {
+      const next = { ...current };
+      delete next[conversationId];
+      return next;
+    });
+  };
+  const primaryAction = composerAction(working, Boolean(input.trim() || attachments.length || historyQuotes.length), snapshot?.run);
+  const resumeExecution = async () => {
+    if (!activeConversationId || !beginRequest(activeConversationId)) return;
+    const id = activeConversationId;
+    autoScrollRef.current = true;
+    try {
+      await window.piDesktop.resumeConversation(id);
+    } catch (error) {
+      addNotice(error instanceof Error ? error.message : String(error), "error");
+    } finally {
+      finishRequest(id);
+    }
+  };
+
   const submit = async (explainQuote?: string) => {
     const quick = explainQuote !== undefined;
     const submittedQuotes = quick ? [explainQuote] : historyQuotes;
@@ -4588,7 +4647,8 @@ export default function App() {
     const message = quick ? "Объясни подробнее выделенный фрагмент." :
       input.trim() || (attachments.length ? "Посмотри вложения." : historyQuotes.length ? "Посмотри выделенные фрагменты." : "");
     const text = message ? quotedHistoryPrompt(message, submittedQuotes) : "";
-    if (!text || !activeConversationId) return;
+    if (!text && !quick && primaryAction === "resume") { await resumeExecution(); return; }
+    if (!text || !activeConversationId || (!working && pendingRequestIdsRef.current.has(activeConversationId))) return;
     if (!working && (text === "/compact" || text.startsWith("/compact "))) {
       setInput("");
       await executeCompact(
@@ -4605,6 +4665,7 @@ export default function App() {
     const submittedAttachments = quick ? [] : attachments;
     const submittedAsGoal = !quick && goalMode;
     const submittedWithPlan = !quick && planMode;
+    if (!working && !beginRequest(conversationId)) return;
     autoScrollRef.current = true;
     if (!quick) {
       setInput("");
@@ -4687,6 +4748,8 @@ export default function App() {
         error instanceof Error ? error.message : String(error),
         "error",
       );
+    } finally {
+      finishRequest(conversationId);
     }
   };
 
@@ -5801,7 +5864,15 @@ export default function App() {
                         </div>
                       </div>
                     )}
-                    {!working && lastDuration !== undefined && (
+                    {!working && requestPending && (
+                      <div className="run-activity" role="status" aria-live="polite">
+                        <div className="run-activity-phase">
+                          <WorkingIndicator />
+                          <span className="working-message">Подготовка запроса…</span>
+                        </div>
+                      </div>
+                    )}
+                    {!working && !requestPending && lastDuration !== undefined && (
                       <div className="run-complete">
                         <span>
                           <Clock3 size={13} /> Запрос занял{" "}
@@ -6297,11 +6368,14 @@ export default function App() {
                         </>
                       ) : (
                         <button
-                          className="send-button"
-                          disabled={!input.trim() && !attachments.length && !historyQuotes.length}
+                          className={`send-button${primaryAction === "resume" ? " resume" : ""}`}
+                          title={primaryAction === "resume" ? "Продолжить прерванную работу" : "Отправить"}
+                          aria-label={primaryAction === "resume" ? "Продолжить" : "Отправить"}
+                          aria-busy={requestPending}
+                          disabled={requestPending || (primaryAction !== "resume" && !input.trim() && !attachments.length && !historyQuotes.length)}
                           onClick={() => void submit()}
                         >
-                          <Send size={17} />
+                          {primaryAction === "resume" ? <><Play size={17} /><span>Продолжить</span></> : <Send size={17} />}
                         </button>
                       )}
                     </div>

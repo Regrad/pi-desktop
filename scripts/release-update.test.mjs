@@ -3,7 +3,7 @@ import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
-import { FAST_RELEASE_MANIFEST, changedReleaseInputs, classifyReleaseChanges, collectReleaseInputs, writeFastReleaseManifest } from "./release-update-core.mjs";
+import { FAST_RELEASE_MANIFEST, changedReleaseInputs, classifyReleaseChanges, collectReleaseInputs, createFastReleaseManifest, assertReleaseInputsUnchanged, writeFastReleaseManifest } from "./release-update-core.mjs";
 
 test("source manifest excludes generated client-agent output", async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), "pi-release-inputs-"));
@@ -27,14 +27,31 @@ test("release manifest can be replaced without leaving temporary files", async (
   const release = path.join(root, "release");
   try {
     await writeFile(path.join(root, "package.json"), JSON.stringify({ dependencies: {}, devDependencies: { electron: "1" }, build: {} }));
-    await writeFastReleaseManifest(root, release);
+    await writeFastReleaseManifest(root, release, await createFastReleaseManifest(root));
     await writeFile(path.join(root, "README.md"), "changed");
-    await writeFastReleaseManifest(root, release);
+    await writeFastReleaseManifest(root, release, await createFastReleaseManifest(root));
     const manifest = JSON.parse(await readFile(path.join(release, FAST_RELEASE_MANIFEST), "utf8"));
     assert.equal(typeof manifest.files["README.md"], "string");
   } finally {
     await rm(root, { recursive: true, force: true });
   }
+});
+
+test("manifest keeps the captured input version; edits during a build stay pending", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "pi-release-snapshot-"));
+  try {
+    await writeFile(path.join(root, "package.json"), "{}");
+    await mkdir(path.join(root, "src"));
+    await writeFile(path.join(root, "src", "a.ts"), "version A");
+    const captured = await createFastReleaseManifest(root);
+    await assertReleaseInputsUnchanged(root, captured);
+    await writeFile(path.join(root, "src", "a.ts"), "version B");
+    await assert.rejects(assertReleaseInputsUnchanged(root, captured), /Sources changed during the build.*src\/a.ts/);
+    await writeFastReleaseManifest(root, path.join(root, "release"), captured);
+    const saved = JSON.parse(await readFile(path.join(root, "release", FAST_RELEASE_MANIFEST), "utf8"));
+    assert.deepEqual(changedReleaseInputs(saved.files, await collectReleaseInputs(root)), ["src/a.ts"]);
+    await assert.rejects(writeFastReleaseManifest(root, path.join(root, "release")), /captured build-input snapshot/);
+  } finally { await rm(root, { recursive: true, force: true }); }
 });
 
 test("detects added changed and deleted inputs", () => {
@@ -69,6 +86,12 @@ test("ComfyUI source updates packaged and active addon copies", () => {
 
 test("dependency lock changes require a full package", () => {
   assert.equal(classifyReleaseChanges(["package-lock.json"]).fullRequired, true);
+});
+
+test("release input paths cannot escape their source or destination", () => {
+  for (const filename of ["resources/../../data", "../release", "resources\\..\\data", "C:/outside", "resources//file", "/outside"]) {
+    assert.throws(() => classifyReleaseChanges([filename]), /Invalid release input path/);
+  }
 });
 
 test("compatibility sources refresh only the bridge", () => {

@@ -1,4 +1,4 @@
-import { chromium, type Browser, type Page, type Locator, type FrameLocator, type ConnectOverCDPTransport } from "playwright-core";
+import type { Browser, Page, Locator, FrameLocator, ConnectOverCDPTransport } from "playwright-core";
 
 export interface BrowserLocator {
   selector?: string; role?: string; name?: string; text?: string; label?: string; placeholder?: string; testId?: string;
@@ -82,6 +82,7 @@ export class BrowserAutomation {
       emit({ method, params, sessionId: sessionId || main });
     };
     api.on("message", message); this.removeListener = () => api.off("message", message); this.transport = transport;
+    const { chromium } = await import("playwright-core");
     const browser = await chromium.connectOverCDP(transport, { noDefaults: true, timeout: 10000 });
     if (generation !== this.generation) { transport.close(); throw new Error("Подключение браузера отменено."); }
     this.browser = browser;

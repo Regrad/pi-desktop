@@ -13,8 +13,8 @@ import type { ComfySettings } from "../shared/comfy.js";
 import { generatedFile, generatedMediaResponse } from "./generated-media.js";
 import { parseGeneratedLink } from "../shared/generated-links.js";
 import { randomUUID } from "node:crypto";
-import { webBackend } from "./web-backend.js";
-import { RemoteRuntime } from "./remote-runtime.js";
+import type { RemoteRuntime } from "./remote-runtime.js";
+import { StartupTasks } from "./startup-tasks.js";
 import type { WebAccessSettings } from "../shared/web-access.js";
 
 protocol.registerSchemesAsPrivileged([{ scheme: "pi-generated", privileges: { standard: true, secure: true, supportFetchAPI: true, stream: true, corsEnabled: true } }]);
@@ -31,6 +31,9 @@ let logPath = "";
 let controlApi: Awaited<ReturnType<typeof import("../resources/control-api/server.mjs").startControlApi>> | undefined;
 let webAccess: import("../resources/web-access/server.mjs").WebAccessService | undefined;
 let remoteRuntime: RemoteRuntime | undefined;
+const startupTasks = new StartupTasks();
+const startupAbort = new AbortController();
+let windowShown = false, rendererReady = false, backgroundStarted = false;
 
 const hasSingleInstanceLock = app.requestSingleInstanceLock();
 if (!hasSingleInstanceLock) app.quit();
@@ -98,7 +101,10 @@ async function createWindow(): Promise<void> {
       sandbox: false,
     },
   });
-  mainWindow.once("ready-to-show", () => mainWindow?.show());
+  const shown = new Promise<void>(resolve => {
+    mainWindow!.once("ready-to-show", () => { mainWindow?.show(); resolve(); });
+    mainWindow!.once("closed", resolve);
+  });
   mainWindow.on("closed", () => {
     mainWindow = null;
     // Hidden offscreen browser windows must not keep the application alive.
@@ -116,9 +122,15 @@ async function createWindow(): Promise<void> {
   const devUrl = process.env.VITE_DEV_SERVER_URL;
   if (devUrl) await mainWindow.loadURL(devUrl);
   else await mainWindow.loadFile(path.join(projectRoot, "dist", "index.html"));
+  await shown;
 }
 
 function registerIpc(): void {
+  ipcMain.on("desktop:renderer-ready", event => {
+    if (event.sender !== mainWindow?.webContents) return;
+    rendererReady = true;
+    startBackgroundServices();
+  });
   ipcMain.handle("desktop:skills", (event, id: string, command: import("../shared/skills.js").SkillsCommand) => {
     if (event.sender !== mainWindow?.webContents) throw new Error("Управление навыками разрешено только интерфейсу Pi Desktop.");
     return piManager.manageSkills(id, command);
@@ -128,14 +140,8 @@ function registerIpc(): void {
     if (command.conversationId) store.getConversation(command.conversationId);
     return browserManager.ui(command);
   });
-  ipcMain.handle("desktop:get-web-access-settings", () => {
-    if (!webAccess) throw new Error("Веб-доступ не инициализирован");
-    return webAccess.status();
-  });
-  ipcMain.handle("desktop:save-web-access-settings", (_event, settings: WebAccessSettings) => {
-    if (!webAccess) throw new Error("Веб-доступ не инициализирован");
-    return webAccess.configure(settings);
-  });
+  ipcMain.handle("desktop:get-web-access-settings", async () => (await ensureWebAccess()).status());
+  ipcMain.handle("desktop:save-web-access-settings", async (_event, settings: WebAccessSettings) => (await ensureWebAccess()).configure(settings));
   ipcMain.handle("desktop:bootstrap", () => {
     const state = store.snapshot();
     return {
@@ -246,6 +252,7 @@ function registerIpc(): void {
     piManager.removeQueuedPrompt(conversationId, promptId),
   );
   ipcMain.handle("pi:abort", (_event, conversationId: string) => piManager.abort(conversationId));
+  ipcMain.handle("pi:resume", (_event, conversationId: string) => piManager.resumeConversation(conversationId));
   ipcMain.handle("pi:set-goal", (_event, id: string, objective: string, attachments: Attachment[], requestPlan?: boolean) =>
     piManager.setGoal(id, objective, attachments, requestPlan === true));
   ipcMain.handle("pi:control-goal", (_event, id: string, action: "pause" | "resume" | "remove") =>
@@ -432,7 +439,7 @@ function registerIpc(): void {
   });
 }
 
-if (hasSingleInstanceLock) void app.whenReady().then(async () => {
+async function initializeDesktop(): Promise<void> {
   Menu.setApplicationMenu(null);
   const dataDir = resolveDataDir();
   await mkdir(dataDir, { recursive: true });
@@ -440,7 +447,7 @@ if (hasSingleInstanceLock) void app.whenReady().then(async () => {
   await mkdir(logsDir, { recursive: true });
   logPath = path.join(logsDir, "pi-desktop.log");
   store = new DataStore(dataDir, projectRoot, process.execPath);
-  await store.initialize();
+  await store.initialize({ refreshSessions: false });
   await mkdir(path.join(store.dataDir, "image-generation"), { recursive: true });
   await mkdir(path.join(store.dataDir, "music-generation"), { recursive: true });
   protocol.handle("pi-generated", (request) => generatedMediaResponse(store.dataDir, request));
@@ -452,57 +459,100 @@ if (hasSingleInstanceLock) void app.whenReady().then(async () => {
       new Notification({ title: "Pi Desktop", body: `Задача завершена: ${conversation.title}` }).show();
     }
   }, (channel, payload) => webAccess?.publish(channel, payload), undefined, (id, params) => browserManager.request(id, params), id => browserManager.cancel(id));
-  const { createWebAccess } = await import(pathToFileURL(path.join(projectRoot, "resources", "web-access", "server.mjs")).href) as typeof import("../resources/web-access/server.mjs");
-  remoteRuntime = new RemoteRuntime(store, projectRoot, process.execPath, (channel, payload, id) => webAccess?.publish(channel, payload, id));
-  const helperFile = path.join(projectRoot, "resources", "client-agent", "Pi Desktop Agent.exe");
-  webAccess = await createWebAccess({ dataDir, rendererDir: path.join(projectRoot, "dist"), backend: webBackend(store, piManager, { methods: {
-    chooseProjectFolders: async () => { const result = await dialog.showOpenDialog(mainWindow!, { properties: ["openDirectory", "multiSelections"] }); return result.canceled ? [] : result.filePaths; },
-    createProject: (name: string, paths: string[]) => store.addProject(name, paths),
-    refreshProjectSessions: (id: string) => store.refreshProjectSessions(id),
-    renameProject: (id: string, name: string) => piManager.renameProject(id, name),
-    removeProject: async (id: string) => { await piManager.removeProject(id); return true; },
-    deleteConversation: async (id: string) => { await piManager.deleteConversation(id); return true; },
-    getProjectInstructions: (id: string) => store.getProjectInstructions(id),
-    saveProjectInstructions: async (id: string, content: string) => { const result = await store.saveProjectInstructions(id, content); piManager.invalidateInstructions(id); return result; },
-  } }),
-    helperFile: await stat(helperFile).then(() => helperFile).catch(() => undefined),
-    remoteBackend: (id, broker, credential) => remoteRuntime!.backend(id, broker, credential),
-    onDeviceDisconnected: id => remoteRuntime?.disconnect(id),
-  });
   updateManager = new UpdateManager(store, projectRoot, process.execPath);
-  const { startControlApi } = await import(pathToFileURL(path.join(projectRoot, "resources", "control-api", "server.mjs")).href) as typeof import("../resources/control-api/server.mjs");
-  controlApi = await startControlApi({
-    dataDir,
-    backend: {
-      projects: () => store.snapshot().projects,
-      chats: () => store.snapshot().conversations.map(({ id, projectId, title, status }) => ({ id, projectId, title, status })),
-      attachments: prepareAttachments,
-      create: (projectId) => piManager.createConversation(projectId),
-      inspect: (id) => piManager.inspectConversation(id),
-      select: async (id) => {
-        if (!mainWindow || mainWindow.isDestroyed()) throw new Error("Окно Pi Desktop не готово");
-        const selected = await piManager.openConversation(id);
-        const requestId = randomUUID();
-        const contents = mainWindow.webContents;
-        await new Promise<void>((resolve, reject) => {
-          const timer = setTimeout(() => { cleanup(); reject(new Error("Интерфейс Pi Desktop не ответил")); }, 10000);
-          const listener = (event: Electron.IpcMainEvent, acknowledged: string) => {
-            if (event.sender !== contents || acknowledged !== requestId) return;
-            cleanup(); resolve();
-          };
-          const cleanup = () => { clearTimeout(timer); ipcMain.removeListener("desktop:control-selected", listener); };
-          ipcMain.on("desktop:control-selected", listener);
-          contents.send("desktop:control-select", { requestId, snapshot: selected });
-        });
-      },
-      prompt: (id, message, attachments) => piManager.sendPrompt(id, message, attachments),
-      abort: (id) => piManager.abort(id),
-      reply: (id, response) => piManager.respondToExtensionUi(id, response),
-    },
-  });
   registerIpc();
   await createWindow();
-}).catch(async (error) => {
+  windowShown = true;
+  startBackgroundServices();
+}
+
+function startBackgroundServices(): void {
+  if (shuttingDown || !mainWindow || !windowShown || !rendererReady || backgroundStarted) return;
+  backgroundStarted = true;
+  // A slow/failed optional service must not postpone the first usable window.
+  for (const [scope, start] of [
+    ["session-index", refreshSessionIndex], ["web-access", ensureWebAccess], ["control-api", ensureControlApi],
+  ] as const) void start().catch(error => { if (!shuttingDown) void writeDiagnostic(scope, error); });
+}
+
+async function refreshSessionIndex(): Promise<void> {
+  await startupTasks.start("session-index", async () => {
+    const before = new Map(store.snapshot().conversations.map(conversation => [conversation.id, JSON.stringify(conversation)]));
+    await store.refreshAllProjectSessions(startupAbort.signal);
+    if (shuttingDown) return;
+    for (const conversation of store.snapshot().conversations) {
+      if (before.get(conversation.id) === JSON.stringify(conversation)) continue;
+      mainWindow?.webContents.send("desktop:conversation-changed", conversation);
+      webAccess?.publish("desktop:conversation-changed", conversation);
+    }
+  });
+}
+
+async function ensureWebAccess() {
+  const service = await startupTasks.start("web-access", async () => {
+    const dataDir = store.dataDir;
+    const [{ webBackend }, { RemoteRuntime }] = await Promise.all([import("./web-backend.js"), import("./remote-runtime.js")]);
+    const { createWebAccess } = await import(pathToFileURL(path.join(projectRoot, "resources", "web-access", "server.mjs")).href) as typeof import("../resources/web-access/server.mjs");
+    remoteRuntime = new RemoteRuntime(store, projectRoot, process.execPath, (channel, payload, id) => webAccess?.publish(channel, payload, id));
+    const helperFile = path.join(projectRoot, "resources", "client-agent", "Pi Desktop Agent.exe");
+    return createWebAccess({ dataDir, rendererDir: path.join(projectRoot, "dist"), backend: webBackend(store, piManager, { methods: {
+      chooseProjectFolders: async () => { const result = await dialog.showOpenDialog(mainWindow!, { properties: ["openDirectory", "multiSelections"] }); return result.canceled ? [] : result.filePaths; },
+      createProject: (name: string, paths: string[]) => store.addProject(name, paths),
+      refreshProjectSessions: (id: string) => store.refreshProjectSessions(id),
+      renameProject: (id: string, name: string) => piManager.renameProject(id, name),
+      removeProject: async (id: string) => { await piManager.removeProject(id); return true; },
+      deleteConversation: async (id: string) => { await piManager.deleteConversation(id); return true; },
+      getProjectInstructions: (id: string) => store.getProjectInstructions(id),
+      saveProjectInstructions: async (id: string, content: string) => { const result = await store.saveProjectInstructions(id, content); piManager.invalidateInstructions(id); return result; },
+    } }),
+      helperFile: await stat(helperFile).then(() => helperFile).catch(() => undefined),
+      remoteBackend: (id, broker, credential) => remoteRuntime!.backend(id, broker, credential),
+      onDeviceDisconnected: id => remoteRuntime?.disconnect(id),
+    });
+  }, value => value.close());
+  webAccess = service;
+  return service;
+}
+
+async function ensureControlApi() {
+  const service = await startupTasks.start("control-api", async () => {
+    const dataDir = store.dataDir;
+    const { startControlApi } = await import(pathToFileURL(path.join(projectRoot, "resources", "control-api", "server.mjs")).href) as typeof import("../resources/control-api/server.mjs");
+    return startControlApi({
+      dataDir,
+      backend: {
+        projects: () => store.snapshot().projects,
+        chats: () => store.snapshot().conversations.map(({ id, projectId, title, status }) => ({ id, projectId, title, status })),
+        attachments: prepareAttachments,
+        create: (projectId) => piManager.createConversation(projectId),
+        inspect: (id) => piManager.inspectConversation(id),
+        select: async (id) => {
+          if (!mainWindow || mainWindow.isDestroyed()) throw new Error("Окно Pi Desktop не готово");
+          const selected = await piManager.openConversation(id);
+          const requestId = randomUUID();
+          const contents = mainWindow.webContents;
+          await new Promise<void>((resolve, reject) => {
+            const timer = setTimeout(() => { cleanup(); reject(new Error("Интерфейс Pi Desktop не ответил")); }, 10000);
+            const listener = (event: Electron.IpcMainEvent, acknowledged: string) => {
+              if (event.sender !== contents || acknowledged !== requestId) return;
+              cleanup(); resolve();
+            };
+            const cleanup = () => { clearTimeout(timer); ipcMain.removeListener("desktop:control-selected", listener); };
+            ipcMain.on("desktop:control-selected", listener);
+            contents.send("desktop:control-select", { requestId, snapshot: selected });
+          });
+        },
+        prompt: (id, message, attachments) => piManager.sendPrompt(id, message, attachments),
+        abort: (id) => piManager.abort(id),
+        reply: (id, response) => piManager.respondToExtensionUi(id, response),
+      },
+    });
+  }, value => value.close());
+  controlApi = service;
+  return service;
+}
+
+if (hasSingleInstanceLock) void app.whenReady().then(initializeDesktop).catch(async (error) => {
   await writeDiagnostic("startup", error);
   dialog.showErrorBox("Не удалось запустить Pi Desktop", error instanceof Error ? error.message : String(error));
   app.quit();
@@ -519,7 +569,8 @@ app.on("before-quit", (event) => {
   event.preventDefault();
   if (shuttingDown) return;
   shuttingDown = true;
-  void Promise.all([controlApi?.close(), webAccess?.close(), piManager.shutdown(), browserManager?.dispose()]).finally(() => remoteRuntime?.close()).finally(() => {
+  startupAbort.abort();
+  void Promise.all([startupTasks.close(), piManager.shutdown(), browserManager?.dispose()]).finally(() => remoteRuntime?.close()).finally(() => {
     piManager = undefined as unknown as PiManager;
     app.exit(0);
   });

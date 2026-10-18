@@ -31,7 +31,7 @@ test("Pi remote tools delegate all filesystem/command/desktop actions; client ru
       case "ls": result = { names: ["test.txt"] }; break;
       case "find": result = { files: ["test.txt"] }; break;
       case "grep": result = { output: "CLIENT ONLY MATCH", truncated: false }; break;
-      case "exec": result = { output: "CLIENT POWERSHELL OUTPUT", exitCode: 0 }; assert.equal(args.timeout, args.command === "LONG_COMMAND" ? 1200 : 300); assert.equal(args.env, undefined); break;
+      case "exec": result = { output: "CLIENT POWERSHELL OUTPUT", exitCode: 0 }; assert.equal(args.timeout, args.command === "LONG_COMMAND" ? 1200 : args.command === "Get-Location" ? 60 : 3600); assert.equal(invocation.timeout, args.timeout * 1000 + 10000); assert.equal(args.env, undefined); break;
       case "computer": result = { data: "client-image", width: 100, height: 80, x: -100, y: 0 }; break;
       default: throw new Error(`Unexpected helper operation ${operation}`);
     }
@@ -54,6 +54,8 @@ test("Pi remote tools delegate all filesystem/command/desktop actions; client ru
   assert.equal((await call("grep", { pattern: "new" })).content[0].text, "CLIENT ONLY MATCH");
   assert((await call("bash", { command: "Get-Location" })).content[0].text.includes("CLIENT POWERSHELL OUTPUT"));
   assert((await call("bash", { command: "LONG_COMMAND", timeout: 1200 })).content[0].text.includes("CLIENT POWERSHELL OUTPUT"));
+  assert((await call("bash", { command: "cmake --build build" })).content[0].text.includes("CLIENT POWERSHELL OUTPUT"));
+  assert((await call("bash", { command: ".\\compile.ps1" })).content[0].text.includes("CLIENT POWERSHELL OUTPUT"));
   assert.equal((await call("computer_use", { action: "screenshot" })).content[0].data, "client-image");
   const turn = await handlers.get("before_agent_start")({ systemPrompt: "GLOBAL HOST RULE" });
   assert(turn.systemPrompt.includes("GLOBAL HOST RULE")); assert(turn.systemPrompt.includes("Client rule ONE"));

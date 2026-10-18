@@ -7,7 +7,9 @@ import process from "node:process";
 import { fileURLToPath } from "node:url";
 import { ensurePiLensGrammars } from "../resources/pi-lens/grammars.mjs";
 import { activatePortableBuild } from "./portable-swap.mjs";
-import { writeFastReleaseManifest } from "./release-update-core.mjs";
+import { createFastReleaseManifest, assertReleaseInputsUnchanged, writeFastReleaseManifest } from "./release-update-core.mjs";
+import { createReleaseTransaction } from "./release-transaction.mjs";
+import { planComfyAddonUpdate, stageComfyAddonUpdate, assertComfyAddonState } from "./release-addon.mjs";
 
 const projectRoot = path.resolve(
   path.dirname(fileURLToPath(import.meta.url)),
@@ -207,6 +209,12 @@ try {
     throw error;
   }
   await packageLock.writeFile(JSON.stringify({ pid: process.pid, target: targetDir, startedAt: new Date().toISOString() }));
+  // Capture inputs under the lock, before any compilation. Never publish hashes
+  // collected after the build as if those newer files had been compiled.
+  const snapshot = await createFastReleaseManifest(projectRoot);
+  const npmCli = process.env.npm_execpath;
+  if (!npmCli) throw new Error("Run npm run pack so the package build can invoke npm.");
+  await run(process.execPath, [npmCli, "run", "build"]);
   const grammars = await ensurePiLensGrammars(path.join(projectRoot, "node_modules", "pi-lens"));
   process.stdout.write(`Pi Lens: ${grammars.count} grammars verified before packaging.\n`);
   // The portable distribution includes the standalone client helper automatically.
@@ -215,7 +223,6 @@ try {
   await run("dotnet", ["publish", path.join(projectRoot, "client-agent", "PiDesktopAgent.csproj"), "-c", "Release", "-r", "win-x64", "-o", helperOutput]);
   await mkdir(path.join(projectRoot, "resources", "client-agent"), { recursive: true });
   await cp(path.join(helperOutput, "Pi Desktop Agent.exe"), path.join(projectRoot, "resources", "client-agent", "Pi Desktop Agent.exe"));
-  await closeDesktopInstances();
   await run(process.execPath, [
     builderCli,
     "--win",
@@ -228,6 +235,7 @@ try {
       "electron-builder did not create win-unpacked/Pi Desktop.exe",
     );
   }
+  await assertReleaseInputsUnchanged(projectRoot, snapshot);
 
   await mkdir(releaseRoot, { recursive: true });
   await retry("clean next", () =>
@@ -245,13 +253,25 @@ try {
     const seed = path.join(canonicalTarget, "data");
     if (await exists(seed)) dataSource = seed;
   }
+  await closeDesktopInstances();
+  const addonPlan = await planComfyAddonUpdate(projectRoot, dataSource ? path.dirname(dataSource) : targetDir, snapshot);
   if (dataSource) {
     await retry("carry portable data", () =>
       cp(dataSource, path.join(nextDir, "data"), { recursive: true }),
     );
   }
 
-  await writeFastReleaseManifest(projectRoot, nextDir);
+  const addonTransaction = await createReleaseTransaction(nextDir);
+  try {
+    await stageComfyAddonUpdate(addonTransaction, addonPlan, nextDir);
+    await addonTransaction.commit(async phase => {
+      await assertReleaseInputsUnchanged(projectRoot, snapshot);
+      await assertComfyAddonState(addonPlan, nextDir, phase === "after");
+    });
+  } finally { await addonTransaction.dispose(); }
+  if (addonPlan.preserved.length) process.stdout.write(`Preserving local addon edits/deletions: ${addonPlan.preserved.join(", ")}\n`);
+  await writeFastReleaseManifest(projectRoot, nextDir, snapshot);
+  await assertReleaseInputsUnchanged(projectRoot, snapshot);
 
   await activatePortableBuild({ target: targetDir, next: nextDir, previous: previousDir }, { exists, rename: renameWithRecovery });
   await retry("remove old build", () =>

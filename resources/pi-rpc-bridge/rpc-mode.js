@@ -595,11 +595,12 @@ export async function runRpcMode(runtimeHost) {
         const id = command.id;
         switch (command.type) {
             case "desktop_plan_continue":
-            case "desktop_goal_continue": {
+            case "desktop_goal_continue":
+            case "desktop_run_resume": {
                 if (session.isStreaming) return error(id, command.type, "Thread is not idle");
                 await session.sendCustomMessage({
-                    customType: command.type === "desktop_plan_continue" ? "desktop_plan_continuation" : "desktop_goal_continuation",
-                    content: command.message,
+                    customType: command.type === "desktop_run_resume" ? "desktop_run_continuation" : command.type === "desktop_plan_continue" ? "desktop_plan_continuation" : "desktop_goal_continuation",
+                    content: command.type === "desktop_run_resume" ? "The user clicked Continue. Resume the interrupted task from its last confirmed state, using the existing conversation and tool results. Check the outcome of interrupted operations before repeating them. This is not a new task." : command.message,
                     display: false,
                     details: { goalId: command.goalId },
                 }, { triggerTurn: true });

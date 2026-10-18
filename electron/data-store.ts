@@ -17,10 +17,9 @@ import {
 } from "node:fs/promises";
 import { homedir } from "node:os";
 import path from "node:path";
-import {
-  SessionManager,
-  type SessionInfo,
-} from "@earendil-works/pi-coding-agent";
+import type { SessionInfo } from "@earendil-works/pi-coding-agent";
+import { getSessionManager } from "./pi-sdk.js";
+import { sessionDirectoryStamp } from "./session-index.js";
 import type {
   Attachment,
   BuiltinModuleId,
@@ -54,6 +53,7 @@ interface DesktopState {
   compactions: Record<string, CompactionRecord[]>;
   activeProjectId?: string;
   activeConversationId?: string;
+  sessionIndex?: Record<string, string>;
 }
 
 interface ModelsFileConfig {
@@ -171,6 +171,7 @@ export class DataStore {
   };
   private writeQueue: Promise<void> = Promise.resolve();
   private modelsMutationQueue: Promise<unknown> = Promise.resolve();
+  private sessionRefreshes = new Map<string, Promise<void>>();
 
   constructor(
     dataDir: string,
@@ -187,7 +188,7 @@ export class DataStore {
     this.moduleSettingsPath = path.join(dataDir, "builtin-modules.json");
   }
 
-  async initialize(): Promise<void> {
+  async initialize(options: { refreshSessions?: boolean } = {}): Promise<void> {
     await mkdir(this.agentDir, { recursive: true });
     await mkdir(this.sessionsDir, { recursive: true });
     await mkdir(this.runsDir, { recursive: true });
@@ -266,13 +267,18 @@ export class DataStore {
           : [],
         queuedPrompts: normalizeQueuedPrompts(parsed.queuedPrompts),
         compactions: normalizeCompactions(parsed.compactions),
+        sessionIndex: parsed.sessionIndex && typeof parsed.sessionIndex === "object" && !Array.isArray(parsed.sessionIndex)
+          ? Object.fromEntries(Object.entries(parsed.sessionIndex).filter(([, stamp]) => typeof stamp === "string")) : {},
       };
     } catch (error) {
       // A failed migration must never be treated as a missing index and erase chats.
       if (loadedState || (error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
       await this.save();
     }
-    if (!this.sharedDataDir) await this.refreshAllProjectSessions();
+    // Persist restart pauses and migrated references even when history scans
+    // are deferred, or when every cached directory is already current.
+    if (loadedState) await this.save();
+    if (!this.sharedDataDir && options.refreshSessions !== false) await this.refreshAllProjectSessions();
   }
 
   get runtimePackagesDir(): string {
@@ -1018,12 +1024,19 @@ export class DataStore {
 
   async refreshProjectSessions(
     projectId: string,
+    signal?: AbortSignal,
   ): Promise<ConversationRecord[]> {
-    const project = this.getProject(projectId);
-    const sessionDir = this.getSessionDir(project.path);
-    const sessions = this.sharedDataDir ? [] : await SessionManager.list(project.path, sessionDir);
-    for (const session of sessions) this.mergeSession(project.id, session);
-    await this.save();
+    this.getProject(projectId);
+    signal?.throwIfAborted();
+    if (!this.sharedDataDir) {
+      let pending = this.sessionRefreshes.get(projectId);
+      if (!pending) {
+        pending = this.refreshProjectSessionIndex(projectId, signal);
+        this.sessionRefreshes.set(projectId, pending);
+      }
+      try { await pending; }
+      finally { if (this.sessionRefreshes.get(projectId) === pending) this.sessionRefreshes.delete(projectId); }
+    }
     return this.state.conversations
       .filter(
         (conversation) =>
@@ -1033,15 +1046,45 @@ export class DataStore {
       .map((conversation) => structuredClone(conversation));
   }
 
-  async refreshAllProjectSessions(): Promise<void> {
-    for (const project of this.state.projects) {
-      const sessions = await SessionManager.list(
-        project.path,
-        this.getSessionDir(project.path),
-      );
-      for (const session of sessions) this.mergeSession(project.id, session);
+  async refreshAllProjectSessions(signal?: AbortSignal): Promise<void> {
+    for (const project of [...this.state.projects]) {
+      signal?.throwIfAborted();
+      if (this.state.projects.some(current => current.id === project.id)) await this.refreshProjectSessions(project.id, signal);
     }
-    await this.save();
+  }
+
+  private async refreshProjectSessionIndex(projectId: string, signal?: AbortSignal): Promise<void> {
+    const project = this.getProject(projectId);
+    const directory = this.getSessionDir(project.path);
+    const stamp = await sessionDirectoryStamp(directory);
+    signal?.throwIfAborted();
+    const previousStamp = this.state.sessionIndex?.[projectId];
+    if (this.state.sessionIndex?.[projectId] === stamp) return;
+    let complete = stamp === "[]";
+    let sessions: SessionInfo[] = [];
+    if (stamp !== "[]") {
+      const SessionManager = await getSessionManager();
+      signal?.throwIfAborted();
+      sessions = await SessionManager.list(project.path, directory, undefined, signal);
+      signal?.throwIfAborted();
+      if (!this.state.projects.some(current => current.id === projectId && current.path === project.path)) return;
+      complete = sessions.length === (JSON.parse(stamp) as unknown[]).length;
+    }
+    // A file may change while discovery is reading it. Never cache that scan
+    // as current; the next refresh must inspect it again.
+    const unchanged = await sessionDirectoryStamp(directory) === stamp;
+    signal?.throwIfAborted();
+    if (!this.state.projects.some(current => current.id === projectId && current.path === project.path)) return;
+    if (unchanged) for (const session of sessions) this.mergeSession(projectId, session);
+    this.state.sessionIndex ??= {};
+    if (complete && unchanged) this.state.sessionIndex[projectId] = stamp;
+    else delete this.state.sessionIndex[projectId];
+    try { await this.save(); }
+    catch (error) {
+      if (previousStamp === undefined) delete this.state.sessionIndex[projectId];
+      else this.state.sessionIndex[projectId] = previousStamp;
+      throw error;
+    }
   }
 
   async searchConversations(query: string): Promise<string[]> {

@@ -4,9 +4,10 @@ import { fileURLToPath } from "node:url";
 import { applyGoalReport, goalPrompt, settleGoal } from "../shared/goal.js";
 import { updatedPlan, planRequestSuffix, canContinuePlan } from "../shared/plan.js";
 import { confirmedPlanRevision } from "../shared/plan-activity.js";
+import { canResumeRun } from "../shared/run-state.js";
 import { notebookUsage, updatedNotebook } from "../shared/notebook.js";
 import { StatePersistenceError } from "./atomic-state.js";
-import { SkillsStore } from "./skills-store.js";
+import type { SkillsStore } from "./skills-store.js";
 import type { SkillsCommand } from "../shared/skills.js";
 import { imageAttachmentPrompt, historyImageAttachments } from "../shared/image-attachments.js";
 import { sessionHistoryTargets, selectHistoryTarget } from "../shared/session-history.js";
@@ -38,7 +39,7 @@ import {
   type ModelFileMutation,
   type ModelFileSnapshot,
 } from "./run-diff-tracker.js";
-import { SessionManager } from "@earendil-works/pi-coding-agent";
+import { getSessionManager } from "./pi-sdk.js";
 import { applyAssistantMessageDelta } from "../shared/live-message.js";
 
 type JsonObject = Record<string, unknown>;
@@ -77,6 +78,8 @@ interface RuntimeRecord {
   extensionErrors: ExtensionState["errors"];
   eventQueue: Promise<void>;
   activeRun?: ConversationRun;
+  runStopReason?: string;
+  runAborted?: boolean;
   compactionStartedAt?: number;
   liveMessage?: JsonObject;
   liveTools: Record<string, LiveToolActivity>;
@@ -137,6 +140,7 @@ function preserveKnownContextUsage(
 
 export class PiManager {
   private readonly historyMutations = new Set<string>();
+  private readonly resumingRuns = new Set<string>();
   private readonly goalLaunching = new Set<string>();
   private readonly goalContinuationRequested = new Set<string>();
   private readonly runtimes = new Map<string, RuntimeRecord>();
@@ -240,11 +244,12 @@ export class PiManager {
     conversationId: string,
     message: string,
     attachments: Attachment[],
-    behavior?: "steer" | "followUp",
+    behavior?: "steer" | "followUp" | "resume",
     expectedGoalId?: string,
     historyEdit = false,
     requestPlan = false,
     expectedPlanRevision?: number,
+    resumeBeforeQueue = false,
   ): Promise<void> {
     if (typeof message !== "string" || (!message.trim() && !attachments.length))
       throw new Error("Сообщение не может быть пустым.");
@@ -255,7 +260,7 @@ export class PiManager {
       (this.store.getConversation(conversationId).goal?.id !== expectedGoalId ||
         this.store.getConversation(conversationId).goal?.status !== "active" ||
         this.runtimes.get(conversationId)?.snapshot?.state.isStreaming ||
-        this.store.getQueuedPrompts(conversationId).length > 0)
+        (!resumeBeforeQueue && this.store.getQueuedPrompts(conversationId).length > 0))
     )
       return;
     const runtime = await this.ensureRuntime(conversationId);
@@ -287,12 +292,14 @@ export class PiManager {
     }
     const conversation = this.store.getConversation(conversationId);
     if (expectedPlanRevision !== undefined && (conversation.plan?.revision !== expectedPlanRevision || !canContinuePlan(conversation.plan, conversation.goal)
-      || runtime.snapshot?.state.isStreaming || this.store.getQueuedPrompts(conversationId).length)) return;
+      || runtime.snapshot?.state.isStreaming || (!resumeBeforeQueue && this.store.getQueuedPrompts(conversationId).length))) return;
     if (
       !runtime.snapshot?.state.isStreaming &&
       (!runtime.activeRun || runtime.activeRun.completedAt)
     ) {
       runtime.activeRun = { startedAt: new Date().toISOString() };
+      runtime.runStopReason = undefined;
+      runtime.runAborted = false;
       runtime.diffRefresh = undefined;
       runtime.diffRefreshQueued = false;
       if (runtime.snapshot)
@@ -371,12 +378,12 @@ export class PiManager {
         const current = this.store.getConversation(conversationId).goal;
         if (current?.id !== expectedGoalId || current.status !== "active")
           throw new Error("Запуск цели отменён.");
-        if (runtime.snapshot?.state.isStreaming || this.store.getQueuedPrompts(conversationId).length > 0) return;
+        if (runtime.snapshot?.state.isStreaming || (!resumeBeforeQueue && this.store.getQueuedPrompts(conversationId).length > 0)) return;
       }
       if (expectedPlanRevision !== undefined) {
         const current = this.store.getConversation(conversationId);
         if (current.plan?.revision !== expectedPlanRevision || !canContinuePlan(current.plan, current.goal)
-          || runtime.snapshot?.state.isStreaming || this.store.getQueuedPrompts(conversationId).length) return;
+          || runtime.snapshot?.state.isStreaming || (!resumeBeforeQueue && this.store.getQueuedPrompts(conversationId).length)) return;
         runtime.pendingPlanStartRevision = expectedPlanRevision;
         try {
           await runtime.rpc.request("desktop_plan_continue", { message: `<pi_desktop_service_context source="plan">Continue the next unfinished step of the current authorized checklist. If user input or approval is needed, set execution=paused, explain the reason and ask.</pi_desktop_service_context>`, });
@@ -388,6 +395,11 @@ export class PiManager {
       else if (isGoalContinuation) await runtime.rpc.request("desktop_goal_continue", {
         message: `<pi_desktop_service_context source="goal">Continue authorized work on the current goal. Call get_goal first; historical directives may be obsolete.</pi_desktop_service_context>`, goalId: expectedGoalId,
       });
+      else if (behavior === "resume") {
+        if (runtime.runAborted) throw new Error("Продолжение отменено пользователем.");
+        runtime.pendingPlanStartRevision = conversation.plan?.execution === "active" ? conversation.plan.revision : undefined;
+        await runtime.rpc.request("desktop_run_resume");
+      }
       else if (behavior === "steer") await runtime.rpc.request("steer", payload);
       else if (behavior === "followUp")
         await runtime.rpc.request("follow_up", payload);
@@ -478,9 +490,75 @@ export class PiManager {
     Object.assign(conversation, changes);
     this.goalContinuationRequested.delete(conversationId);
     const runtime = this.runtimes.get(conversationId);
+    if (runtime) runtime.runAborted = true;
+    if (runtime?.activeRun && !runtime.activeRun.completedAt) {
+      runtime.activeRun = { ...runtime.activeRun, interruption: {
+        ...runtime.activeRun.interruption,
+        ...(changes.plan ? { planRevision: changes.plan.revision } : {}),
+        ...(changes.goal ? { goalId: changes.goal.id } : {}),
+      } };
+      if (runtime.snapshot) runtime.snapshot.run = structuredClone(runtime.activeRun);
+    }
     const cancellation = runtime ? runtime.rpc.request("abort") : Promise.resolve();
     const persistence = Object.keys(changes).length ? this.updateConversation(conversationId, changes) : Promise.resolve();
-    await Promise.all([cancellation, persistence]);
+    const runPersistence = runtime?.activeRun?.interruption ? this.store.saveConversationRun(conversationId, runtime.activeRun) : Promise.resolve();
+    await Promise.all([cancellation, persistence, runPersistence]);
+  }
+
+  async resumeConversation(conversationId: string): Promise<void> {
+    if (this.resumingRuns.has(conversationId)) return;
+    this.resumingRuns.add(conversationId);
+    let previousRun: ConversationRun | undefined;
+    let resumedPlanRevision: number | undefined;
+    let resumedGoalId: string | undefined;
+    try {
+      // Settlement persists the outcome and pauses state before resume can read it.
+      await this.runtimes.get(conversationId)?.eventQueue;
+      const snapshot = await this.inspectConversation(conversationId);
+      if (snapshot.state.isStreaming || snapshot.state.isCompacting)
+        throw new Error("Дождитесь остановки текущего прогона.");
+      if (!canResumeRun(snapshot.run)) throw new Error("Нет прерванной работы для продолжения.");
+      previousRun = snapshot.run;
+      const conversation = this.store.getConversation(conversationId);
+      const changes: Partial<ConversationRecord> = {};
+      // Restore only the state paused by this interruption, never unrelated
+      // manually paused work or a checklist edited after the interruption.
+      if (previousRun?.interruption?.planRevision === conversation.plan?.revision && conversation.plan?.execution === "paused") {
+        changes.plan = updatedPlan({ execution: "active", explanation: "" }, conversation.plan);
+        resumedPlanRevision = changes.plan.revision;
+      }
+      if (previousRun?.interruption?.goalId === conversation.goal?.id && conversation.goal?.status === "paused") {
+        changes.goal = { ...conversation.goal, status: "active", stalledSteps: 0, updatedAt: new Date().toISOString() };
+        resumedGoalId = changes.goal.id;
+      }
+      if (Object.keys(changes).length) await this.updateConversation(conversationId, changes);
+      await this.sendPrompt(conversationId, "Продолжить прерванную работу.", [], "resume");
+    } catch (error) {
+      const runtime = this.runtimes.get(conversationId);
+      if (previousRun && !runtime?.snapshot?.state.isStreaming) {
+        const conversation = this.store.getConversation(conversationId);
+        const changes: Partial<ConversationRecord> = {};
+        const interruption = { ...previousRun.interruption, ...runtime?.activeRun?.interruption };
+        if (resumedPlanRevision !== undefined && conversation.plan?.revision === resumedPlanRevision) {
+          changes.plan = updatedPlan({ execution: "paused" }, conversation.plan);
+          interruption.planRevision = changes.plan.revision;
+        }
+        if (resumedGoalId && conversation.goal?.id === resumedGoalId && conversation.goal.status === "active")
+          changes.goal = { ...conversation.goal, status: "paused", updatedAt: new Date().toISOString() };
+        if (Object.keys(changes).length) await this.updateConversation(conversationId, changes);
+        const restored = { ...previousRun, interruption };
+        if (runtime) {
+          runtime.activeRun = restored;
+          runtime.pendingPlanStartRevision = undefined;
+          if (runtime.snapshot) runtime.snapshot.run = structuredClone(restored);
+        }
+        await this.store.saveConversationRun(conversationId, restored);
+        this.publish("pi:event", { conversationId, event: { type: "desktop_run_state", run: restored } });
+      }
+      throw error;
+    } finally {
+      this.resumingRuns.delete(conversationId);
+    }
   }
 
   async setGoal(
@@ -562,7 +640,7 @@ export class PiManager {
       this.store.getConversation(conversationId).status === "idle" &&
       !this.runtimes.get(conversationId)?.snapshot?.state.isStreaming
     )
-      this.launchGoal(conversationId);
+      this.launchGoal(conversationId, [], false, true);
   }
 
   async controlPlan(conversationId: string, action: "pause" | "resume"): Promise<void> {
@@ -594,7 +672,7 @@ export class PiManager {
     // Like goal resume: schedule the next run, never inject a second prompt
     // into an already streaming response or interrupt it.
     if (this.goalLaunching.has(conversationId)) this.goalContinuationRequested.add(conversationId);
-    else this.launchGoal(conversationId);
+    else this.launchGoal(conversationId, [], false, true);
   }
 
   async removePlan(conversationId: string): Promise<void> {
@@ -618,6 +696,7 @@ export class PiManager {
     const cwd = await this.store.getConversationWorkingDirectory(conversation);
     let skills = this.skillStores.get(cwd);
     if (!skills) {
+      const { SkillsStore } = await import("./skills-store.js");
       skills = new SkillsStore({ cwd, agentDir: this.store.agentDir, appRoot: app.getAppPath(), project: Boolean(conversation.projectId) });
       this.skillStores.set(cwd, skills);
     }
@@ -716,11 +795,12 @@ export class PiManager {
     conversationId: string,
     attachments: Attachment[] = [],
     requestPlan = false,
+    resumeBeforeQueue = false,
   ): void {
     if (this.goalLaunching.has(conversationId)) return;
     if (this.store.getConversation(conversationId).status !== "idle" ||
       this.runtimes.get(conversationId)?.snapshot?.state.isStreaming ||
-      this.store.getQueuedPrompts(conversationId).length > 0) return;
+      (!resumeBeforeQueue && this.store.getQueuedPrompts(conversationId).length > 0)) return;
     const goal = this.store.getConversation(conversationId).goal;
     const plan = this.store.getConversation(conversationId).plan;
     const planRevision = goal?.status !== "active" && canContinuePlan(plan, goal) ? plan!.revision : undefined;
@@ -737,6 +817,7 @@ export class PiManager {
         false,
         requestPlan,
         planRevision,
+        resumeBeforeQueue,
       )
         .catch(async (error) => {
           const current = this.store
@@ -819,6 +900,7 @@ export class PiManager {
     ) {
       const cwd =
         await this.store.getConversationWorkingDirectory(conversation);
+      const SessionManager = await getSessionManager();
       SessionManager.open(
         conversation.sessionFile,
         this.store.getSessionDir(cwd),
@@ -1048,6 +1130,7 @@ export class PiManager {
       }
       if (!conversation.sessionFile || !existsSync(conversation.sessionFile)) throw new Error("Сессия ещё не сохранена.");
       const cwd = await this.store.getConversationWorkingDirectory(conversation);
+      const SessionManager = await getSessionManager();
       const manager = SessionManager.open(this.store.assertManagedSessionFile(conversation.sessionFile), this.store.getSessionDir(cwd), cwd);
       const target = selectHistoryTarget(manager.getBranch(), entryId, editing);
       const images = editing ? historyImageAttachments(target.message!) : [];
@@ -1078,6 +1161,7 @@ export class PiManager {
   private async getHistoryTargets(conversation: ConversationRecord, messages: unknown[]): Promise<ConversationSnapshot["historyTargets"]> {
     if (!conversation.sessionFile || !existsSync(conversation.sessionFile)) return [];
     const cwd = await this.store.getConversationWorkingDirectory(conversation);
+    const SessionManager = await getSessionManager();
     const manager = SessionManager.open(this.store.assertManagedSessionFile(conversation.sessionFile), this.store.getSessionDir(cwd), cwd);
     return sessionHistoryTargets(messages, manager.buildContextEntries());
   }
@@ -1086,6 +1170,7 @@ export class PiManager {
     const run = await this.store.getConversationRun(conversation.id);
     if (!run || !conversation.sessionFile || !existsSync(conversation.sessionFile)) return run;
     const cwd = await this.store.getConversationWorkingDirectory(conversation);
+    const SessionManager = await getSessionManager();
     const manager = SessionManager.open(this.store.assertManagedSessionFile(conversation.sessionFile), this.store.getSessionDir(cwd), cwd);
     const navigation = [...manager.getBranch()].reverse().find(entry => entry.type === "custom" && entry.customType === "pi_desktop_history_position");
     return navigation && Date.parse(run.startedAt) <= Date.parse(navigation.timestamp) ? undefined : run;
@@ -1105,6 +1190,7 @@ export class PiManager {
     if (conversation.sessionFile && existsSync(conversation.sessionFile)) {
       const cwd =
         await this.store.getConversationWorkingDirectory(conversation);
+      const SessionManager = await getSessionManager();
       const manager = SessionManager.open(
         conversation.sessionFile,
         this.store.getSessionDir(cwd),
@@ -1418,7 +1504,14 @@ export class PiManager {
   ): Promise<void> {
     const runtime = this.runtimes.get(conversationId);
     if (!runtime) return;
+    // Track this run's outcome from events, not the last projected message:
+    // Pi may omit a failed attempt from model history before retry is cancelled.
+    if (event.type === "message_end" && (event.message as JsonObject | undefined)?.role === "assistant")
+      runtime.runStopReason = (event.message as JsonObject).stopReason as string | undefined;
+    if (event.type === "auto_retry_end" && event.success === false)
+      runtime.runStopReason = "error";
     if (event.type === "agent_start") {
+      runtime.runStopReason = undefined;
       const plan = this.store.getConversation(conversationId).plan;
       // Pi can emit another agent_start while recovering the same logical run.
       // Its confirmed checklist stays current until agent_settled or a revision change.
@@ -1433,6 +1526,7 @@ export class PiManager {
       runtime.liveTools = {};
       if (!runtime.activeRun || runtime.activeRun.completedAt) {
         runtime.activeRun = { startedAt: new Date().toISOString() };
+        runtime.runAborted = false;
         runtime.diffRefresh = undefined;
         runtime.diffRefreshQueued = false;
         await this.store.saveConversationRun(conversationId, runtime.activeRun);
@@ -1455,6 +1549,7 @@ export class PiManager {
         runtime.activeRun = {
           ...runtime.activeRun,
           completedAt,
+          interruption: !runtime.runAborted && runtime.runStopReason === "stop" ? undefined : runtime.activeRun.interruption ?? {},
           durationMs:
             Date.parse(completedAt) - Date.parse(runtime.activeRun.startedAt),
         };
@@ -1509,6 +1604,10 @@ export class PiManager {
       }
       runtime.liveMessage = undefined;
       runtime.liveTools = {};
+      // Settled means idle, not successful. Only a normally completed response
+      // may release queued user messages or schedule another automatic turn.
+      const completedNormally = !runtime.runAborted && runtime.runStopReason === "stop";
+      if (!completedNormally) this.goalContinuationRequested.delete(conversationId);
       this.onConversationSettled?.(this.store.getConversation(conversationId));
       const goal = this.store.getConversation(conversationId).goal;
       if (goal && goal.id === runtime.goalTurnId && runtime.goalTurnStartedAt !== undefined) {
@@ -1519,13 +1618,8 @@ export class PiManager {
       runtime.goalTurnStartedAt = undefined;
       const settledGoal = this.store.getConversation(conversationId).goal;
       if (settledGoal?.status === "active") {
-        const last = [...(runtime.snapshot?.messages ?? [])]
-          .reverse()
-          .find((message) => (message as JsonObject)?.role === "assistant") as
-          | JsonObject
-          | undefined;
         const next =
-          last?.stopReason === "error" || last?.stopReason === "aborted"
+          !completedNormally
             ? {
                 ...settledGoal,
                 status: "paused" as const,
@@ -1535,14 +1629,24 @@ export class PiManager {
               }
             : settleGoal(settledGoal, runtime.goalProgressAtStart ?? "");
         await this.updateConversation(conversationId, { goal: next });
+        if (!completedNormally && runtime.activeRun)
+          runtime.activeRun = { ...runtime.activeRun, interruption: { ...runtime.activeRun.interruption, goalId: settledGoal.id } };
       }
       const hasQueued = this.store.getQueuedPrompts(conversationId).length > 0;
       const currentPlan = this.store.getConversation(conversationId).plan;
-      if (currentPlan?.execution === "active") {
-        const last = [...(runtime.snapshot?.messages ?? [])].reverse().find(message => (message as JsonObject)?.role === "assistant") as JsonObject | undefined;
-        if (last?.stopReason === "error" || last?.stopReason === "aborted")
-          await this.updateConversation(conversationId, { plan: updatedPlan({ execution: "paused", explanation: "Автопродолжение приостановлено: ошибка или прерывание. Проверьте чат и дайте команду продолжить." }, currentPlan) });
+      if (!completedNormally && currentPlan?.execution === "active") {
+        const pausedPlan = updatedPlan({ execution: "paused", explanation: "Автопродолжение приостановлено: ошибка или прерывание. Проверьте чат и дайте команду продолжить." }, currentPlan);
+        await this.updateConversation(conversationId, { plan: pausedPlan });
+        if (runtime.activeRun)
+          runtime.activeRun = { ...runtime.activeRun, interruption: { ...runtime.activeRun.interruption, planRevision: pausedPlan.revision } };
       }
+      if (!completedNormally && runtime.activeRun) {
+        runtime.activeRun = { ...runtime.activeRun, interruption: runtime.activeRun.interruption ?? {} };
+        await this.store.saveConversationRun(conversationId, runtime.activeRun);
+        if (runtime.snapshot) runtime.snapshot.run = structuredClone(runtime.activeRun);
+        this.publish("pi:event", { conversationId, event: { type: "desktop_run_state", run: runtime.activeRun } });
+      }
+      if (!completedNormally || runtime.runAborted || this.runtimes.get(conversationId) !== runtime) return;
       if (hasQueued) void this.sendNextQueuedPrompt(conversationId);
       else if (!(runtime.goalContinuationTurn && !runtime.goalToolCalls)) {
         if (this.goalLaunching.has(conversationId))
@@ -1769,8 +1873,13 @@ export class PiManager {
     runtime: RuntimeRecord,
     error?: Error,
   ): Promise<void> {
+    runtime.runAborted = true;
+    this.goalContinuationRequested.delete(conversationId);
     runtime.diffTracker?.close();
     runtime.diffTracker = undefined;
+    const plan = this.store.getConversation(conversationId).plan;
+    const pausedPlan = plan?.execution === "active" ? updatedPlan({ execution: "paused", explanation: "Процесс Pi остановлен. Продолжение — вручную." }, plan) : undefined;
+    if (pausedPlan) await this.updateConversation(conversationId, { plan: pausedPlan });
     const goal = this.store.getConversation(conversationId).goal;
     if (goal?.status === "active")
       await this.updateConversation(conversationId, {
@@ -1786,6 +1895,10 @@ export class PiManager {
       runtime.activeRun = {
         ...runtime.activeRun,
         completedAt,
+        interruption: { ...runtime.activeRun.interruption,
+          ...(pausedPlan ? { planRevision: pausedPlan.revision } : {}),
+          ...(goal?.status === "active" ? { goalId: goal.id } : {}),
+        },
         durationMs:
           Date.parse(completedAt) - Date.parse(runtime.activeRun.startedAt),
       };
@@ -1794,6 +1907,7 @@ export class PiManager {
     await this.updateConversation(conversationId, {
       status: error ? "error" : "idle",
     });
+    this.publish("pi:event", { conversationId, event: { type: "desktop_run_state", stopped: true, run: runtime.activeRun } });
     if (error) {
       this.publish("pi:event", {
         conversationId,

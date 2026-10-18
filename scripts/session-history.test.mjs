@@ -24,9 +24,9 @@ const signature = "): Promise<ConversationSnapshot> {";
 const bodyStart = source.indexOf(signature, start) + signature.length;
 const bodyEnd = source.indexOf("\n  }", bodyStart);
 assert.ok(start >= 0 && bodyStart > start && bodyEnd > bodyStart);
-const changeHistory = new Function("SessionManager", "selectHistoryTarget", "historyImageAttachments", "existsSync", "historyWorkState",
+const changeHistory = new Function("getSessionManager", "selectHistoryTarget", "historyImageAttachments", "existsSync", "historyWorkState",
   `${stripTypeScriptTypes(`async function changeHistory(conversationId, entryId, text) {${source.slice(bodyStart, bodyEnd)}\n}`)}; return changeHistory;`,
-)(SessionManager, selectHistoryTarget, historyImageAttachments, () => true, historyWorkState);
+)(async () => SessionManager, selectHistoryTarget, historyImageAttachments, () => true, historyWorkState);
 
 function fixture() {
   const folder = mkdtempSync(path.join(tmpdir(), "pi-history-test-"));

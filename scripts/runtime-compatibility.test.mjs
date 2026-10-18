@@ -55,7 +55,8 @@ test("runtime core updates install request, summary and media bridges idempotent
   assert.match(before[3], /toolResultMsg\.content = \[/);
   assert.match(before[4], /text\(await searchTools/);
   assert.match(before[5], /prepare an idle service continuation/);
-  assert.match(before[6], /timeout = 300/);
+  assert.match(before[5], /desktop_run_continuation/);
+  assert.match(before[6], /timeout = defaultShellTimeout\(command\)/);
   assert.match(before[6], /Execution may be partial/);
   await put(target, "package.json", JSON.stringify({ name: "@earendil-works/pi-coding-agent", version: "9.0.0" }));
   await assert.rejects(applyCoreRequestCompatibility(target), /requires.*1\.0\.4/);
