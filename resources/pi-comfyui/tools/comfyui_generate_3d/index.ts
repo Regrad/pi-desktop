@@ -11,7 +11,7 @@ export default function register(pi: ExtensionAPI, context: ToolContext) {
   const { dataDir, reportText, generationStatus, vocalMode, musicOptions } = context;
   pi.registerTool({
     name: "comfyui_generate_3d", label: "Генерация 3D-модели",
-    description: "Generate a textured GLB locally: Pixal3D/Trellis2 builds geometry, then UltraTex FLUX.2 Klein creates PBR textures. Supply one image or four views ordered front, left, back, right; image paths and attachment: references are supported. A positive target_face_count performs approximate mesh reduction, not native generation at that face count; 0 skips final decimation. Postprocessing runs only when requested. For Idol use comfyui_generate_idol_3d. The result is displayed in an interactive viewer; GLB geometry is not visual input to the language model.",
+    description: "Generate a textured GLB locally: Pixal3D/Trellis2 builds geometry, then UltraTex FLUX.2 Klein creates PBR textures. Supply one image or four views ordered front, left, back, right; image paths and attachment: references are supported. A positive target_face_count performs approximate mesh reduction, not native generation at that face count; 0 skips final decimation. Postprocessing runs only when requested. The result is displayed in an interactive viewer; GLB geometry is not visual input to the language model.",
     promptSnippet: "Generate textured 3D models locally from one image or four views; show an interactive model in chat.",
     promptGuidelines: [...modelGuidelines,
       "Before the first generation, briefly confirm use and style, references, solid or multipart geometry, removable internal parts, polygon and texture targets, and rig or animation needs. Reuse these answers on retries.",

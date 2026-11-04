@@ -256,8 +256,9 @@ test("extension exposes specialized ComfyUI tools with explicit parameters", asy
     process.env.PI_DESKTOP_DATA_DIR = os.tmpdir();
     const registered = [];
     await extension({ registerTool: tool => registered.push(tool), on() {} });
-    assert.equal(registered.length, 26);
-    for (const name of ["comfyui_generate_image", "comfyui_generate_music", "comfyui_clone_voice", "comfyui_generate_3d", "comfyui_generate_idol_3d", "comfyui_texture_3d", "desktop_get_image_path"]) assert.ok(registered.some(tool => tool.name === name));
+    assert.equal(registered.length, 25);
+    for (const name of ["comfyui_generate_image", "comfyui_generate_music", "comfyui_clone_voice", "comfyui_generate_3d", "comfyui_texture_3d", "desktop_get_image_path"]) assert.ok(registered.some(tool => tool.name === name));
+    assert.ok(!registered.some(tool => tool.name === "comfyui_generate_idol_3d"));
     for (const name of ["comfyui_workflows", "comfyui_run_workflow", "comfyui_job"]) assert.ok(!registered.some(tool => tool.name === name));
     for (const tool of registered) {
       assert.equal(typeof tool.execute, "function");

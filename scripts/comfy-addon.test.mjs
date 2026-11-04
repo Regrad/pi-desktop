@@ -83,8 +83,9 @@ test("real Pi loader exposes specialized modules; universal copies stay inactive
   const load = () => discoverAndLoadExtensions([], data, path.join(data, "agent"));
   let result = await load();
   assert.deepEqual(result.errors, []);
-  assert.equal(result.extensions[0].tools.size, 26);
-  for (const name of ["comfyui_generate_image", "comfyui_generate_music", "comfyui_generate_3d", "comfyui_generate_idol_3d", "comfyui_texture_3d", "comfyui_status"]) assert.ok(result.extensions[0].tools.has(name));
+  assert.equal(result.extensions[0].tools.size, 25);
+  for (const name of ["comfyui_generate_image", "comfyui_generate_music", "comfyui_generate_3d", "comfyui_texture_3d", "comfyui_status"]) assert.ok(result.extensions[0].tools.has(name));
+  assert.equal(result.extensions[0].tools.has("comfyui_generate_idol_3d"), false);
   for (const name of ["comfyui_workflows", "comfyui_run_workflow", "comfyui_job"]) assert.ok(!result.extensions[0].tools.has(name));
   const contextHook = result.extensions[0].handlers.get("before_agent_start")[0];
   assert.equal(await contextHook({ systemPrompt: "base" }, {}), undefined);
@@ -102,7 +103,7 @@ test("real Pi loader exposes specialized modules; universal copies stay inactive
   await writeFile(path.join(retired, "index.ts"), 'throw new Error("retired module evaluated");');
   result = await load();
   assert.deepEqual(result.errors, []);
-  assert.equal(result.extensions[0].tools.size, 26);
+  assert.equal(result.extensions[0].tools.size, 25);
   const selected = path.join(folder, "tools/desktop_show_image/index.ts");
   const original = await readFile(selected, "utf8");
   await writeFile(selected, original.replace('label: "Показать изображение в ответе"', 'label: "changed"'));

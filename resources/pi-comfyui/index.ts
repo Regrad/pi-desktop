@@ -7,7 +7,7 @@ import { createToolContext } from "./lib/context.js";
 import { loadComfySettings } from "./lib/comfy-client.js";
 
 // Do not reactivate obsolete universal modules preserved as user-edited files on update.
-const retired = new Set(["comfyui_workflows", "comfyui_run_workflow", "comfyui_job"]);
+const retired = new Set(["comfyui_workflows", "comfyui_run_workflow", "comfyui_job", "comfyui_generate_idol_3d"]);
 
 export default async function comfyAddon(pi: ExtensionAPI) {
   const dataDir = process.env.PI_DESKTOP_DATA_DIR;

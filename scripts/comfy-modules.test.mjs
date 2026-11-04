@@ -12,21 +12,10 @@ registerHooks({ resolve(specifier, context, next) {
   }
   return next(specifier, context);
 } });
-const { idolGraph } = await import("../resources/pi-comfyui/tools/comfyui_generate_idol_3d/index.ts");
-
-test("Idol has its own explicit workflow and preserves zero/decimation semantics", () => {
-  const normal = idolGraph("upload.png", { seed: 0 });
-  assert.equal(normal[2].inputs.image, "upload.png");
-  assert.equal(normal[12].inputs.seed, 0);
-  assert.equal(normal[14].inputs.seed, 0);
-  assert.equal(normal[24].inputs.target_face_count, 0);
-  const low = idolGraph("other.png", { target_face_count: 20000, resolution: 256, steps: 30, cfg: 2 });
-  assert.equal(low[24].inputs.target_face_count, 20000);
-  assert.equal(low[23].inputs.resolution, 256);
-  assert.equal(low[12].inputs.steps, 30);
-  assert.equal(low[12].inputs.cfg, 2);
-  assert.notEqual(low[25].inputs.filename_prefix, normal[25].inputs.filename_prefix);
-  assert.equal(normal[2].inputs.image, "upload.png", "Calls do not change the saved template");
+test("removed Idol tool is not shipped or recommended", async () => {
+  assert.equal(existsSync(new URL("../resources/pi-comfyui/tools/comfyui_generate_idol_3d/index.ts", import.meta.url)), false);
+  const source = await readFile(new URL("../resources/pi-comfyui/tools/comfyui_generate_3d/index.ts", import.meta.url), "utf8");
+  assert.doesNotMatch(source, /Idol|comfyui_generate_idol_3d/);
 });
 
 test("preparation and universal workflow execution are absent from settings and the host", async () => {
