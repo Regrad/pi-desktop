@@ -17,11 +17,17 @@ const fs = require("node:fs/promises"), { existsSync } = require("node:fs"), pat
     if (result.errors.length) throw new Error(JSON.stringify(result.errors));
     const tools = result.extensions[0].tools;
     if (tools.size !== 25) throw new Error("Wrong tool count: " + tools.size);
+    for (const { definition } of tools.values()) {
+      const exposed = JSON.stringify({ name: definition.name, label: definition.label,
+        description: definition.description, parameters: definition.parameters,
+        promptSnippet: definition.promptSnippet, promptGuidelines: definition.promptGuidelines });
+      if (/comfy|\bworkflow\b|\bnode(?:s)?\b|TRIMESH|class_type|object_info/i.test(exposed)) throw new Error("Backend leaked by " + definition.name);
+    }
     for (const name of ["comfyui_workflows", "comfyui_run_workflow", "comfyui_job"]) if (tools.has(name)) throw new Error("Retired tool loaded: " + name);
     if (tools.has("comfyui_generate_idol_3d")) throw new Error("Removed Idol tool loaded");
-    if (!tools.has("comfyui_generate_3d") || !tools.has("comfyui_texture_3d")) throw new Error("3D tools missing");
-    if (!tools.get("comfyui_texture_3d").definition.description.includes("UltraTex")) throw new Error("Stale texture tool");
-    if (!tools.get("comfyui_generate_instrumental_music").definition.promptGuidelines.some(text => text.includes("not proven causes or fixes"))) throw new Error("Updated guidelines missing");
+    if (!tools.has("media_generate_3d") || !tools.has("media_texture_3d")) throw new Error("3D tools missing");
+    if (!tools.get("media_texture_3d").definition.description.includes("UltraTex")) throw new Error("Stale texture tool");
+    if (!tools.get("media_generate_instrumental_music").definition.promptGuidelines.some(text => text.includes("not proven causes or fixes"))) throw new Error("Updated guidelines missing");
     console.log("PACKAGED ADDON OK: 25 specialized tools, no universal runner, bundled dependencies");
   } finally { if (!process.env.PI_TEST_COMFY_DATA) await fs.rm(data, { recursive: true, force: true }); }
 })().catch(error => { console.error(error); process.exitCode = 1; });

@@ -6,8 +6,8 @@ import { modelSource, modelJobPrefix, runModelTool } from "../../lib/model3d-too
 
 export default function register(pi: ExtensionAPI, { dataDir }: ToolContext) {
   pi.registerTool({
-    name: "comfyui_lod_3d", label: "Создать LOD 3D-модели",
-    description: "Create 1–6 decreasing polygon-budget LODs of an existing model using ModelLODGenerator. Optionally transfer source textures and bake normal/AO per LOD. Every LOD GLB and its maps/report are saved; original is unchanged. Targets are approximate triangle budgets, not exact counts. Source must be accessible to ComfyUI.",
+    name: "media_lod_3d", label: "Создать LOD 3D-модели",
+    description: "Create 1–6 decreasing polygon-budget LODs of an existing model with adjustable triangle budgets. Optionally transfer source textures and bake normal/AO per LOD. Every LOD GLB and its maps/report are saved; original is unchanged. Targets are approximate triangle budgets, not exact counts. Source must be accessible to the processing computer.",
     promptSnippet: "Create multiple textured LODs from an existing mesh without regenerating its shape.", promptGuidelines: modelGuidelines,
     parameters: Type.Object({ source: Type.String(), triangle_counts: Type.Array(Type.Integer({ minimum: 100, maximum: 2000000 }), { minItems: 1, maxItems: 6, description: "Strictly decreasing target counts, e.g. [30000,15000,5000]." }), transfer_textures: Type.Optional(Type.Boolean()), texture_resolution: Type.Optional(Type.Integer({ minimum: 64, maximum: 8192, multipleOf: 64 })), bake_normal: Type.Optional(Type.Boolean()), bake_ao: Type.Optional(Type.Boolean()), blender_path: Type.Optional(Type.String()) }),
     async execute(_id, params, signal, update) {

@@ -41,14 +41,14 @@ export class RemoteRuntime {
       const lines = (await readFile(file, "utf8").catch((error: NodeJS.ErrnoException) => { if (error.code === "ENOENT") return ""; throw error; })).split("\n");
       for (const line of lines) if (line.trim()) {
         const entry = JSON.parse(line);
-        if (entry.type === "message" && entry.message?.role === "toolResult" && /^(comfyui_|desktop_show_image$)/.test(entry.message.toolName ?? "")) collectMediaGrants(entry.message, this.host.dataDir, grants);
+        if (entry.type === "message" && entry.message?.role === "toolResult" && /^(media_|comfyui_|desktop_show_image$)/.test(entry.message.toolName ?? "")) collectMediaGrants(entry.message, this.host.dataDir, grants);
       }
     }
     const connected = () => { const info = broker.info(id); if (!info?.connected) throw new Error("Клиентский ПК отключён; сервер не используется вместо него"); return info; };
     const manager = new PiManager(store, () => null, undefined, (channel, payload) => {
       const event = (payload as { event?: { type?: string; toolName?: string; result?: unknown; message?: { role?: string; toolName?: string } } })?.event;
-      if (event?.type === "tool_execution_end" && /^(comfyui_|desktop_show_image$)/.test(event.toolName ?? "")) collectMediaGrants(event.result, this.host.dataDir, grants);
-      if (event?.type === "message_end" && event.message?.role === "toolResult" && /^(comfyui_|desktop_show_image$)/.test(event.message.toolName ?? "")) collectMediaGrants(event.message, this.host.dataDir, grants);
+      if (event?.type === "tool_execution_end" && /^(media_|comfyui_|desktop_show_image$)/.test(event.toolName ?? "")) collectMediaGrants(event.result, this.host.dataDir, grants);
+      if (event?.type === "message_end" && event.message?.role === "toolResult" && /^(media_|comfyui_|desktop_show_image$)/.test(event.message.toolName ?? "")) collectMediaGrants(event.message, this.host.dataDir, grants);
       this.publish(channel, payload, id);
     }, async conversation => {
       const info = connected();

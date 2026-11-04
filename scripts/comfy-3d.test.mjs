@@ -108,7 +108,7 @@ test("3D API round trip persists only file metadata and serves a portable model"
   assert.equal(result.totalModels, 1); assert.equal("data" in result.models[0], false);
   assert.deepEqual(await readFile(result.models[0].path), bytes);
   const media = { type: "model3d", ...result.models[0] };
-  const tool = { id: "3d-1", name: "comfyui_generate_3d", result: { details: { media: [media] } } };
+  const tool = { id: "3d-1", name: "media_generate_3d", result: { details: { media: [media] } } };
   assert.deepEqual(collectComfyMedia([tool, structuredClone(tool)]), [media]);
   const url = `pi-generated://model3d/${encodeURIComponent(path.basename(media.path))}`;
   const response = await generatedMediaResponse(dir, new Request(url, { headers: { Origin: "null" } }));

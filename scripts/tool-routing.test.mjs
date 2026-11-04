@@ -49,7 +49,7 @@ test("native parent stores nested media once and retains explicit empty music se
   routing({on:(name,handler)=>handlers.set(name,handler)});
   const hook=handlers.get("tool_result");
   const audio={type:"audio",path:"C:/song.flac",mimeType:"audio/flac"};
-  hook({parentToolCallId:"parent",toolCallId:"nested",toolName:"comfyui_publish_music",input:{},content:[],details:{media:[audio],audioSelection:true},isError:false});
+  hook({parentToolCallId:"parent",toolCallId:"nested",toolName:"media_publish_music",input:{},content:[],details:{media:[audio],audioSelection:true},isError:false});
   const result=hook({toolCallId:"parent",details:{native:true}});
   assert.equal(result.details.native,true);
   const parent={id:"parent",name:"codemode",result:{content:[],details:result.details}};
@@ -57,7 +57,7 @@ test("native parent stores nested media once and retains explicit empty music se
   assert.deepEqual(collectAnswerMedia([parent,child],true,"song.flac").parts,[audio]);
   assert.deepEqual(collectAnswerMedia([parent],true,"song.flac").parts,[audio]);
   assert.equal(parent.result.details.desktopNestedMedia.length,1);
-  hook({parentToolCallId:"empty",toolCallId:"none",toolName:"comfyui_publish_music",input:{},content:[],details:{media:[],audioSelection:true},isError:false});
+  hook({parentToolCallId:"empty",toolCallId:"none",toolName:"media_publish_music",input:{},content:[],details:{media:[],audioSelection:true},isError:false});
   const empty={id:"empty",name:"codemode",result:hook({toolCallId:"empty",details:{}})};
   assert.deepEqual(collectAnswerMedia([parent,empty]).parts,[]);
 });

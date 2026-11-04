@@ -1171,7 +1171,7 @@ function toolPresentation(
   command?: string;
   showRawArgs?: boolean;
 } {
-  const normalized = name.toLocaleLowerCase();
+  const normalized = name.toLocaleLowerCase().replace(/^media_/, "comfyui_");
   const path = args.path ?? args.file ?? args.filePath;
   if (normalized.startsWith("comfyui_") || normalized === "desktop_show_image" || normalized === "desktop_get_image_path") {
     const labels: Record<string, string> = {

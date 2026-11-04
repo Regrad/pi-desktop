@@ -17,8 +17,8 @@ app.whenReady().then(async () => {
     const image = { type: "image", data: png, mimeType: "image/png" };
     const messages = [
       { role: "user", content: "Create an image", images: [{ name: "User image", data: png, mimeType: "image/png" }], timestamp: 1 },
-      { role: "assistant", content: [{ type: "toolCall", id: "image", name: "comfyui_generate_image", arguments: { prompt: "test" } }], stopReason: "toolUse", timestamp: 2 },
-      { role: "toolResult", toolCallId: "image", toolName: "comfyui_generate_image", content: [{ type: "text", text: "Saved test image" }, image], details: { files: ["C:/test.png"] }, timestamp: 3 },
+      { role: "assistant", content: [{ type: "toolCall", id: "image", name: "media_generate_image", arguments: { prompt: "test" } }], stopReason: "toolUse", timestamp: 2 },
+      { role: "toolResult", toolCallId: "image", toolName: "media_generate_image", content: [{ type: "text", text: "Saved test image" }, image], details: { files: ["C:/test.png"] }, timestamp: 3 },
     ];
     const live = { role: "assistant", content: [{ type: "text", text: "Streaming final answer" }], timestamp: 4 };
     const state = { isStreaming: true, isCompacting: false, thinkingLevel: "medium", steeringMessages: [], followUpMessages: [] };

@@ -10,12 +10,12 @@ import { instrumentalGuidelines } from "../../lib/music-instructions.js";
 export default function register(pi: ExtensionAPI, context: ToolContext) {
   const { dataDir, reportText, generationStatus, vocalMode, musicOptions } = context;
   pi.registerTool({
-    name: "comfyui_cover_music", label: "Кавер YuE2",
-    description: "Create a YuE2 melody-based cover from source audio or abc_file. For a vocal-free variation use comfyui_generate_instrumental_music with source audio or the saved abc_file and the intended mode; keep_harmony controls source chords. This regenerates audio, not stem separation. The model cannot listen to audio.",
-    promptSnippet: "Make local YuE2 covers with vocals from saved audio or ABC. For an instrumental cover or minus, use comfyui_generate_instrumental_music so the score is checked and Vocal notes are handled automatically.",
+    name: "media_cover_music", label: "Кавер YuE2",
+    description: "Create a YuE2 melody-based cover from source audio or abc_file. For a vocal-free variation use media_generate_instrumental_music with source audio or the saved abc_file and the intended mode; keep_harmony controls source chords. This regenerates audio, not stem separation. The model cannot listen to audio.",
+    promptSnippet: "Make local YuE2 covers with vocals from saved audio or ABC. For an instrumental cover or minus, use media_generate_instrumental_music so the score is checked and Vocal notes are handled automatically.",
     promptGuidelines: instrumentalGuidelines,
     parameters: Type.Object({
-      audio: Type.Optional(Type.String({ description: "Absolute path to source audio. Required unless abc_file is supplied. Uploaded only to configured local/LAN ComfyUI." })),
+      audio: Type.Optional(Type.String({ description: "Absolute path to source audio. Required unless abc_file is supplied. Uploaded only to configured local/LAN media tools." })),
       abc_file: Type.Optional(Type.String({ description: "Absolute path to a saved .abc plan instead of source audio; useful after editing the plan." })),
       prompt: Type.String({ description: "New musical style and performance direction." }),
       lyrics: Type.Optional(Type.String({ description: "Words to sing with English section labels, e.g. [Verse] and [Chorus], or [Instrumental]. Required unless vocal_mode is set." })),

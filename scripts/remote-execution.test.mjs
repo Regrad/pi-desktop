@@ -65,7 +65,7 @@ test("Pi remote tools delegate all filesystem/command/desktop actions; client ru
   assert.equal(tools.has("execute_elevated"), true);
   assert(commands.every(command => !command.args.env));
   assert.equal(commands.some(command => command.operation === "readChunk"), false); // Listing/ordinary work copies no media.
-  const cover = { toolName: "comfyui_cover_music", input: { audio: "C:\\CLIENT\\track.flac" } };
+  const cover = { toolName: "media_cover_music", input: { audio: "C:\\CLIENT\\track.flac" } };
   await handlers.get("tool_call")(cover);
   assert(cover.input.audio.startsWith(path.join(directory, "remote-inputs", "test-device")));
   assert((await readFile(cover.input.audio)).equals(music));

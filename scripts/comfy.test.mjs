@@ -55,18 +55,18 @@ test("builtin edit binds references and cutout converts foreground mask to alpha
 test("generated images survive persisted history and are not duplicated by tool calls", () => {
   const image = { type: "image", data: "aGVsbG8=", mimeType: "image/png" };
   const result = { content: [{ type: "text", text: "Saved file" }, image] };
-  const tool = { id: "call-1", name: "comfyui_generate_image", result };
+  const tool = { id: "call-1", name: "media_generate_image", result };
   assert.deepEqual(collectComfyImages([tool]), [image]);
   assert.deepEqual(collectComfyImages([{ ...tool, result: undefined }, tool]), [image]);
   assert.deepEqual(collectComfyImages([tool, { ...tool, result: structuredClone(result) }]), [image]);
-  assert.deepEqual(collectComfyImages([{ ...tool, id: "edit-1", name: "comfyui_edit_image" }, { ...tool, id: "bg-1", name: "comfyui_remove_background" }]), [image, image]);
+  assert.deepEqual(collectComfyImages([{ ...tool, id: "edit-1", name: "media_edit_image" }, { ...tool, id: "bg-1", name: "media_remove_background" }]), [image, image]);
   assert.deepEqual(collectComfyImages([{ ...tool, name: "computer-use_screenshot" }]), []);
   assert.deepEqual(collectComfyImages([{ ...tool, result: { ...result, isError: true } }]), []);
   assert.deepEqual(collectComfyImages([{ ...tool, result: { content: [null, { type: "image" }] } }]), []);
 });
 test("media stays in tools until the final answer completes, preserving older answers", () => {
   const image = { type: "image", data: "aGVsbG8=", mimeType: "image/png" };
-  const tool = { id: "image-1", name: "comfyui_generate_image", result: { content: [image], details: { files: ["C:/image.png"] } } };
+  const tool = { id: "image-1", name: "media_generate_image", result: { content: [image], details: { files: ["C:/image.png"] } } };
   for (const state of [
     { streaming: true, working: true, currentTurn: true },
     { streaming: false, working: true, currentTurn: true },
@@ -97,8 +97,8 @@ test("final answer publishes only the named result, leaving earlier images insid
     id, name, result: { content: [{ type: "image", data: id, mimeType: "image/png" }], details: { files: [`C:\\AI\\image-generation\\${filename}`], ...(displayInAnswer === undefined ? {} : { displayInAnswer }) } },
   });
   const preview = make("preview", "desktop_show_image", "mask-preview.png", true);
-  const first = make("first", "comfyui_inpaint_image", "result-1.png");
-  const last = make("last", "comfyui_inpaint_image", "result-2.png");
+  const first = make("first", "media_inpaint_image", "result-1.png");
+  const last = make("last", "media_inpaint_image", "result-2.png");
   const selected = collectAnswerMedia([preview, first, last], true, "Готово. Файл: C:\\AI\\image-generation\\result-2.png");
   assert.deepEqual(selected.parts.map(part => part.path), ["C:\\AI\\image-generation\\result-2.png"]);
   assert.deepEqual([...selected.toolIds], ["last"]);
@@ -111,7 +111,7 @@ test("final answer publishes only the named result, leaving earlier images insid
 });
 
 test("latest image job keeps all its variants; explicit selection keeps unchosen variants in tool", () => {
-  const make = (id, files) => ({ id, name: "comfyui_generate_image", result: {
+  const make = (id, files) => ({ id, name: "media_generate_image", result: {
     content: files.map((file, i) => ({ type: "image", data: `${id}-${i}`, mimeType: "image/png" })), details: { files },
   } });
   const old = make("old", ["C:/old.png"]);
@@ -123,7 +123,7 @@ test("latest image job keeps all its variants; explicit selection keeps unchosen
 });
 
 test("an ambiguous filename does not publish every same-named image", () => {
-  const make = (id, path) => ({ id, name: "comfyui_edit_image", result: {
+  const make = (id, path) => ({ id, name: "media_edit_image", result: {
     content: [{ type: "image", data: id, mimeType: "image/png" }], details: { files: [path] },
   } });
   const earlier = make("earlier", "C:/first/image.png");
@@ -133,17 +133,17 @@ test("an ambiguous filename does not publish every same-named image", () => {
 });
 
 test("image, music and 3D each retain one final job without losing mixed results", () => {
-  const image = { id: "image", name: "comfyui_generate_image", result: { content: [{ type: "image", data: "a", mimeType: "image/png" }], details: { files: ["C:/image.png"] } } };
-  const audio = { id: "audio", name: "comfyui_generate_music", result: { content: [{ type: "text", text: "done" }], details: { media: [{ type: "audio", path: "C:/song.flac", mimeType: "audio/flac" }] } } };
-  const model = { id: "model", name: "comfyui_generate_3d", result: { content: [{ type: "text", text: "done" }], details: { media: [{ type: "model3d", path: "C:/mesh.glb", mimeType: "model/gltf-binary" }] } } };
+  const image = { id: "image", name: "media_generate_image", result: { content: [{ type: "image", data: "a", mimeType: "image/png" }], details: { files: ["C:/image.png"] } } };
+  const audio = { id: "audio", name: "media_generate_music", result: { content: [{ type: "text", text: "done" }], details: { media: [{ type: "audio", path: "C:/song.flac", mimeType: "audio/flac" }] } } };
+  const model = { id: "model", name: "media_generate_3d", result: { content: [{ type: "text", text: "done" }], details: { media: [{ type: "model3d", path: "C:/mesh.glb", mimeType: "model/gltf-binary" }] } } };
   const selected = collectAnswerMedia([image, audio, model], true, "Готово: C:/image.png");
   assert.deepEqual(selected.parts.map(part => part.path), ["C:/image.png", "C:/song.flac", "C:/mesh.glb"]);
   assert.deepEqual([...selected.toolIds], ["image", "audio", "model"]);
 });
 
 test("explicitly hidden masks and failed media never publish", () => {
-  const mask = { id: "mask", name: "comfyui_create_mask", result: { content: [{ type: "image", data: "a", mimeType: "image/png" }], details: { files: ["C:/mask.png"], displayInAnswer: false } } };
-  const failed = { id: "failed", name: "comfyui_generate_image", result: { isError: true, content: [{ type: "image", data: "b", mimeType: "image/png" }], details: { files: ["C:/failed.png"] } } };
+  const mask = { id: "mask", name: "media_create_mask", result: { content: [{ type: "image", data: "a", mimeType: "image/png" }], details: { files: ["C:/mask.png"], displayInAnswer: false } } };
+  const failed = { id: "failed", name: "media_generate_image", result: { isError: true, content: [{ type: "image", data: "b", mimeType: "image/png" }], details: { files: ["C:/failed.png"] } } };
   assert.deepEqual(collectAnswerMedia([mask, failed], true, "C:/mask.png C:/failed.png").parts, []);
 });
 
@@ -179,8 +179,8 @@ test("attachment metadata exposes originals without showing service text in chat
   assert.equal(visibleImageAttachmentText(text), "Edit the image");
   assert.match(metadata, /Photos/);
   assert.match(metadata, /desktop_get_image_path/);
-  assert.match(metadata, /ComfyUI image tools/);
-  assert.match(metadata, /comfyui_inpaint_image.mask/);
+  assert.match(metadata, /Image tools/);
+  assert.match(metadata, /media_inpaint_image.mask/);
   assert.ok(!metadata.includes("clipboard:pasted.png"));
   const entries = [{ id: "entry123", type: "message", message: { role: "user", content: [
     { type: "text", text }, { type: "image", data: "aA==", mimeType: "image/png" }, { type: "image", data: "bA==", mimeType: "image/png" },
@@ -257,14 +257,14 @@ test("extension exposes specialized ComfyUI tools with explicit parameters", asy
     const registered = [];
     await extension({ registerTool: tool => registered.push(tool), on() {} });
     assert.equal(registered.length, 25);
-    for (const name of ["comfyui_generate_image", "comfyui_generate_music", "comfyui_clone_voice", "comfyui_generate_3d", "comfyui_texture_3d", "desktop_get_image_path"]) assert.ok(registered.some(tool => tool.name === name));
+    for (const name of ["media_generate_image", "media_generate_music", "media_clone_voice", "media_generate_3d", "media_texture_3d", "desktop_get_image_path"]) assert.ok(registered.some(tool => tool.name === name));
     assert.ok(!registered.some(tool => tool.name === "comfyui_generate_idol_3d"));
     for (const name of ["comfyui_workflows", "comfyui_run_workflow", "comfyui_job"]) assert.ok(!registered.some(tool => tool.name === name));
     for (const tool of registered) {
       assert.equal(typeof tool.execute, "function");
       assert.equal(tool.parameters.type, "object");
     }
-    assert.match(registered.find(tool => tool.name === "desktop_get_image_path").description, /ComfyUI image tools/);
+    assert.match(registered.find(tool => tool.name === "desktop_get_image_path").description, /Image tools/);
   } finally {
     if (original === undefined) delete process.env.PI_DESKTOP_DATA_DIR;
     else process.env.PI_DESKTOP_DATA_DIR = original;
@@ -330,10 +330,10 @@ test("YuE2 audio survives history without adding audio base64 to the model", asy
   assert.deepEqual(await readFile(result.audio[0].path), bytes);
   assert.equal("data" in result.audio[0], false);
   const media = { type: "audio", ...result.audio[0] };
-  const tool = { id: "music-1", name: "comfyui_generate_music", result: { content: [{ type: "text", text: "Saved" }], details: { media: [media] } } };
+  const tool = { id: "music-1", name: "media_generate_music", result: { content: [{ type: "text", text: "Saved" }], details: { media: [media] } } };
   assert.deepEqual(collectComfyMedia([tool, structuredClone(tool)]), [media]);
   const image = { type: "image", data: "abc", mimeType: "image/png" };
-  assert.equal(collectComfyMedia([{ id: "image", name: "comfyui_generate_image", result: { content: [image], details: { files: ["C:/data/image-generation/a.png"] } } }])[0].path, "C:/data/image-generation/a.png");
+  assert.equal(collectComfyMedia([{ id: "image", name: "media_generate_image", result: { content: [image], details: { files: ["C:/data/image-generation/a.png"] } } }])[0].path, "C:/data/image-generation/a.png");
   await assert.rejects(runComfy(dir, "music", { prompt: "test", lyrics: "[Instrumental]", duration: 901 }), /Длительность/);
 });
 

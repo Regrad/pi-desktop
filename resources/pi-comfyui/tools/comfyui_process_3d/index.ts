@@ -6,8 +6,8 @@ import { modelSource, modelJobPrefix, runModelTool } from "../../lib/model3d-too
 
 export default function register(pi: ExtensionAPI, { dataDir }: ToolContext) {
   pi.registerTool({
-    name: "comfyui_process_3d", label: "Исправить и оптимизировать 3D-модель",
-    description: "Process an EXISTING mesh with local ComfyUI ModelTools: WTiVo hole repair, Instant Meshes quad retopology, polygon reduction, and source-to-target texture transfer with normal/AO baking. source is the high-quality appearance source; optional target is an existing low-poly mesh to receive textures. Without target, operate on source. All processing operations are off unless explicitly requested. Enable simplify and set target_triangles only when polygon reduction was requested; enable texture transfer/baking when appearance must survive geometry changes. Quad OBJ, final GLB, textures and topology/warning reports are saved separately. Original files are unchanged. Inputs must be accessible on the ComfyUI computer.",
+    name: "media_process_3d", label: "Исправить и оптимизировать 3D-модель",
+    description: "Process an EXISTING mesh : WTiVo hole repair, Instant Meshes quad retopology, polygon reduction, and source-to-target texture transfer with normal/AO baking. source is the high-quality appearance source; optional target is an existing low-poly mesh to receive textures. Without target, operate on source. All processing operations are off unless explicitly requested. Enable simplify and set target_triangles only when polygon reduction was requested; enable texture transfer/baking when appearance must survive geometry changes. Quad OBJ, final GLB, textures and topology/warning reports are saved separately. Original files are unchanged. Inputs must be accessible on the processing computer.",
     promptSnippet: "Repair holes, retopologize, simplify or transfer textures on existing 3D models; inspect returned reports.",
     promptGuidelines: modelGuidelines,
     parameters: Type.Object({ source: Type.String(), target: Type.Optional(Type.String()), ...processingProperties }),

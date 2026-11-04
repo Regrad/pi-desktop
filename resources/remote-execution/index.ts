@@ -140,9 +140,9 @@ export default function remoteExecution(pi: ExtensionAPI) {
       if (!["data", "text", "before", "after"].includes(key)) grantPaths(item);
     }
   };
-  pi.on("session_start", (_event, context) => { for (const entry of context.sessionManager.getEntries()) if (entry.type === "message" && entry.message.role === "toolResult" && /^(comfyui_|desktop_show_image$)/.test(entry.message.toolName)) grantPaths(entry.message); });
+  pi.on("session_start", (_event, context) => { for (const entry of context.sessionManager.getEntries()) if (entry.type === "message" && entry.message.role === "toolResult" && /^(media_|comfyui_|desktop_show_image$)/.test(entry.message.toolName)) grantPaths(entry.message); });
   pi.on("tool_result", async event => {
-    if (/^(comfyui_|desktop_show_image$)/.test(event.toolName)) { grantPaths(event.content); grantPaths(event.details); }
+    if (/^(media_|comfyui_|desktop_show_image$)/.test(event.toolName)) { grantPaths(event.content); grantPaths(event.details); }
     // Supports installed older editable ComfyUI add-ons too: materialize the selected image on the client.
     if (event.toolName === "desktop_get_image_path" && !event.isError) {
       const file = (event.details as { files?: string[] })?.files?.[0];
@@ -154,7 +154,7 @@ export default function remoteExecution(pi: ExtensionAPI) {
     }
   });
   pi.on("tool_call", async event => {
-    if (!event.toolName.startsWith("comfyui_") && !["desktop_show_image", "desktop_get_image_path"].includes(event.toolName)) return;
+    if (!/^(media_|comfyui_)/.test(event.toolName) && !["desktop_show_image", "desktop_get_image_path"].includes(event.toolName)) return;
     const map = async (value: unknown, key: string): Promise<unknown> => {
       if (Array.isArray(value)) return Promise.all(value.map(item => map(item, key)));
       if (typeof value !== "string" || !/^(?:image|images|mask|audio|reference_audio|file|path|abc_file|.*_path|.*_audio)$/.test(key) || !path.win32.isAbsolute(value)) return value;

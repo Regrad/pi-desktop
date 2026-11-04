@@ -84,7 +84,7 @@ test("real Pi loader exposes specialized modules; universal copies stay inactive
   let result = await load();
   assert.deepEqual(result.errors, []);
   assert.equal(result.extensions[0].tools.size, 25);
-  for (const name of ["comfyui_generate_image", "comfyui_generate_music", "comfyui_generate_3d", "comfyui_texture_3d", "comfyui_status"]) assert.ok(result.extensions[0].tools.has(name));
+  for (const name of ["media_generate_image", "media_generate_music", "media_generate_3d", "media_texture_3d", "media_status"]) assert.ok(result.extensions[0].tools.has(name));
   assert.equal(result.extensions[0].tools.has("comfyui_generate_idol_3d"), false);
   for (const name of ["comfyui_workflows", "comfyui_run_workflow", "comfyui_job"]) assert.ok(!result.extensions[0].tools.has(name));
   const contextHook = result.extensions[0].handlers.get("before_agent_start")[0];
@@ -110,10 +110,10 @@ test("real Pi loader exposes specialized modules; universal copies stay inactive
   result = await load();
   assert.deepEqual(result.errors, []);
   assert.equal(result.extensions[0].tools.get("desktop_show_image").definition.label, "changed");
-  await writeFile(selected, original.replace('name: "desktop_show_image"', 'name: "comfyui_generate_image"'));
+  await writeFile(selected, original.replace('name: "desktop_show_image"', 'name: "media_generate_image"'));
   result = await load();
   assert.equal(result.extensions.length, 0);
-  assert.match(result.errors[0].error, /duplicate tool comfyui_generate_image/);
+  assert.match(result.errors[0].error, /duplicate tool media_generate_image/);
   await writeFile(selected, 'throw new Error("broken module");');
   result = await load();
   assert.equal(result.extensions.length, 0);

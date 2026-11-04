@@ -4,9 +4,9 @@ type Graph = Record<string, { class_type: string; inputs: Record<string, unknown
 export interface TextureOptions {
   seed?: number; steps?: number; cfg?: number; texture_resolution?: number;
   albedo_resolution?: number; mr_resolution?: number; render_size?: number;
-  uv_mode?: "comfy_gpu" | "xatlas" | "keep_existing";
+  uv_mode?: "gpu" | "comfy_gpu" | "xatlas" | "keep_existing";
   reference_alignment?: "fit_front_silhouette" | "center";
-  memory_factor?: number; attention?: "ultratex_sparse" | "comfy_default";
+  memory_factor?: number; attention?: "ultratex_sparse" | "standard" | "comfy_default";
   sparse_topk?: number; token_chunk?: number; drop_background_tokens?: boolean;
   view_weight_power?: number; best_view_mix?: number; edge_feather_px?: number;
 }
@@ -18,7 +18,7 @@ export function textureGraph(source: string | Link | { meshPath: Link }, image: 
     model: [model, 0], vae: ["pi_tex_decoder", 0], positive: ["pi_tex_prompt", 0], prep: ["pi_tex_prep", 0],
     resolution, steps: options.steps ?? 25, seed, guidance: options.cfg ?? 4,
     drop_background_tokens: options.drop_background_tokens ?? true, memory_factor: options.memory_factor ?? 0,
-    attention: options.attention ?? "ultratex_sparse", sparse_topk: options.sparse_topk ?? 0.2, token_chunk: options.token_chunk ?? 8192,
+    attention: options.attention === "standard" ? "comfy_default" : options.attention ?? "ultratex_sparse", sparse_topk: options.sparse_topk ?? 0.2, token_chunk: options.token_chunk ?? 8192,
   } });
   return {
     pi_tex_image: { class_type: "LoadImage", inputs: { image } },
@@ -29,7 +29,7 @@ export function textureGraph(source: string | Link | { meshPath: Link }, image: 
       mesh_path: typeof source === "string" ? source : Array.isArray(source) ? "" : source.meshPath,
       ...(Array.isArray(source) ? { trimesh: source } : {}),
       render_size: options.render_size ?? 4096, atlas_size: options.texture_resolution ?? 4096,
-      uv_mode: options.uv_mode ?? "keep_existing", reference_alignment: options.reference_alignment ?? "fit_front_silhouette",
+      uv_mode: options.uv_mode === "gpu" ? "comfy_gpu" : options.uv_mode ?? "keep_existing", reference_alignment: options.reference_alignment ?? "fit_front_silhouette",
     } },
     pi_tex_model: { class_type: "UNETLoader", inputs: { unet_name: "flux-2-klein-base-9b-fp8.safetensors", weight_dtype: "default" } },
     pi_tex_vae: { class_type: "VAELoader", inputs: { vae_name: "flux2-vae.safetensors" } },

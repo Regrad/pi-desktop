@@ -5,6 +5,7 @@ import { fileURLToPath } from "node:url";
 import { hostRequire } from "./lib/host.js";
 import { createToolContext } from "./lib/context.js";
 import { loadComfySettings } from "./lib/comfy-client.js";
+import { mediaToolError } from "./lib/tool-errors.js";
 
 // Do not reactivate obsolete universal modules preserved as user-edited files on update.
 const retired = new Set(["comfyui_workflows", "comfyui_run_workflow", "comfyui_job", "comfyui_generate_idol_3d"]);
@@ -24,7 +25,17 @@ export default async function comfyAddon(pi: ExtensionAPI) {
   const api = Object.create(pi) as ExtensionAPI;
   // Capture each definition with its own schema/details types instead of erasing generics.
   api.registerTool = (definition) => {
-    definitions.push({ name: definition.name, publish: () => pi.registerTool(definition) });
+    const execute = definition.execute;
+    definitions.push({ name: definition.name, publish: () => pi.registerTool({ ...definition,
+      async execute(id, params, signal, update, ctx) {
+        try { return await execute(id, params, signal, update, ctx); }
+        catch (error) {
+          if (signal?.aborted) throw error;
+          const failure = await mediaToolError(dataDir, definition.name, error);
+          throw new Error(failure.content[0].text);
+        }
+      },
+    }) });
   };
   for (const entry of (await readdir(root, { withFileTypes: true })).sort((a, b) => a.name.localeCompare(b.name))) {
     if (!entry.isDirectory() || entry.name.startsWith(".") || retired.has(entry.name)) continue;
@@ -44,6 +55,6 @@ export default async function comfyAddon(pi: ExtensionAPI) {
   for (const definition of definitions) definition.publish();
   pi.on("before_agent_start", async event => {
     if (!(await loadComfySettings(dataDir)).enabled) return;
-    return { systemPrompt: `${event.systemPrompt}\n\nLocal ComfyUI tools are available through codemode. Discover the specialized tool for the requested image, music, speech or 3D operation and read its parameters before calling it. Each tool supplies its workflow; no workflow discovery or preparation is needed. Keep defaults unless the task requires changes. Saved results are displayed in chat.` };
+    return { systemPrompt: `${event.systemPrompt}\n\nBuilt-in media tools generate and edit images, music, speech and 3D models. Discover the specialized tool through codemode, read its parameters and call it with the requested inputs. Keep defaults unless the task requires changes. Saved results are displayed in chat.` };
   });
 }

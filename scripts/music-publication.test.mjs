@@ -7,8 +7,8 @@ import { collectAnswerMedia, answerCanPublishMedia } from "../src/comfy-images.t
 import { selectMusicForAnswer } from "../resources/pi-comfyui/lib/music-publication.ts";
 
 const track = name => ({ type: "audio", path: `C:/Pi/data/music-generation/${name}.flac`, mimeType: "audio/flac" });
-const generated = (id, media) => ({ id, name: "comfyui_generate_music", result: { content: [], details: { media, files: media.map(part => part.path) } } });
-const publish = (id, media) => ({ id, name: "comfyui_publish_music", result: { content: [], details: { audioSelection: true, media, files: media.map(part => part.path) } } });
+const generated = (id, media) => ({ id, name: "media_generate_music", result: { content: [], details: { media, files: media.map(part => part.path) } } });
+const publish = (id, media) => ({ id, name: "media_publish_music", result: { content: [], details: { audioSelection: true, media, files: media.map(part => part.path) } } });
 
 test("two tracks explicitly selected out of ten, in selection order, not answer-text order", () => {
   const tracks = Array.from({ length: 10 }, (_, i) => track(`variant-${i + 1}`));
@@ -46,7 +46,7 @@ test("media stay in tools during work, aborted turns never publish; old chats ke
   assert.deepEqual(collectAnswerMedia([generated("old-one", [track("one")]), generated("old-two", [selected])]).parts, [selected]);
 });
 test("explicit audio selection leaves intermediate-image filtering unchanged", () => {
-  const image = (id, filename) => ({ id, name: "comfyui_generate_image", result: { content: [{ type: "image", data: id, mimeType: "image/png" }], details: { files: [`C:/Pi/data/image-generation/${filename}.png`] } } });
+  const image = (id, filename) => ({ id, name: "media_generate_image", result: { content: [{ type: "image", data: id, mimeType: "image/png" }], details: { files: [`C:/Pi/data/image-generation/${filename}.png`] } } });
   const result = collectAnswerMedia([image("intermediate", "preview"), image("final", "final"), publish("selection", [track("music")])]);
   assert.deepEqual(result.parts.map(part => part.type), ["image", "audio"]);
   assert.equal(result.parts[0].data, "final");

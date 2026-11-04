@@ -75,7 +75,7 @@ export default function desktopToolRouting(pi) {
     return { systemPrompt: `${event.systemPrompt}\n\n${policy}` };
   });
   pi.on("tool_result", event => {
-    if (event.parentToolCallId && (event.toolName.startsWith("comfyui_") || event.toolName === "desktop_show_image")) {
+    if (event.parentToolCallId && (/^(media_|comfyui_)/.test(event.toolName) || event.toolName === "desktop_show_image")) {
       const details = event.details;
       const images = event.content.filter(block => block.type === "image");
       if (!images.length && !details?.media?.length && !details?.audioSelection) return;

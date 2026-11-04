@@ -1,5 +1,5 @@
 type ToolImageResult = { id: string; name: string; result?: unknown; args?: unknown };
-const publishingTool = (name: string) => name.startsWith("comfyui_") || name === "desktop_show_image";
+const publishingTool = (name: string) => /^(media_|comfyui_)/.test(name) || name === "desktop_show_image";
 
 // Nested executions have no standalone transcript entry. Their media
 // metadata is persisted on the parent result by the native routing extension.
@@ -70,7 +70,7 @@ export function collectAnswerMedia(tools: ToolImageResult[], answerComplete = tr
   // Explicit publication is authoritative, including an empty selection.
   // Failed calls never replace the last successful selection.
   const audioSelection = completed.filter(tool => {
-    if (tool.name !== "comfyui_publish_music" || !tool.result || typeof tool.result !== "object") return false;
+    if (!["media_publish_music", "comfyui_publish_music"].includes(tool.name) || !tool.result || typeof tool.result !== "object") return false;
     const result = tool.result as { isError?: boolean; details?: { audioSelection?: boolean } };
     return !result.isError && result.details?.audioSelection === true;
   }).at(-1);
@@ -126,7 +126,7 @@ export function collectAnswerMedia(tools: ToolImageResult[], answerComplete = tr
     // No explicit choice: one final job per media type. Prefer a completed
     // generation to an inspection snapshot shown during that same turn.
     const possible = candidates.filter(item => item.media.some(part => part.type === type) && item.tool.name !== "read");
-    const generated = possible.filter(item => item.tool.name.startsWith("comfyui_"));
+    const generated = possible.filter(item => /^(media_|comfyui_)/.test(item.tool.name));
     const final = (generated.length ? generated : possible).at(-1);
     if (final) parts.push(...final.media.filter(part => part.type === type));
   }

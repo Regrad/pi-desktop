@@ -25,7 +25,7 @@ export function createToolContext(dataDir: string) {
     cleanup_preset: Type.Optional(Type.Union([Type.Literal("off"), Type.Literal("light"), Type.Literal("medium"), Type.Literal("custom")])),
     remove_notes_shorter_than_ms: Type.Optional(Type.Number({ minimum: 0, maximum: 500 })),
     remove_pitch_outliers: Type.Optional(Type.Boolean()), outlier_semitones: Type.Optional(Type.Integer({ minimum: 6, maximum: 48 })),
-    adapter: Type.Optional(Type.String({ description: "Installed YuE2 LoRA/LoKr filename from comfyui_status. 'none' applies no adapter." })), ar_strength: Type.Optional(Type.Number({ minimum: 0, maximum: 3 })),
+    adapter: Type.Optional(Type.String({ description: "Installed YuE2 LoRA/LoKr filename from media_status. 'none' applies no adapter." })), ar_strength: Type.Optional(Type.Number({ minimum: 0, maximum: 3 })),
     nar_strength: Type.Optional(Type.Number({ minimum: 0, maximum: 3 })), adapter_enabled: Type.Optional(Type.Boolean()),
     headroom_percent: Type.Optional(Type.Number({ minimum: 0, maximum: 100 })), tail_seconds: Type.Optional(Type.Number({ minimum: 0, maximum: 60 })),
     abc_max_tokens: Type.Optional(Type.Integer({ minimum: 1, maximum: 20000 })),

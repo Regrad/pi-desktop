@@ -54,7 +54,7 @@ export const speechParameters = {
   normalize_text: Type.Optional(Type.Boolean({ description: "Optional numbers-to-words normalization, default false. Russian integers supported via num2words; English/Chinese rich normalization needs optional WeTextProcessing." })),
   pad_duration: Type.Optional(Type.Number({ minimum: 0, maximum: 10, description: "Silence added at EACH edge in seconds, default 0.1; 0 disables." })),
   fade_duration: Type.Optional(Type.Number({ minimum: 0, maximum: 10, description: "Fade-in/out duration in seconds, default 0.1; 0 disables." })),
-  device: Type.Optional(Type.String({ description: "ComfyUI inference device, default cuda; auto, cpu, cuda:0, etc." })),
+  device: Type.Optional(Type.String({ description: "Inference device, default cuda; auto, cpu, cuda:0, etc." })),
   dtype: choice(["auto", "float16", "float32", "bfloat16"], "Inference precision, default bfloat16."),
 };
 const speechSchema = Type.Object(speechParameters);

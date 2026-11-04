@@ -10,7 +10,7 @@ import { processingProperties, modelGuidelines } from "../../lib/model3d-options
 export default function register(pi: ExtensionAPI, context: ToolContext) {
   const { dataDir, reportText, generationStatus, vocalMode, musicOptions } = context;
   pi.registerTool({
-    name: "comfyui_generate_3d", label: "Генерация 3D-модели",
+    name: "media_generate_3d", label: "Генерация 3D-модели",
     description: "Generate a textured GLB locally: Pixal3D/Trellis2 builds geometry, then UltraTex FLUX.2 Klein creates PBR textures. Supply one image or four views ordered front, left, back, right; image paths and attachment: references are supported. A positive target_face_count performs approximate mesh reduction, not native generation at that face count; 0 skips final decimation. Postprocessing runs only when requested. The result is displayed in an interactive viewer; GLB geometry is not visual input to the language model.",
     promptSnippet: "Generate textured 3D models locally from one image or four views; show an interactive model in chat.",
     promptGuidelines: [...modelGuidelines,
@@ -27,7 +27,7 @@ export default function register(pi: ExtensionAPI, context: ToolContext) {
         albedo_resolution: Type.Optional(Type.Integer({ minimum: 256, maximum: 4096, multipleOf: 16 })),
         mr_resolution: Type.Optional(Type.Integer({ minimum: 256, maximum: 4096, multipleOf: 16 })),
         memory_factor: Type.Optional(Type.Number({ minimum: 0, maximum: 200 })),
-        attention: Type.Optional(Type.Union([Type.Literal("ultratex_sparse"), Type.Literal("comfy_default")])),
+        attention: Type.Optional(Type.Union([Type.Literal("ultratex_sparse"), Type.Literal("standard")])),
         sparse_topk: Type.Optional(Type.Number({ minimum: 0.05, maximum: 1 })),
         token_chunk: Type.Optional(Type.Integer({ minimum: 0, maximum: 131072, multipleOf: 1024 })),
       })),
@@ -47,7 +47,7 @@ export default function register(pi: ExtensionAPI, context: ToolContext) {
         (text) => onUpdate?.({ content: [{ type: "text", text }], details: {} }),
         (reference) => resolveHistoryImage(ctx.sessionManager.getBranch(), reference));
       return {
-        content: [{ type: "text", text: `3D generation completed. Saved GLB models:\n${result.models.map((model) => model.path).join("\n")}\nReport: ${result.recordFile ?? "not supplied by custom workflow"}\n${reportText(result.reports)}\nJob: ${result.promptId}. Returned ${result.models.length} of ${result.totalModels} models. Interactive preview is available to the user; model geometry was not supplied to the language model.` }],
+        content: [{ type: "text", text: `3D generation completed. Saved GLB models:\n${result.models.map((model) => model.path).join("\n")}\nReport: ${result.recordFile ?? "not supplied by custom operation"}\n${reportText(result.reports)}\nJob: ${result.promptId}. Returned ${result.models.length} of ${result.totalModels} models. Interactive preview is available to the user; model geometry was not supplied to the language model.` }],
         details: { promptId: result.promptId, files: [...result.models.map((model) => model.path), ...(result.recordFile ? [result.recordFile] : [])], reports: result.reports, media: result.models.map((model) => ({ type: "model3d", ...model })) },
       };
     },
