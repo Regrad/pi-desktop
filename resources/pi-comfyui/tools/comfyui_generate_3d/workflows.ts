@@ -1352,9 +1352,14 @@ export function modelGraph(settings: ComfySettings, mode: "model3d" | "model3d_m
   const output = mode === "model3d" ? "322" : "372";
   const outputPrefix = `3d/pi-desktop/${randomUUID()}`;
   graph[output].inputs.filename_prefix = outputPrefix;
-  // Preserve today's UltraTex texturing when restoring specialized tools.
-  // The old Trellis texture stages are not dependencies of this final output.
-  Object.assign(graph, textureGraph(["196", 0], images[0], { ...input.texture_options, seed: input.seed,
+  // Comfy MESH is not UltraTex TRIMESH. Export the existing UV mesh through the
+  // installed File3D/path bridge, with every geometry-processing operation off.
+  graph.pi_model_mesh_file = { class_type: "MeshToFile3D", inputs: { mesh: ["196", 0] } };
+  graph.pi_model_mesh_path = { class_type: "UniversalModelTools", inputs: {
+    ...processingInputs(), source_path: "", target_path: "", source_model: ["pi_model_mesh_file", 0],
+    output_prefix: `${outputPrefix}/geometry`,
+  } };
+  Object.assign(graph, textureGraph({ meshPath: ["pi_model_mesh_path", 1] }, images[0], { ...input.texture_options, seed: input.seed,
     texture_resolution: options.texture_resolution ?? input.texture_options?.texture_resolution }));
   graph["288"].inputs.value = options.texture_resolution ?? input.texture_options?.texture_resolution ?? 4096;
   graph[output].inputs.model_3d = ["pi_tex_bake", 4];

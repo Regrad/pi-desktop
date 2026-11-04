@@ -48,6 +48,27 @@ test("processing runs only when explicitly requested", () => {
   for (const invalid of [{ repair: "yes" }, { target_triangles: 0 }, { texture_resolution: 111 }, { components: "none" }, { unknown: 1 }]) assert.throws(() => processingInputs(invalid));
 });
 
+test("both generation modes bridge MESH to UltraTex through a path without processing geometry", () => {
+  for (const mode of ["model3d", "model3d_multiview"]) {
+    const images = mode === "model3d" ? ["one.png"] : ["front.png", "left.png", "back.png", "right.png"];
+    const graph = builtinGraph(DEFAULT_COMFY_SETTINGS, mode, { model3d_options: { target_face_count: 50000 } }, images);
+    assert.equal(graph.pi_model_mesh_file.class_type, "MeshToFile3D");
+    assert.deepEqual(graph.pi_model_mesh_file.inputs.mesh, ["196", 0]);
+    assert.equal(graph.pi_model_mesh_path.class_type, "UniversalModelTools");
+    assert.deepEqual(graph.pi_model_mesh_path.inputs.source_model, ["pi_model_mesh_file", 0]);
+    for (const flag of ["repair", "remesh", "simplify", "transfer_textures", "bake_normal", "bake_ao"])
+      assert.equal(graph.pi_model_mesh_path.inputs[flag], false, flag);
+    assert.deepEqual(graph.pi_tex_prep.inputs.mesh_path, ["pi_model_mesh_path", 1]);
+    assert.equal(graph.pi_tex_prep.inputs.trimesh, undefined);
+    assert.equal(graph[186].inputs.target_face_count, 50000);
+    assert.equal(graph.pi_tex_prep.inputs.uv_mode, "keep_existing");
+    assert.deepEqual(graph[mode === "model3d" ? "322" : "372"].inputs.model_3d, ["pi_tex_bake", 4]);
+  }
+  const trimesh = textureGraph(["existing_trimesh", 0], "reference.png");
+  assert.deepEqual(trimesh.pi_tex_prep.inputs.trimesh, ["existing_trimesh", 0]);
+  assert.equal(trimesh.pi_tex_prep.inputs.mesh_path, "");
+});
+
 test("explicit OBJ materials are saved once, not downloaded and rewritten as companions", async t => {
   const dir = await mkdtemp(path.join(os.tmpdir(), "pi-model-materials-"));
   t.after(() => rm(dir, { recursive: true, force: true }));
@@ -115,19 +136,34 @@ test("artifact downloads reject traversal before making requests; OBJ preserves 
   assert.equal(path.basename(result.files[1].path), "result.mtl");
   assert.equal(path.dirname(result.files[0].path), path.dirname(result.files[1].path));
 });
-test("texture workflow inputs match running ComfyUI node schema", { skip: !process.env.PI_TEST_COMFY_SCHEMA }, async () => {
+test("texture and both generation workflows match installed node input and output types", { skip: !process.env.PI_TEST_COMFY_SCHEMA }, async () => {
   const info = await (await fetch("http://127.0.0.1:8188/object_info")).json();
-  const graph = textureGraph("C:/models/mesh.glb", "upload.png", {});
+  const graphs = [textureGraph("C:/models/mesh.glb", "upload.png", {}),
+    builtinGraph(DEFAULT_COMFY_SETTINGS, "model3d", {}, ["upload.png"]),
+    builtinGraph(DEFAULT_COMFY_SETTINGS, "model3d_multiview", {}, ["front.png", "left.png", "back.png", "right.png"])];
+  for (const graph of graphs) {
   for (const [id, node] of Object.entries(graph)) {
     const schema = info[node.class_type]; assert.ok(schema, node.class_type);
     for (const name of Object.keys(schema.input.required ?? {})) assert.ok(name in node.inputs, `${id}: missing ${name}`);
     for (const [name, value] of Object.entries(node.inputs)) {
-      if (Array.isArray(value)) { assert.ok(graph[value[0]]); continue; }
+      if (Array.isArray(value)) {
+        const upstream = graph[value[0]]; assert.ok(upstream, `${id}/${name}: missing source`);
+        const sourceSchema = info[upstream.class_type]; assert.ok(sourceSchema, upstream.class_type);
+        const received = sourceSchema.output[value[1]];
+        const expected = (schema.input.required?.[name] ?? schema.input.optional?.[name])?.[0];
+        assert.notEqual(received, undefined, `${id}/${name}: missing output ${value[1]}`);
+        // Dynamic switches and match-type sockets are resolved by ComfyUI itself.
+        if (typeof expected === "string" && typeof received === "string"
+          && !["*", "COMFY_MATCHTYPE_V3"].includes(expected) && !["*", "COMFY_MATCHTYPE_V3"].includes(received))
+          assert.ok(expected.split(",").includes(received), `${id}/${name}: ${received} -> ${expected}`);
+        continue;
+      }
       const expected = schema.input.required?.[name] ?? schema.input.optional?.[name];
       assert.ok(expected, `${id}: unknown ${name}`);
       if (Array.isArray(expected[0]) && !(node.class_type === "LoadImage" && name === "image")) assert.ok(expected[0].includes(value), `${id}/${name}: choice ${value}`);
       const bounds = expected[1];
       if (typeof value === "number" && bounds) { if (bounds.min !== undefined) assert.ok(value >= bounds.min, `${id}/${name} min`); if (bounds.max !== undefined) assert.ok(value <= bounds.max, `${id}/${name} max`); }
     }
+  }
   }
 });

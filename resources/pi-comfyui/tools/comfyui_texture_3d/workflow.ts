@@ -12,7 +12,7 @@ export interface TextureOptions {
 }
 
 // Installed UltraTex FLUX.2 Klein PBR workflow; no generated cards or inferred bindings.
-export function textureGraph(source: string | Link, image: string, options: TextureOptions = {}): Graph {
+export function textureGraph(source: string | Link | { meshPath: Link }, image: string, options: TextureOptions = {}): Graph {
   const seed = options.seed ?? Math.floor(Math.random() * 2 ** 48);
   const sampler = (model: string, resolution: number) => ({ class_type: "UltraTexSampler", inputs: {
     model: [model, 0], vae: ["pi_tex_decoder", 0], positive: ["pi_tex_prompt", 0], prep: ["pi_tex_prep", 0],
@@ -26,7 +26,8 @@ export function textureGraph(source: string | Link, image: string, options: Text
     pi_tex_mask: { class_type: "RemoveBackground", inputs: { image: ["pi_tex_image", 0], bg_removal_model: ["pi_tex_background", 0] } },
     pi_tex_prep: { class_type: "UltraTexPrep", inputs: {
       reference_image: ["pi_tex_image", 0], reference_mask: ["pi_tex_mask", 0], mask_meaning: "foreground",
-      mesh_path: typeof source === "string" ? source : "", ...(Array.isArray(source) ? { trimesh: source } : {}),
+      mesh_path: typeof source === "string" ? source : Array.isArray(source) ? "" : source.meshPath,
+      ...(Array.isArray(source) ? { trimesh: source } : {}),
       render_size: options.render_size ?? 4096, atlas_size: options.texture_resolution ?? 4096,
       uv_mode: options.uv_mode ?? "keep_existing", reference_alignment: options.reference_alignment ?? "fit_front_silhouette",
     } },
