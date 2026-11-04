@@ -14,10 +14,17 @@ const final = { choices: [{ delta: {}, finish_reason: "stop" }], timings: { pred
 const wire = value => `data: ${JSON.stringify(value)}\n\n`;
 const settle = async () => { for (let i = 0; i < 5; i++) await immediate(); };
 
-function harness(t, slots = () => slot(10)) {
+function harness(t, slots = () => slot(10), capabilities = {}) {
   t.mock.timers.enable({ apis: ["setTimeout"] });
-  const saved = globalThis.fetch, hooks = new Map(), statuses = [], posts = [], gets = [], streams = [];
+  const saved = globalThis.fetch, hooks = new Map(), statuses = [], posts = [], gets = [], streams = [], metadata = [];
   globalThis.fetch = async (url, init) => {
+    if (init?.method !== "POST" && /\/(models|props)$/.test(String(url))) {
+      metadata.push({ url: String(url), init });
+      if (capabilities.fail) throw new Error("Metadata unavailable");
+      return String(url).endsWith("/models")
+        ? json({ data: [{ id: "fixture-model", owned_by: capabilities.owner ?? "other" }] })
+        : json({ build_info: capabilities.version ?? "0.29.0 (fixture)" });
+    }
     if (String(url).endsWith("/slots")) {
       gets.push({ url: String(url), init });
       return slots(gets.length, init);
@@ -39,11 +46,11 @@ function harness(t, slots = () => slot(10)) {
     for (const stream of streams) { try { stream.controller.close(); } catch {} }
   });
   return {
-    hooks, ctx, statuses, posts, gets, streams, start,
-    async open(signal) {
+    hooks, ctx, statuses, posts, gets, streams, start, metadata,
+    async open(signal, fields = {}) {
       const response = await fetch("http://server:8181/proxy/v1/chat/completions", { method: "POST", signal,
         headers: { Authorization: "Bearer fixture-secret", "Content-Type": "application/json" },
-        body: JSON.stringify({ stream: true, messages: [{ role: "user", content: "unchanged input" }] }) });
+        body: JSON.stringify({ stream: true, messages: [{ role: "user", content: "unchanged input" }], ...fields }) });
       const stream = streams.at(-1);
       stream.read = response.text();
       return stream;
@@ -85,6 +92,70 @@ test("stock llama streaming timings keep priority, unchanged messages and byte-e
   h.emit(stream, final); await h.close(stream);
   h.hooks.get("agent_end")({}, h.ctx);
   assert.equal(h.statuses.at(-1).text, "⚡ Средний TPS: 50.0 tok/s");
+});
+
+test("Gufo token records report this response with two busy slots, including grouped tokens", async t => {
+  const h = harness(t, () => { throw Error("Token records need no slot matching"); }, { owner: "gufo" });
+  let clock = 1000;
+  t.mock.method(performance, "now", () => clock);
+  t.mock.method(Date, "now", () => 100000 + clock);
+  const record = count => ({ choices: [{ index: 0, delta: { reasoning_content: "Мысли" },
+    logprobs: { content: Array.from({ length: count }, () => ({ token: "token", logprob: -1 })) }, finish_reason: null }] });
+  const stream = await h.open(undefined, { model: "fixture-model" });
+  const request = JSON.parse(h.posts[0].init.body);
+  assert.equal(request.logprobs, true); assert.equal(request.top_logprobs, 0);
+  assert.deepEqual(request.messages, [{ role: "user", content: "unchanged input" }]);
+  assert.equal(h.metadata.length, 2);
+  for (const get of h.metadata) {
+    assert.equal(new URL(get.url).origin, "http://server:8181");
+    assert.equal(get.init.headers.get("authorization"), "Bearer fixture-secret");
+    assert.equal(get.init.redirect, "error");
+  }
+  h.emit(stream, record(3)); await settle();
+  clock = 2000;
+  h.emit(stream, record(7)); await settle();
+  assert.equal(h.statuses.at(-1).text, "⚡ TPS: 7.0 tok/s", "Counts records, not characters or chunks");
+  await h.tick(5000); assert.equal(h.gets.length, 0);
+  clock = 3000;
+  h.emit(stream, chunk("answer", { timings: { predicted_n: 40, predicted_ms: 2000 } })); await settle();
+  assert.equal(h.statuses.at(-1).text, "⚡ TPS: 20.0 tok/s", "Native timings retain priority");
+  h.emit(stream, final); await h.close(stream);
+  const next = await h.open(undefined, { model: "fixture-model" });
+  assert.equal(h.metadata.length, 2, "Capability is cached, not probed per token/request");
+  assert.equal(JSON.parse(h.posts[1].init.body).logprobs, true);
+  await h.close(next);
+});
+
+test("other servers, older Gufo and failed capability reads keep existing request semantics", async t => {
+  const h = harness(t, () => json(slot(10)), { owner: "gufo", version: "0.28.0" });
+  const old = await h.open(undefined, { model: "fixture-model" });
+  assert.equal(JSON.parse(h.posts[0].init.body).logprobs, undefined);
+  await h.close(old);
+  const explicit = await h.open(undefined, { model: "fixture-model", logprobs: false });
+  assert.equal(JSON.parse(h.posts[1].init.body).logprobs, false);
+  assert.equal(h.metadata.length, 2);
+  await h.close(explicit);
+});
+
+test("capability failure never retries generation or changes user-supplied token metadata options", async t => {
+  const h = harness(t, () => json(slot(10)), { fail: true });
+  const stream = await h.open(undefined, { model: "fixture-model" });
+  assert.equal(h.posts.length, 1);
+  assert.equal(JSON.parse(h.posts[0].init.body).logprobs, undefined);
+  h.emit(stream, chunk("answer")); await h.close(stream);
+  const explicit = await h.open(undefined, { model: "fixture-model", logprobs: true, top_logprobs: 5 });
+  assert.equal(JSON.parse(h.posts[1].init.body).top_logprobs, 5);
+  await h.close(explicit);
+});
+
+test("a non-Gufo server keeps native timing requests unchanged", async t => {
+  const h = harness(t, () => { throw Error("Native timing uses no slots"); }, { owner: "llamacpp" });
+  const stream = await h.open(undefined, { model: "fixture-model", temperature: 0.7 });
+  const sent = JSON.parse(h.posts[0].init.body);
+  assert.equal(sent.logprobs, undefined); assert.equal(sent.temperature, 0.7);
+  h.emit(stream, chunk("answer", { timings: { predicted_n: 10, predicted_ms: 500 } })); await settle();
+  assert.equal(h.statuses.at(-1).text, "⚡ TPS: 20.0 tok/s");
+  await h.close(stream);
 });
 
 test("Bubo polling begins after output, authenticates same-origin GETs and stops at final chunk", async t => {

@@ -80,6 +80,31 @@ function finitePositive(value) {
   return typeof value === "number" && Number.isFinite(value) && value > 0 ? value : undefined;
 }
 
+function serverTokenRecords(chunk) {
+  const choice = chunk.choices?.find(value => value.index === 0) ?? chunk.choices?.[0];
+  const entries = choice?.logprobs?.content;
+  return Array.isArray(entries) ? entries.filter(entry => isRecord(entry) && typeof entry.token === "string").length : 0;
+}
+
+// Gufo 0.29+ exposes standard per-generated-token records without changing MTP
+// or sampling. Other servers retain their existing timings/slot telemetry.
+async function supportsTokenRecords(fetch, endpoint, model, signal) {
+  const models = new URL(endpoint.url), props = new URL(endpoint.url);
+  models.pathname = models.pathname.replace(/\/slots$/, "/models");
+  props.pathname = props.pathname.replace(/(?:\/v1)?\/slots$/, "/props");
+  const timeout = AbortSignal.any([AbortSignal.timeout(SLOT_TIMEOUT_MS), ...(signal ? [signal] : [])]);
+  try {
+    const values = await Promise.all([models, props].map(async url => {
+      const response = await fetch(url.href, { headers: endpoint.headers, signal: timeout, redirect: "error" });
+      if (!response.ok) { await response.body?.cancel(); return; }
+      return response.json();
+    }));
+    const entry = values[0]?.data?.find(value => value.id === model);
+    const version = typeof values[1]?.build_info === "string" && values[1].build_info.match(/^(\d+)\.(\d+)\./);
+    return entry?.owned_by === "gufo" && Boolean(version && (+version[1] > 0 || +version[2] >= 29));
+  } catch { return false; }
+}
+
 export default function piLlamaGenerationSpeed(pi) {
   const globalState = globalThis;
   if (globalState["pi-llama-generation-speed/loaded"]) return;
@@ -96,6 +121,23 @@ export default function piLlamaGenerationSpeed(pi) {
   let epoch = 0;
   const responses = new Set();
   const unavailableUntil = new Map();
+  const tokenRecordCapabilities = new Map();
+
+  const observeGeneratedTokens = async (init, state) => {
+    if (!state.endpoint || typeof init?.body !== "string") return init;
+    let body;
+    try { body = JSON.parse(init.body); } catch { return init; }
+    if (body.stream !== true || typeof body.model !== "string" || body.logprobs !== undefined || body.top_logprobs !== undefined) return init;
+    const key = `${state.endpoint.url}\n${body.model}`;
+    let capability = tokenRecordCapabilities.get(key);
+    if (!capability || Date.now() > capability.expires) {
+      capability = { expires: Date.now() + 60_000,
+        supported: supportsTokenRecords(originalFetch, state.endpoint, body.model, state.signal) };
+      tokenRecordCapabilities.set(key, capability);
+    }
+    if (!await capability.supported) return init;
+    return { ...init, body: JSON.stringify({ ...body, logprobs: true, top_logprobs: 0 }) };
+  };
 
   const showIdle = () => {
     if (ui && hasUi) ui.setStatus(STATUS_KEY, "⚡ TPS: —");
@@ -123,7 +165,7 @@ export default function piLlamaGenerationSpeed(pi) {
   };
   const pollSlots = async state => {
     state.timer = undefined;
-    if (!current(state) || state.native || state.final || state.window.stopped || !state.endpoint) return;
+    if (!current(state) || state.native || state.tokenRecords || state.final || state.window.stopped || !state.endpoint) return;
     if (responses.size !== 1) { state.window.stopped = true; clearSlotSpeed(state); return; }
     if ((unavailableUntil.get(state.endpoint.url) ?? 0) > Date.now()) return;
     const controller = new AbortController();
@@ -142,7 +184,7 @@ export default function piLlamaGenerationSpeed(pi) {
       }
       // Parsing remains under the timeout, including a server that stalls mid-body.
       const slots = await response.json();
-      if (!current(state) || state.native || state.final || responses.size !== 1 || signal.aborted) return;
+      if (!current(state) || state.native || state.tokenRecords || state.final || responses.size !== 1 || signal.aborted) return;
       const tps = state.window.sample(slots, (started + performance.now()) / 2);
       if (state.window.stopped) { clearSlotSpeed(state); return; }
       if (tps !== undefined) { showSpeed(tps); state.slotSpeedDisplayed = true; }
@@ -165,9 +207,25 @@ export default function piLlamaGenerationSpeed(pi) {
       (typeof choice.delta.content === "string" && choice.delta.content.length > 0)
       || (typeof choice.delta.reasoning_content === "string" && choice.delta.reasoning_content.length > 0)
       || (Array.isArray(choice.delta.tool_calls) && choice.delta.tool_calls.length > 0)));
+    const records = serverTokenRecords(chunk);
+    if (records && !responseState.native && !isRecord(chunk.timings)) {
+      responseState.tokenRecords = true;
+      stopPolling(responseState);
+      responseState.observedTokens += records;
+      const now = performance.now(), samples = responseState.tokenSamples;
+      samples.push({ tokens: responseState.observedTokens, ms: now });
+      while (samples.length > 1 && samples[1].ms <= now - CURRENT_SPEED_WINDOW_MS) samples.shift();
+      const first = samples[0], elapsed = now - first.ms;
+      // Multiple model calls within one agent have one status field. Separate
+      // chats run in separate Pi processes and each owns its own status.
+      if (responses.size === 1 && elapsed >= UPDATE_INTERVAL_MS && Date.now() - lastUiUpdate >= UPDATE_INTERVAL_MS) {
+        lastUiUpdate = Date.now();
+        showSpeed(1000 * (responseState.observedTokens - first.tokens) / elapsed);
+      }
+    }
     if (hasOutput && !responseState.sawOutput) {
       responseState.sawOutput = true;
-      if (!responseState.native && !responseState.final && responseState.endpoint) responseState.timer = setTimeout(() => void pollSlots(responseState), FALLBACK_DELAY_MS);
+      if (!responseState.native && !responseState.tokenRecords && !responseState.final && responseState.endpoint) responseState.timer = setTimeout(() => void pollSlots(responseState), FALLBACK_DELAY_MS);
     }
     if (!isRecord(chunk.timings)) return;
     const timings = chunk.timings;
@@ -193,7 +251,7 @@ export default function piLlamaGenerationSpeed(pi) {
     stopPolling(responseState);
 
     const now = Date.now();
-    if (isFinal || now - lastUiUpdate >= UPDATE_INTERVAL_MS) {
+    if (responses.size === 1 && (isFinal || now - lastUiUpdate >= UPDATE_INTERVAL_MS)) {
       lastUiUpdate = now;
       showSpeed(currentTps);
     }
@@ -263,6 +321,7 @@ export default function piLlamaGenerationSpeed(pi) {
   wrappedFetch = async (input, init) => {
     if (!isChatCompletionRequest(input)) return originalFetch(input, init);
     const state = { epoch, closed: false, native: false, final: false, sawOutput: false,
+      tokenRecords: false, observedTokens: 0, tokenSamples: [],
       finalRecorded: false, samples: [{ tokens: 0, ms: 0 }], window: new SlotSpeedWindow(),
       endpoint: slotsRequest(input, init), signal: init?.signal ?? (input instanceof Request ? input.signal : undefined) };
     state.onAbort = () => {
@@ -274,10 +333,11 @@ export default function piLlamaGenerationSpeed(pi) {
       state.signal?.addEventListener("abort", state.onAbort, { once: true });
       if (responses.size > 1) for (const active of responses) {
         stopPolling(active); active.window.stopped = true; clearSlotSpeed(active);
+        if (active.tokenRecords && !active.native) showIdle();
       }
     }
     let response;
-    try { response = await originalFetch(input, enablePerTokenTimings(init)); }
+    try { response = await originalFetch(input, await observeGeneratedTokens(enablePerTokenTimings(init), state)); }
     catch (error) {
       responses.delete(state); state.closed = true;
       state.signal?.removeEventListener("abort", state.onAbort);
