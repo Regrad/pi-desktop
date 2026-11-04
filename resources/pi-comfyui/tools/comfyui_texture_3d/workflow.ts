@@ -1,190 +1,48 @@
-// User's Trellis2 image-to-texture API workflow; geometry is encoded from the existing mesh.
-export const TEXTURE_GRAPH: Record<string, { class_type: string; inputs: Record<string, unknown> }> = {
-  "1": {
-    "class_type": "LoadImage",
-    "inputs": {
-      "image": "viking_wolf_rune_axe.png"
-    }
-  },
-  "2": {
-    "class_type": "CLIPVisionLoader",
-    "inputs": {
-      "clip_name": "dino_v3_L_naf_fp32.safetensors"
-    }
-  },
-  "3": {
-    "class_type": "Trellis2Conditioning",
-    "inputs": {
-      "clip_vision_model": [
-        "2",
-        0
-      ],
-      "image": [
-        "1",
-        0
-      ]
-    }
-  },
-  "4": {
-    "class_type": "VAELoader",
-    "inputs": {
-      "vae_name": "trellis_2_shape_vae_bf16.safetensors"
-    }
-  },
-  "5": {
-    "class_type": "Trellis2MeshEncoder",
-    "inputs": {
-      "vae": [
-        "4",
-        0
-      ],
-      "mesh_filename": "C:\\AI\\ComfyUI\\ComfyUI\\output\\3d\\ComfyUI_00001.glb",
-      "shape_encoder": "shape_enc_next_dc_f16c32_fp16.safetensors",
-      "resolution": 512
-    }
-  },
-  "6": {
-    "class_type": "UNETLoader",
-    "inputs": {
-      "unet_name": "trellis_2_int8_convrot.safetensors",
-      "weight_dtype": "default"
-    }
-  },
-  "7": {
-    "class_type": "Trellis2TextureStage",
-    "inputs": {
-      "positive": [
-        "3",
-        0
-      ],
-      "negative": [
-        "3",
-        1
-      ],
-      "shape_latent": [
-        "5",
-        0
-      ]
-    }
-  },
-  "8": {
-    "class_type": "KSampler",
-    "inputs": {
-      "model": [
-        "6",
-        0
-      ],
-      "positive": [
-        "7",
-        0
-      ],
-      "negative": [
-        "7",
-        1
-      ],
-      "latent_image": [
-        "7",
-        2
-      ],
-      "seed": 43,
-      "steps": 12,
-      "cfg": 1,
-      "sampler_name": "euler",
-      "scheduler": "normal",
-      "denoise": 1
-    }
-  },
-  "9": {
-    "class_type": "VAELoader",
-    "inputs": {
-      "vae_name": "trellis_2_texture_vae_bf16.safetensors"
-    }
-  },
-  "10": {
-    "class_type": "VaeDecodeTextureTrellis",
-    "inputs": {
-      "samples": [
-        "8",
-        0
-      ],
-      "vae": [
-        "9",
-        0
-      ],
-      "shape_subdivides": [
-        "5",
-        1
-      ]
-    }
-  },
-  "11": {
-    "class_type": "UnwrapMesh",
-    "inputs": {
-      "mesh": [
-        "5",
-        2
-      ],
-      "segmenter": "pec",
-      "resolution": 2048,
-      "padding": 4,
-      "weld_distance": 0
-    }
-  },
-  "12": {
-    "class_type": "BakeTextureFromVoxel",
-    "inputs": {
-      "mesh": [
-        "11",
-        0
-      ],
-      "voxel_colors": [
-        "10",
-        0
-      ],
-      "texture_size": 2048
-    }
-  },
-  "13": {
-    "class_type": "ApplyTextureToMesh",
-    "inputs": {
-      "mesh": [
-        "11",
-        0
-      ],
-      "base_color": [
-        "12",
-        0
-      ],
-      "metallic": [
-        "12",
-        1
-      ],
-      "roughness": [
-        "12",
-        2
-      ]
-    }
-  },
-  "14": {
-    "class_type": "MeshToFile3D",
-    "inputs": {
-      "mesh": [
-        "13",
-        0
-      ]
-    }
-  },
-  "15": {
-    "class_type": "Save3DAdvanced",
-    "inputs": {
-      "model_3d": [
-        "14",
-        0
-      ],
-      "filename_prefix": "3d/retextured",
-      "viewport_state": {},
-      "width": 1024,
-      "height": 1024
-    }
-  }
-};
+import { randomUUID } from "node:crypto";
+type Link = [string, number];
+type Graph = Record<string, { class_type: string; inputs: Record<string, unknown> }>;
+export interface TextureOptions {
+  seed?: number; steps?: number; cfg?: number; texture_resolution?: number;
+  albedo_resolution?: number; mr_resolution?: number; render_size?: number;
+  uv_mode?: "comfy_gpu" | "xatlas" | "keep_existing";
+  reference_alignment?: "fit_front_silhouette" | "center";
+  memory_factor?: number; attention?: "ultratex_sparse" | "comfy_default";
+  sparse_topk?: number; token_chunk?: number; drop_background_tokens?: boolean;
+  view_weight_power?: number; best_view_mix?: number; edge_feather_px?: number;
+}
+
+// Installed UltraTex FLUX.2 Klein PBR workflow; no generated cards or inferred bindings.
+export function textureGraph(source: string | Link, image: string, options: TextureOptions = {}): Graph {
+  const seed = options.seed ?? Math.floor(Math.random() * 2 ** 48);
+  const sampler = (model: string, resolution: number) => ({ class_type: "UltraTexSampler", inputs: {
+    model: [model, 0], vae: ["pi_tex_decoder", 0], positive: ["pi_tex_prompt", 0], prep: ["pi_tex_prep", 0],
+    resolution, steps: options.steps ?? 25, seed, guidance: options.cfg ?? 4,
+    drop_background_tokens: options.drop_background_tokens ?? true, memory_factor: options.memory_factor ?? 0,
+    attention: options.attention ?? "ultratex_sparse", sparse_topk: options.sparse_topk ?? 0.2, token_chunk: options.token_chunk ?? 8192,
+  } });
+  return {
+    pi_tex_image: { class_type: "LoadImage", inputs: { image } },
+    pi_tex_background: { class_type: "LoadBackgroundRemovalModel", inputs: { bg_removal_name: "birefnet.safetensors" } },
+    pi_tex_mask: { class_type: "RemoveBackground", inputs: { image: ["pi_tex_image", 0], bg_removal_model: ["pi_tex_background", 0] } },
+    pi_tex_prep: { class_type: "UltraTexPrep", inputs: {
+      reference_image: ["pi_tex_image", 0], reference_mask: ["pi_tex_mask", 0], mask_meaning: "foreground",
+      mesh_path: typeof source === "string" ? source : "", ...(Array.isArray(source) ? { trimesh: source } : {}),
+      render_size: options.render_size ?? 4096, atlas_size: options.texture_resolution ?? 4096,
+      uv_mode: options.uv_mode ?? "keep_existing", reference_alignment: options.reference_alignment ?? "fit_front_silhouette",
+    } },
+    pi_tex_model: { class_type: "UNETLoader", inputs: { unet_name: "flux-2-klein-base-9b-fp8.safetensors", weight_dtype: "default" } },
+    pi_tex_vae: { class_type: "VAELoader", inputs: { vae_name: "flux2-vae.safetensors" } },
+    pi_tex_decoder: { class_type: "UltraTexForegroundDecoder", inputs: { vae: ["pi_tex_vae", 0], decoder_name: "ultratex_flux2_decoder.pt" } },
+    pi_tex_clip: { class_type: "CLIPLoader", inputs: { clip_name: "qwen_3_8b_fp8mixed.safetensors", type: "flux2", device: "default" } },
+    pi_tex_prompt: { class_type: "CLIPTextEncode", inputs: { clip: ["pi_tex_clip", 0], text: "" } },
+    pi_tex_albedo_lora: { class_type: "UltraTexLoraLoader", inputs: { model: ["pi_tex_model", 0], lora_name: "ultratex_flux2.safetensors", strength: 1 } },
+    pi_tex_albedo: sampler("pi_tex_albedo_lora", options.albedo_resolution ?? 2048),
+    pi_tex_mr_lora: { class_type: "UltraTexLoraLoader", inputs: { model: ["pi_tex_model", 0], lora_name: "ultratex_flux2_mr.safetensors", strength: 1 } },
+    pi_tex_mr: sampler("pi_tex_mr_lora", options.mr_resolution ?? 1024),
+    pi_tex_bake: { class_type: "UltraTexBake", inputs: {
+      prep: ["pi_tex_prep", 0], albedo_views: ["pi_tex_albedo", 0], metallic_roughness_views: ["pi_tex_mr", 0],
+      texture_size: options.texture_resolution ?? 4096, filename_prefix: `3d/pi-desktop/${randomUUID()}/textured`,
+      view_weight_power: options.view_weight_power ?? 4, best_view_mix: options.best_view_mix ?? 0.5, edge_feather_px: options.edge_feather_px ?? 6,
+    } },
+  };
+}

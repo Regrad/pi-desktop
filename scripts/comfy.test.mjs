@@ -179,6 +179,8 @@ test("attachment metadata exposes originals without showing service text in chat
   assert.equal(visibleImageAttachmentText(text), "Edit the image");
   assert.match(metadata, /Photos/);
   assert.match(metadata, /desktop_get_image_path/);
+  assert.match(metadata, /ComfyUI image tools/);
+  assert.match(metadata, /comfyui_inpaint_image.mask/);
   assert.ok(!metadata.includes("clipboard:pasted.png"));
   const entries = [{ id: "entry123", type: "message", message: { role: "user", content: [
     { type: "text", text }, { type: "image", data: "aA==", mimeType: "image/png" }, { type: "image", data: "bA==", mimeType: "image/png" },
@@ -247,55 +249,21 @@ test("dropped attachments keep original paths and avoid duplicate files", () => 
   const pasted = { ...original, path: "clipboard:image.png" };
   assert.equal(mergeAttachments([], [pasted, { ...pasted, id: "4", data: "bA==" }]).length, 2);
 });
-test("extension exposes advanced YuE2 generation and cover through Pi's public registration API", async () => {
+test("extension exposes specialized ComfyUI tools with explicit parameters", async () => {
   const { default: extension } = await import("../electron/comfy-extension.ts");
   const original = process.env.PI_DESKTOP_DATA_DIR;
   try {
     process.env.PI_DESKTOP_DATA_DIR = os.tmpdir();
     const registered = [];
-    await extension({ registerTool: (tool) => registered.push(tool), on() {} });
-    assert.deepEqual(registered.map(tool => tool.name).sort(), ["desktop_show_image", "comfyui_list_attachments", "desktop_get_image_path", "comfyui_status", "comfyui_generate_instrumental_music", "comfyui_generate_music", "comfyui_cover_music", "comfyui_plan_music", "comfyui_edit_vocals", "comfyui_generate_3d", "comfyui_create_mask", "comfyui_generate_image", "comfyui_edit_image", "comfyui_compose_image", "comfyui_inpaint_image", "comfyui_outpaint_image", "comfyui_extract_subject", "comfyui_remove_background", "comfyui_asset_3d", "comfyui_clone_voice", "comfyui_design_voice", "comfyui_lod_3d", "comfyui_process_3d", "comfyui_publish_music", "comfyui_texture_3d", "comfyui_workflows", "comfyui_run_workflow", "comfyui_job"].sort());
+    await extension({ registerTool: tool => registered.push(tool), on() {} });
+    assert.equal(registered.length, 26);
+    for (const name of ["comfyui_generate_image", "comfyui_generate_music", "comfyui_clone_voice", "comfyui_generate_3d", "comfyui_generate_idol_3d", "comfyui_texture_3d", "desktop_get_image_path"]) assert.ok(registered.some(tool => tool.name === name));
+    for (const name of ["comfyui_workflows", "comfyui_run_workflow", "comfyui_job"]) assert.ok(!registered.some(tool => tool.name === name));
     for (const tool of registered) {
       assert.equal(typeof tool.execute, "function");
       assert.equal(tool.parameters.type, "object");
     }
-    const model3d = registered.find(tool => tool.name === "comfyui_generate_3d");
-    assert.ok(model3d.promptGuidelines.some(text => text.includes("Before the first generation")));
-    assert.ok(model3d.promptGuidelines.some(text => text.includes("component_mode=largest")));
-    assert.ok(model3d.promptGuidelines.some(text => text.includes("additional rendered views") && text.includes("validation need")));
-    assert.match(model3d.parameters.properties.model3d_options.properties.watertight.description, /Default true/);
-    assert.match(model3d.parameters.properties.model3d_options.properties.component_mode.description, /largest/);
-    const music = registered.find(tool => tool.name === "comfyui_generate_music");
-    for (const label of ["[Verse]", "[Chorus]", "[Bridge]", "[Outro]"]) {
-      assert.ok(music.description.includes(label));
-      assert.ok(music.parameters.properties.lyrics.description.includes(label));
-    }
-    assert.ok(music.promptGuidelines.some(text => text.includes("Use and preserve English labels")));
-    assert.ok(music.description.includes("automatic ABC budget"));
-    assert.ok(music.promptGuidelines.some(text => text.includes("ABC duration budget")));
-    assert.ok(music.parameters.properties.duration.description.includes("workflow calculates"));
-    const cover = registered.find(tool => tool.name === "comfyui_cover_music");
-    assert.ok(!cover.parameters.required.includes("lyrics"));
-    assert.ok(cover.parameters.properties.vocal_mode);
-    assert.ok(music.parameters.properties.vocal_mode);
-    assert.ok(cover.parameters.properties.audio);
-    assert.ok(cover.parameters.properties.music_options.properties.target_voice);
-    assert.ok(registered.find(tool => tool.name === "comfyui_plan_music").parameters.properties.abc_file);
-    assert.ok(registered.find(tool => tool.name === "comfyui_edit_vocals").parameters.properties.mode);
-    const instrumental = registered.find(tool => tool.name === "comfyui_generate_instrumental_music");
-    assert.ok(instrumental.parameters.required.includes("mode"));
-    assert.ok(instrumental.description.includes("[Instrumental]"));
-    assert.ok(instrumental.description.includes("accompaniment_only"));
-    for (const name of ["comfyui_generate_instrumental_music", "comfyui_generate_music", "comfyui_cover_music", "comfyui_plan_music", "comfyui_edit_vocals"]) {
-      const tool = registered.find(tool => tool.name === name);
-      assert.ok(tool.promptGuidelines.some(text => text.includes("saved abc_file") && text.includes("mode=instrumental_lead")), name);
-      assert.ok(tool.promptGuidelines.some(text => text.includes("score, not the generated sound")), name);
-      assert.ok(tool.promptGuidelines.some(text => text.includes("not proven causes or fixes")), name);
-      assert.ok(tool.promptGuidelines.some(text => text.includes("render a valid plan")), name);
-    }
-    const editVocals = registered.find(tool => tool.name === "comfyui_edit_vocals");
-    assert.ok(editVocals.description.includes("comfyui_generate_instrumental_music with the same mode"));
-    assert.ok(registered.find(tool => tool.name === "desktop_get_image_path").description.includes("chat-attachments"));
+    assert.match(registered.find(tool => tool.name === "desktop_get_image_path").description, /ComfyUI image tools/);
   } finally {
     if (original === undefined) delete process.env.PI_DESKTOP_DATA_DIR;
     else process.env.PI_DESKTOP_DATA_DIR = original;

@@ -162,7 +162,6 @@ export class PiManager {
     private readonly remoteRuntime?: (conversation: ConversationRecord) => Promise<{ extensions: string[]; environment: Record<string, string> }>,
     private readonly browserRequest?: (conversationId: string, params: JsonObject) => Promise<unknown>,
     private readonly cancelBrowserRequests?: (conversationId: string) => void,
-    private readonly compileComfyWorkflow?: (conversationId: string, workflow: JsonObject) => Promise<unknown>,
   ) {}
 
   private publish(channel: string, payload: unknown): void {
@@ -705,12 +704,6 @@ export class PiManager {
   }
 
   private async handleGoalRequest(conversationId: string, request: JsonObject): Promise<unknown> {
-    if (request.action === "comfy_compile") {
-      this.store.getConversation(conversationId);
-      if (this.runtimes.get(conversationId)?.runAborted) throw new Error("Экспорт отменён пользователем");
-      if (!this.compileComfyWorkflow || this.remoteRuntime) throw new Error("Штатный экспорт ComfyUI недоступен на этом исполнителе. Используйте workflow Export (API).");
-      return this.compileComfyWorkflow(conversationId, request.params?.workflow);
-    }
     if (request.action === "manage_skills") return this.manageSkills(conversationId, request.params as SkillsCommand);
     if (request.action === "update_notebook") {
       const params = request.params as JsonObject | undefined;

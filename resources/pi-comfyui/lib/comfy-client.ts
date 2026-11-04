@@ -4,8 +4,8 @@ import { createHash, randomUUID } from "node:crypto";
 import { setTimeout as delay } from "node:timers/promises";
 import { DEFAULT_COMFY_SETTINGS, localComfyUrl, type ComfyMode, type ComfySettings } from "../shared/comfy.js";
 import type { HistoryImage } from "../shared/image-attachments.js";
-import { MODEL_GRAPHS } from "./comfy-3d-graphs.js";
-import { MUSIC_GRAPHS } from "./comfy-music-graphs.js";
+import { modelGraph } from "../tools/comfyui_generate_3d/workflows.js";
+import { musicGraph } from "../tools/comfyui_generate_music/build.js";
 import { validateLocalGlb } from "../shared/glb.js";
 import { imageGraph, type ImageDimensions } from "../tools/comfyui_generate_image/workflow.js";
 import { readImageInput } from "./image-input.js";
@@ -13,13 +13,16 @@ import { segmentationGraph, validateSegmentation } from "../tools/comfyui_create
 import { editYuE2VocalScore, type VocalEditMode } from "./yue2-vocal-edit.js";
 import { processingInputs, type ProcessingOptions } from "./model3d-options.js";
 import { saveModelArtifacts } from "./model3d-artifacts.js";
+import type { TextureOptions } from "../tools/comfyui_texture_3d/workflow.js";
+import { fillWorkflow, validateGraph } from "./api-graph.js";
+export { fillWorkflow, validateGraph } from "./api-graph.js";
 
 type Graph = Record<string, { class_type: string; inputs: Record<string, unknown> }>;
 type Output = { filename: string; subfolder?: string; type?: string };
-type Model3dOptions = { target_face_count?: number; watertight?: boolean; watertight_resolution?: number; watertight_proxy_points?: number; component_mode?: "largest" | "auto" | "keep_all"; shape_resolution?: number; texture_resolution?: number; normal_map_resolution?: number; ao_resolution?: number; ao_samples?: number };
-type NumericModel3dOption = Exclude<keyof Model3dOptions, "watertight" | "component_mode">;
+type Model3dOptions = { target_face_count?: number; watertight?: boolean; watertight_resolution?: number; watertight_proxy_points?: number; component_mode?: "largest" | "auto" | "keep_all"; shape_resolution?: number; texture_resolution?: number };
 export type ComfyInput = { prompt?: string; lyrics?: string; duration?: number; audio?: string; abc_file?: string; abc_text?: string; plan_only?: boolean; vocal_mode?: VocalEditMode; keep_harmony?: boolean; music_options?: object; negative_prompt?: string; width?: number; height?: number; seed?: number; images?: string[]; transparent_background?: boolean;
   model3d_options?: Model3dOptions;
+  texture_options?: TextureOptions;
   postprocess?: ProcessingOptions;
   mask?: string; mask_channel?: "red" | "green" | "blue" | "alpha"; invert_mask?: boolean; mask_grow?: number; mask_blur?: number;
   padding?: { left: number; top: number; right: number; bottom: number }; feathering?: number;
@@ -40,10 +43,9 @@ export async function loadComfySettings(dataDir: string): Promise<ComfySettings>
 
 function normalizeSettings(value: ComfySettings): ComfySettings {
   if (!value || typeof value.enabled !== "boolean") throw new Error("Некорректные настройки ComfyUI");
-  const merged = { ...DEFAULT_COMFY_SETTINGS, ...value, workflows: { ...DEFAULT_COMFY_SETTINGS.workflows, ...value.workflows } };
+  const { workflowFolders: _retired, ...current } = value as ComfySettings & { workflowFolders?: unknown };
+  const merged = { ...DEFAULT_COMFY_SETTINGS, ...current, workflows: { ...DEFAULT_COMFY_SETTINGS.workflows, ...value.workflows } };
   merged.url = localComfyUrl(merged.url);
-  if (merged.workflowFolders !== undefined && (!Array.isArray(merged.workflowFolders) || merged.workflowFolders.length > 20 || merged.workflowFolders.some(folder => typeof folder !== "string" || !path.isAbsolute(folder))))
-    throw new Error("Папки workflow: не более 20 абсолютных путей");
   if (!Number.isInteger(merged.steps) || merged.steps < 1 || merged.steps > 100) throw new Error("Количество шагов: от 1 до 100");
   if (!Number.isInteger(merged.musicSteps) || merged.musicSteps < 1 || merged.musicSteps > 100) throw new Error("Шаги YuE2: от 1 до 100");
   for (const key of ["diffusionModel", "textEncoder", "vae", "backgroundModel", "musicCheckpoint", "segmentationCheckpoint"] as const)
@@ -57,18 +59,6 @@ export async function saveComfySettings(dataDir: string, value: ComfySettings): 
   await mkdir(dataDir, { recursive: true });
   await writeFile(path.join(dataDir, "comfyui.json"), `${JSON.stringify(saved, null, 2)}\n`, "utf8");
   return saved;
-}
-
-export function validateGraph(value: unknown): Graph {
-  if (!value || typeof value !== "object" || Array.isArray(value) || "nodes" in value)
-    throw new Error("Нужен workflow в формате API: в ComfyUI выберите Export (API). Обычный JSON редактора не подходит.");
-  const graph = value as Graph;
-  if (!Object.keys(graph).length || Object.keys(graph).length > 500) throw new Error("Некорректный размер workflow");
-  for (const node of Object.values(graph)) {
-    if (!node || typeof node.class_type !== "string" || !node.inputs || typeof node.inputs !== "object") throw new Error("Некорректный API workflow");
-    if (Array.isArray(node.inputs)) throw new Error("Входы узла должны быть объектом");
-  }
-  return graph;
 }
 
 export async function importComfyWorkflow(dataDir: string, source: string): Promise<string> {
@@ -106,185 +96,23 @@ export async function limitedBody(response: Response, limit: number): Promise<Bu
   } finally { reader.releaseLock(); }
 }
 
-export async function checkComfyConnection(url: string): Promise<string> {
-  const response = await request(url, "/system_stats");
+export async function checkComfyConnection(url: string, signal?: AbortSignal): Promise<string> {
+  const response = await request(url, "/system_stats", {}, signal);
   const info = await response.json() as { system?: { comfyui_version?: string }; devices?: { name: string }[] };
   return `ComfyUI ${info.system?.comfyui_version ?? ""}: ${info.devices?.map((d) => d.name).join(", ") || "подключено"}`;
 }
 
-export async function listComfyMusicAdapters(url: string): Promise<string[]> {
-  const info = await (await request(url, "/object_info/YuE2NativeUniversalAdapterLoader")).json() as Record<string, { input?: { required?: { adapter?: [unknown] } } }>;
+export async function listComfyMusicAdapters(url: string, signal?: AbortSignal): Promise<string[]> {
+  const info = await (await request(url, "/object_info/YuE2NativeUniversalAdapterLoader", {}, signal)).json() as Record<string, { input?: { required?: { adapter?: [unknown] } } }>;
   const choices = info.YuE2NativeUniversalAdapterLoader?.input?.required?.adapter?.[0];
   return Array.isArray(choices) ? choices.filter((value): value is string => typeof value === "string") : [];
 }
 
 export function builtinGraph(settings: ComfySettings, mode: ComfyMode, input: ComfyInput, images: string[], sizes: ImageDimensions[] = [], maskName?: string): Graph {
   if (mode === "segment") return segmentationGraph(settings, input, images[0]);
-  if (mode === "model3d" || mode === "model3d_multiview") {
-    const graph = fillWorkflow(MODEL_GRAPHS[mode], input, images, settings.steps);
-    const options = input.model3d_options ?? {};
-    const fields: { key: NumericModel3dOption; id: string; name: string; min: number; max: number; step?: number }[] = [
-      { key: "target_face_count", id: "186", name: "target_face_count", min: 0, max: 50_000_000 },
-      { key: "watertight_resolution", id: "pi_watertight", name: "input_res", min: 1024, max: 2048, step: 512 },
-      { key: "watertight_proxy_points", id: "pi_watertight", name: "proxy_points", min: 1_000_000, max: 25_000_000, step: 1_000_000 },
-      { key: "shape_resolution", id: "94", name: "target_resolution", min: 1024, max: 2048, step: 128 },
-      { key: "texture_resolution", id: "288", name: "value", min: 64, max: 8192, step: 64 },
-      { key: "normal_map_resolution", id: "224", name: "resolution", min: 64, max: 8192, step: 64 },
-      { key: "ao_resolution", id: "233", name: "resolution", min: 64, max: 8192, step: 64 },
-      { key: "ao_samples", id: "233", name: "samples", min: 4, max: 1024, step: 4 },
-    ];
-    for (const { key, id, name, min, max, step } of fields) {
-      const value = options[key];
-      if (value === undefined) continue;
-      if (!Number.isInteger(value) || value < min || value > max || (step && (value - min) % step !== 0))
-        throw new Error(`Некорректный параметр 3D ${key}: ${min}–${max}${step ? `, шаг ${step}` : ""}`);
-      graph[id].inputs[name] = value;
-    }
-    if (options.watertight_resolution !== undefined) graph.pi_watertight.inputs.final_res = options.watertight_resolution;
-    if (options.watertight !== undefined && typeof options.watertight !== "boolean") throw new Error("Некорректный параметр 3D watertight");
-    if (options.component_mode !== undefined) {
-      if (!["largest", "auto", "keep_all"].includes(options.component_mode)) throw new Error("Некорректный параметр 3D component_mode");
-      graph.pi_watertight.inputs.faithc_component_mode = options.component_mode;
-    }
-    if (options.watertight === false) {
-      for (const node of Object.values(graph)) {
-        for (const [name, value] of Object.entries(node.inputs)) {
-          if (Array.isArray(value) && value[0] === "pi_watertight") node.inputs[name] = ["202", value[1]];
-        }
-      }
-      delete graph.pi_memory_clean;
-      delete graph.pi_watertight;
-    }
-    const output = mode === "model3d" ? "322" : "372";
-    const outputPrefix = `3d/pi-desktop/${randomUUID()}`;
-    graph[output].inputs.filename_prefix = outputPrefix;
-    if (input.postprocess && Object.keys(input.postprocess).length) {
-      graph.pi_model_process = { class_type: "UniversalModelTools", inputs: {
-        ...processingInputs(input.postprocess), source_path: "", target_path: "", source_model: ["285", 0], output_prefix: outputPrefix,
-      } };
-      graph[output].inputs.model_3d = ["pi_model_process", 0];
-    }
-    return graph;
-  }
-  if (mode === "music" || mode === "music_cover") {
-    const graph = structuredClone(MUSIC_GRAPHS[mode]) as Graph;
-    const findEntry = (type: string) => {
-      const entry = Object.entries(graph).find(([, node]) => node.class_type === type);
-      if (!entry) throw new Error(`Во встроенном YuE2 workflow нет узла ${type}`);
-      return entry;
-    };
-    const find = (type: string) => {
-      const node = findEntry(type)[1];
-      if (!node) throw new Error(`Во встроенном YuE2 workflow нет узла ${type}`);
-      return node.inputs;
-    };
-    find("YuE2NativePipelineLoader").checkpoint = settings.musicCheckpoint;
-    find("PrimitiveInt").value = input.seed ?? Math.floor(Math.random() * 2 ** 48);
-    find("YuE2StyleBuilder").extra = input.prompt ?? "";
-    find("YuE2LyricsStructurer").lyrics_text = input.lyrics ?? "";
-    find("KSampler").steps = input.steps ?? settings.musicSteps;
-    if (input.duration !== undefined) find("YuE2NativeGenerateMusic").max_duration = input.duration;
-    if (mode === "music_cover") find("LoadAudio").audio = input.audio ?? "";
-    if (mode === "music_cover" && input.keep_harmony !== undefined) {
-      find("YuE2NativeAudioToABC").mode = input.keep_harmony ? "full" : "melody";
-      find("YuE2NativeGenerateMusic").mode = input.keep_harmony ? "full" : "melody";
-    }
-    if (input.abc_text) find("YuE2ABCModifier").abc = input.abc_text;
-    const optionNodes: Record<string, string> = {
-      vram: "YuE2MemoryPreset", language: "YuE2StyleBuilder", genre: "YuE2StyleBuilder", secondary_genres: "YuE2StyleBuilder",
-      era: "YuE2StyleBuilder", vocal: "YuE2StyleBuilder", instruments: "YuE2StyleBuilder", drums: "YuE2StyleBuilder",
-      mood: "YuE2StyleBuilder", tempo: "YuE2StyleBuilder", structure: "YuE2LyricsStructurer",
-      verse_lines: "YuE2LyricsStructurer", section_plan: "YuE2LyricsStructurer",
-      tempo_mode: "YuE2ABCModifier", bpm: "YuE2ABCModifier", tempo_multiplier: "YuE2ABCModifier",
-      transpose_scope: "YuE2ABCModifier", semitones: "YuE2ABCModifier", remove_chords: "YuE2ABCModifier",
-      drop_sections: "YuE2ABCModifier", vocal_transpose: "YuE2ABCModifier", instrumental_transpose: "YuE2ABCModifier",
-      octave_shift: "YuE2ABCModifier", target_voice: "YuE2VocalRangeRetarget", manual_semitones: "YuE2VocalRangeRetarget",
-      remove_notes_shorter_than_ms: "YuE2MelodyCleanup", remove_pitch_outliers: "YuE2MelodyCleanup",
-      outlier_semitones: "YuE2MelodyCleanup", adapter: "YuE2NativeUniversalAdapterLoader",
-      ar_strength: "YuE2NativeUniversalAdapterLoader", nar_strength: "YuE2NativeUniversalAdapterLoader",
-      headroom_percent: "YuE2ABCDurationBudget", tail_seconds: "YuE2ABCDurationBudget",
-      adapter_enabled: "YuE2NativeUniversalAdapterLoader",
-      abc_max_tokens: "YuE2NativeGenerateABC", abc_temperature: "YuE2NativeGenerateABC",
-      abc_top_p: "YuE2NativeGenerateABC", abc_top_k: "YuE2NativeGenerateABC",
-      abc_repetition_penalty: "YuE2NativeGenerateABC", abc_penalty_window: "YuE2NativeGenerateABC",
-      music_temperature: "YuE2NativeGenerateMusic", music_top_p: "YuE2NativeGenerateMusic",
-      music_top_k: "YuE2NativeGenerateMusic", music_repetition_penalty: "YuE2NativeGenerateMusic",
-    };
-    for (const [key, value] of Object.entries(input.music_options ?? {})) {
-      if (!["string", "number", "boolean"].includes(typeof value) || (typeof value === "number" && !Number.isFinite(value))) throw new Error(`Некорректная настройка YuE2: ${key}`);
-      if (key === "analysis_language") continue;
-      if (key.startsWith("abc_") && (mode === "music_cover" || input.abc_text)) throw new Error("Настройки генерации ABC не применяются к каверу или готовому нотному плану");
-      const type = optionNodes[key] ?? ({ vocal_range_mode: "YuE2VocalRangeRetarget", cleanup_preset: "YuE2MelodyCleanup" } as Record<string, string>)[key];
-      if (!type) throw new Error(`Неизвестная настройка YuE2: ${key}`);
-      const name = key === "vocal_range_mode" ? "mode" : key === "cleanup_preset" ? "preset" : key === "adapter_enabled" ? "enabled" : key === "abc_max_tokens" ? "max_abc_tokens" : key.startsWith("abc_") ? key.slice(4) : key.startsWith("music_") ? key.slice(6) : key;
-      find(type)[name] = value;
-    }
-    if (mode === "music_cover" && input.keep_harmony !== undefined) find("YuE2ABCModifier").remove_chords = !input.keep_harmony;
-    const abc = findEntry("YuE2MelodyCleanup")[0];
-    const style = findEntry("YuE2StyleBuilder")[0];
-    const lyrics = findEntry("YuE2LyricsStructurer")[0];
-    const modifier = findEntry("YuE2ABCModifier")[0];
-    const range = findEntry("YuE2VocalRangeRetarget")[0];
-    const cleanup = findEntry("YuE2MelodyCleanup")[0];
-    const budget = findEntry("YuE2ABCDurationBudget")[0];
-    const report = (name: string, source: [string, number]) => { graph[`pi_${name}`] = { class_type: "PreviewAny", inputs: { source } }; };
-    report("abc", [abc, 0]);
-    report("style", [style, 0]);
-    report("effective_lyrics", [lyrics, 0]);
-    report("modifier", [modifier, 1]);
-    report("range", [range, 2]);
-    report("cleanup", [cleanup, 1]);
-    report("duration", [budget, 3]);
-    if (!input.plan_only) {
-      const generator = findEntry("YuE2NativeGenerateMusic")[0];
-      report("generation_limit", [generator, 4]);
-      report("generation_info", [generator, 5]);
-      report("generated_seconds", [generator, 3]);
-    }
-    if (input.lyrics?.trim()) {
-      report("lyrics", [lyrics, 1]);
-      graph.pi_analysis_node = { class_type: "YuE2ABCAnalyzer", inputs: { abc: [abc, 0] } };
-      report("analysis", ["pi_analysis_node", 0]);
-      const analysisLanguage = (input.music_options as Record<string, unknown> | undefined)?.analysis_language;
-      graph.pi_fit_node = { class_type: "YuE2LyricsMelodyFit", inputs: { abc: [abc, 0], lyrics: [lyrics, 0], language: analysisLanguage === "English" ? "English" : "generic" } };
-      report("fit", ["pi_fit_node", 0]);
-    } else {
-      graph.pi_analysis_node = { class_type: "YuE2ABCAnalyzer", inputs: { abc: [abc, 0] } };
-      report("analysis", ["pi_analysis_node", 0]);
-    }
-    const roots = Object.keys(graph).filter(id => id.startsWith("pi_") && graph[id].class_type === "PreviewAny");
-    if (!input.plan_only) roots.push("10");
-    const used = new Set<string>();
-    const visit = (id: string) => {
-      if (used.has(id)) return;
-      const node = graph[id];
-      if (!node) throw new Error(`YuE2 workflow: нет зависимости ${id}`);
-      used.add(id);
-      for (const value of Object.values(node.inputs)) if (Array.isArray(value) && typeof value[0] === "string" && Number.isInteger(value[1])) visit(value[0]);
-    };
-    roots.forEach(visit);
-    for (const id of Object.keys(graph)) if (!used.has(id)) delete graph[id];
-    return graph;
-  }
+  if (mode === "model3d" || mode === "model3d_multiview") return modelGraph(settings, mode, input, images);
+  if (mode === "music" || mode === "music_cover") return musicGraph(settings, mode, input);
   return imageGraph(settings, mode, input, images, sizes, maskName);
-}
-
-export function fillWorkflow(graph: Graph, input: ComfyInput, images: string[], steps: number, maskName?: string): Graph {
-  const values: Record<string, unknown> = { prompt: input.prompt ?? "", lyrics: input.lyrics ?? "", duration: input.duration ?? 360, audio: input.audio ?? "", abc: input.abc_text ?? "", negative_prompt: input.negative_prompt ?? "", width: input.width ?? 1024, height: input.height ?? 1024, seed: input.seed ?? Math.floor(Math.random() * 2 ** 48), steps: input.steps ?? steps, count: input.count ?? 1, cfg: input.cfg ?? 1, denoise: input.denoise ?? 1, reference_resolution: input.reference_resolution ?? 0, transparent_background: input.transparent_background ?? false, canvas_image: input.canvas_image ?? 1, mask_channel: input.mask_channel ?? "red", invert_mask: input.invert_mask ?? false, mask_grow: input.mask_grow ?? 0, mask_blur: input.mask_blur ?? 0, feathering: input.feathering ?? 0 };
-  if (maskName) values.mask = maskName;
-  for (const side of ["left", "top", "right", "bottom"] as const) values[`padding_${side}`] = input.padding?.[side] ?? 0;
-  images.forEach((name, i) => { values[`image_${i + 1}`] = name; });
-  function fill(value: unknown): unknown {
-    if (typeof value === "string") {
-      const exact = /^\{\{(\w+)\}\}$/.exec(value);
-      if (exact) { if (!(exact[1] in values)) throw new Error(`Нет параметра ${exact[1]} для workflow`); return values[exact[1]]; }
-      return value.replace(/\{\{(\w+)\}\}/g, (_m, key: string) => { if (!(key in values)) throw new Error(`Нет параметра ${key}`); return String(values[key]); });
-    }
-    if (Array.isArray(value)) return value.map(fill);
-    if (value && typeof value === "object") return Object.fromEntries(Object.entries(value).map(([key, v]) => [key, fill(v)]));
-    return value;
-  }
-  return validateGraph(fill(graph));
 }
 
 async function readYuE2Abc(file: string): Promise<string> {
@@ -500,7 +328,8 @@ export async function runComfy(dataDir: string, mode: ComfyMode, input: ComfyInp
       abcFile = path.join(folder, `${id}.abc`);
       await writeFile(abcFile, generatedAbc, { encoding: "utf8", flag: "wx" });
     }
-    const outputs = Object.entries(history.outputs ?? {}).flatMap(([nodeId, v]) => ((model3d ? v["3d"] : music ? v.audio : v.images) ?? []).map(output => ({ ...output, nodeId }))).filter((v) => v.type === "output");
+    const outputs = Object.entries(history.outputs ?? {}).filter(([nodeId]) => !model3d || custom || nodeId === (mode === "model3d" ? "322" : "372"))
+      .flatMap(([nodeId, v]) => ((model3d ? v["3d"] : music ? v.audio : v.images) ?? []).map(output => ({ ...output, nodeId }))).filter((v) => v.type === "output");
     if (!outputs.length && !input.plan_only) throw new Error(`Workflow завершён без сохранённых ${model3d ? "3D-моделей" : music ? "треков" : "изображений"}. Задание: ${id}`);
     const result = [];
     const audio: { path: string; mimeType: string }[] = [];

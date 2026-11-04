@@ -1,3 +1,12 @@
+import { randomUUID } from "node:crypto";
+import type { ComfySettings } from "../../shared/comfy.js";
+import type { ComfyInput } from "../../lib/comfy-client.js";
+import { fillWorkflow } from "../../lib/api-graph.js";
+import { processingInputs } from "../../lib/model3d-options.js";
+import { textureGraph } from "../comfyui_texture_3d/workflow.js";
+type Graph = Record<string, { class_type: string; inputs: Record<string, unknown> }>;
+type NumericModel3dOption = "target_face_count" | "watertight_resolution" | "watertight_proxy_points" | "shape_resolution" | "texture_resolution";
+
 // Converted from the user's local Pixal3D/Trellis2 workflows. Preserve their sampling and mesh settings.
 export const MODEL_GRAPHS: Record<"model3d" | "model3d_multiview", Record<string, { class_type: string; inputs: Record<string, unknown> }>> = {
   "model3d": {
@@ -1306,4 +1315,66 @@ for (const mode of ["model3d", "model3d_multiview"] as const) {
     proxy_eps_scale: 1, proxy_feature_weight: 1.5, lambda_fill: 20, threads: 16,
     thin_iso_vox: 0, faithc_component_mode: "largest",
   } };
+}
+
+export function modelGraph(settings: ComfySettings, mode: "model3d" | "model3d_multiview", input: ComfyInput, images: string[]): Graph {
+  const graph = fillWorkflow(MODEL_GRAPHS[mode], input, images, settings.steps);
+  const options = input.model3d_options ?? {};
+  const fields: { key: NumericModel3dOption; id: string; name: string; min: number; max: number; step?: number }[] = [
+    { key: "target_face_count", id: "186", name: "target_face_count", min: 0, max: 50_000_000 },
+    { key: "watertight_resolution", id: "pi_watertight", name: "input_res", min: 1024, max: 2048, step: 512 },
+    { key: "watertight_proxy_points", id: "pi_watertight", name: "proxy_points", min: 1_000_000, max: 25_000_000, step: 1_000_000 },
+    { key: "shape_resolution", id: "94", name: "target_resolution", min: 1024, max: 2048, step: 128 },
+    { key: "texture_resolution", id: "288", name: "value", min: 512, max: 8192, step: 512 },
+  ];
+  for (const { key, id, name, min, max, step } of fields) {
+    const value = options[key];
+    if (value === undefined) continue;
+    if (!Number.isInteger(value) || value < min || value > max || (step && (value - min) % step !== 0))
+      throw new Error(`Некорректный параметр 3D ${key}: ${min}–${max}${step ? `, шаг ${step}` : ""}`);
+    graph[id].inputs[name] = value;
+  }
+  if (options.watertight_resolution !== undefined) graph.pi_watertight.inputs.final_res = options.watertight_resolution;
+  if (options.watertight !== undefined && typeof options.watertight !== "boolean") throw new Error("Некорректный параметр 3D watertight");
+  if (options.component_mode !== undefined) {
+    if (!["largest", "auto", "keep_all"].includes(options.component_mode)) throw new Error("Некорректный параметр 3D component_mode");
+    graph.pi_watertight.inputs.faithc_component_mode = options.component_mode;
+  }
+  if (options.watertight === false) {
+    for (const node of Object.values(graph)) {
+      for (const [name, value] of Object.entries(node.inputs)) {
+        if (Array.isArray(value) && value[0] === "pi_watertight") node.inputs[name] = ["202", value[1]];
+      }
+    }
+    delete graph.pi_memory_clean;
+    delete graph.pi_watertight;
+  }
+  const output = mode === "model3d" ? "322" : "372";
+  const outputPrefix = `3d/pi-desktop/${randomUUID()}`;
+  graph[output].inputs.filename_prefix = outputPrefix;
+  // Preserve today's UltraTex texturing when restoring specialized tools.
+  // The old Trellis texture stages are not dependencies of this final output.
+  Object.assign(graph, textureGraph(["196", 0], images[0], { ...input.texture_options, seed: input.seed,
+    texture_resolution: options.texture_resolution ?? input.texture_options?.texture_resolution }));
+  graph["288"].inputs.value = options.texture_resolution ?? input.texture_options?.texture_resolution ?? 4096;
+  graph[output].inputs.model_3d = ["pi_tex_bake", 4];
+  graph.pi_tex_bake.inputs.filename_prefix = `${outputPrefix}/textured`;
+  if (input.postprocess && Object.keys(input.postprocess).length) {
+    graph.pi_model_process = { class_type: "UniversalModelTools", inputs: {
+      ...processingInputs(input.postprocess), source_path: "", target_path: "", source_model: ["pi_tex_bake", 4], output_prefix: outputPrefix,
+    } };
+    graph[output].inputs.model_3d = ["pi_model_process", 0];
+  }
+  const used = new Set<string>();
+  const visit = (id: string) => {
+    if (used.has(id)) return;
+    const node = graph[id];
+    if (!node) throw new Error(`3D workflow: нет зависимости ${id}`);
+    used.add(id);
+    for (const value of Object.values(node.inputs)) if (Array.isArray(value) && typeof value[0] === "string" && Number.isInteger(value[1])) visit(value[0]);
+  };
+  visit(output);
+  for (const id of Object.keys(graph)) if (!used.has(id)) delete graph[id];
+  return graph;
+
 }

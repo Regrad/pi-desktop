@@ -3,7 +3,6 @@ export type ComfyMode = "generate" | "edit" | "compose" | "inpaint" | "outpaint"
 export interface ComfySettings {
   enabled: boolean;
   url: string;
-  workflowFolders?: string[];
   diffusionModel: string;
   textEncoder: string;
   vae: string;

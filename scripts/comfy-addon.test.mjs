@@ -25,19 +25,49 @@ const { DEFAULT_COMFY_SETTINGS } = await import("../resources/pi-comfyui/shared/
 test("first install seeds addon; updates preserve edits and user deletion", async t => {
   const data = await mkdtemp(path.join(os.tmpdir(), "pi-comfy-install-"));
   t.after(() => rm(data, { recursive: true, force: true }));
+  await mkdir(path.join(data, "comfy-library"));
+  await writeFile(path.join(data, "comfy-library", "card.json"), "old prepared description");
+  await mkdir(path.join(data, "chats"));
+  await writeFile(path.join(data, "chats", "user-file.txt"), "keep user files");
   await ensureComfyAddon(data, appRoot);
+  assert.equal(existsSync(path.join(data, "comfy-library")), false);
+  assert.equal(await readFile(path.join(data, "chats", "user-file.txt"), "utf8"), "keep user files");
   const folder = path.join(data, "agent/extensions/pi-comfyui");
   const entry = path.join(folder, "index.ts");
   assert.match(await readFile(entry, "utf8"), /comfyAddon/);
+  const retiredTool = path.join(folder, "tools", "comfyui_workflows");
+  await mkdir(retiredTool, { recursive: true });
+  await writeFile(path.join(retiredTool, "index.ts"), "old universal tool");
   await writeFile(entry, "// user edit\n", "utf8");
   await ensureComfyAddon(data, appRoot);
+  assert.equal(existsSync(retiredTool), false);
   assert.equal(await readFile(entry, "utf8"), "// user edit\n");
   await rm(folder, { recursive: true });
   await ensureComfyAddon(data, appRoot);
   assert.equal(existsSync(folder), false);
 });
 
-test("real Pi loader discovers portable addon, new tools and changes; duplicate is atomic", async t => {
+test("replacing app alone refreshes stock addon files at startup without replacing user data or edits", async t => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "pi-comfy-app-update-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const data = path.join(root, "data"), template = path.join(root, "app", "resources", "pi-comfyui");
+  await mkdir(template, { recursive: true }); await mkdir(data);
+  for (const name of ["index.ts", "custom.ts", "removed.ts", "deleted.ts"]) await writeFile(path.join(template, name), "old stock");
+  await writeFile(path.join(data, "desktop-state.json"), "user chats");
+  await ensureComfyAddon(data, path.join(root, "app"));
+  const active = path.join(data, "agent", "extensions", "pi-comfyui");
+  await writeFile(path.join(active, "custom.ts"), "user customization"); await rm(path.join(active, "deleted.ts"));
+  await writeFile(path.join(template, "index.ts"), "new stock"); await rm(path.join(template, "removed.ts"));
+  await writeFile(path.join(template, "new.ts"), "new tool");
+  await ensureComfyAddon(data, path.join(root, "app"));
+  assert.equal(await readFile(path.join(active, "index.ts"), "utf8"), "new stock");
+  assert.equal(await readFile(path.join(active, "new.ts"), "utf8"), "new tool");
+  assert.equal(await readFile(path.join(active, "custom.ts"), "utf8"), "user customization");
+  assert.equal(existsSync(path.join(active, "deleted.ts")), false); assert.equal(existsSync(path.join(active, "removed.ts")), false);
+  assert.equal(await readFile(path.join(data, "desktop-state.json"), "utf8"), "user chats");
+});
+
+test("real Pi loader exposes specialized modules; universal copies stay inactive and load failure is atomic", async t => {
   const data = await mkdtemp(path.join(os.tmpdir(), "pi-comfy-load-"));
   const previous = { data: process.env.PI_DESKTOP_DATA_DIR, app: process.env.PI_DESKTOP_APP_ROOT };
   process.env.PI_DESKTOP_DATA_DIR = data;
@@ -53,8 +83,9 @@ test("real Pi loader discovers portable addon, new tools and changes; duplicate 
   const load = () => discoverAndLoadExtensions([], data, path.join(data, "agent"));
   let result = await load();
   assert.deepEqual(result.errors, []);
-  assert.equal(result.extensions[0].tools.size, 28);
-  for (const name of ["comfyui_workflows", "comfyui_run_workflow", "comfyui_job"]) assert.ok(result.extensions[0].tools.has(name));
+  assert.equal(result.extensions[0].tools.size, 26);
+  for (const name of ["comfyui_generate_image", "comfyui_generate_music", "comfyui_generate_3d", "comfyui_generate_idol_3d", "comfyui_texture_3d", "comfyui_status"]) assert.ok(result.extensions[0].tools.has(name));
+  for (const name of ["comfyui_workflows", "comfyui_run_workflow", "comfyui_job"]) assert.ok(!result.extensions[0].tools.has(name));
   const contextHook = result.extensions[0].handlers.get("before_agent_start")[0];
   assert.equal(await contextHook({ systemPrompt: "base" }, {}), undefined);
   await saveComfySettings(data, { ...DEFAULT_COMFY_SETTINGS, enabled: true });
@@ -62,42 +93,30 @@ test("real Pi loader discovers portable addon, new tools and changes; duplicate 
   await mkdir(path.join(data, "comfy-workflows"), { recursive: true });
   await writeFile(path.join(data, "comfy-workflows/new-image.json"), JSON.stringify({ workflow: "new graph data" }));
   assert.deepEqual(await contextHook({ systemPrompt: "base" }, {}), firstContext, "Catalog edits must not rewrite the system prefix");
-  assert.match(firstContext.systemPrompt, /comfyui_workflows/);
+  assert.match(firstContext.systemPrompt, /specialized tool/);
   assert.doesNotMatch(firstContext.systemPrompt, /new-image|new graph data|127\.0\.0\.1/);
-  assert.ok(result.extensions[0].tools.has("comfyui_design_voice"));
-  assert.ok(result.extensions[0].tools.has("comfyui_clone_voice"));
-  for (const name of ["comfyui_inpaint_image", "comfyui_outpaint_image"]) {
-    const definition = result.extensions[0].tools.get(name).definition;
-    assert.equal(definition.parameters.properties.width, undefined);
-    assert.equal(definition.parameters.properties.height, undefined);
-    assert.equal(definition.parameters.properties.count.const, 1);
-    assert.equal(definition.parameters.properties.canvas_image.const, 1);
-    assert.ok(definition.promptGuidelines.some(line => line.includes("first image") && line.includes("width and height")));
-    assert.ok(definition.promptGuidelines.every(line => !line.includes("set both width and height together")));
-  }
-  const publication = result.extensions[0].tools.get("comfyui_publish_music").definition;
-  assert.match(publication.description, /2 selected variants from 10 generated tracks/);
-  const noTracks = await publication.execute("publish-none", { tracks: [] }, new AbortController().signal);
-  assert.equal(noTracks.details.audioSelection, true);
-  assert.deepEqual(noTracks.details.media, []);
-  const tool = path.join(folder, "tools/comfyui_test");
-  await mkdir(tool);
-  const source = label => `import { Type } from "typebox";\nexport default function(pi) { pi.registerTool({name: "comfyui_test", label: ${JSON.stringify(label)}, description: "test", parameters: Type.Object({}), async execute() { return {content: [{type: "text", text: "ok"}], details: {}}; }}); }\n`;
-  await writeFile(path.join(tool, "index.ts"), source("first"), "utf8");
+  assert.doesNotMatch(firstContext.systemPrompt, /comfyui_workflows|comfyui_run_workflow|comfyui_job/);
+  // Even edited stale modules preserved by portable updates must never be imported.
+  const retired = path.join(folder, "tools/comfyui_run_workflow");
+  await mkdir(retired, { recursive: true });
+  await writeFile(path.join(retired, "index.ts"), 'throw new Error("retired module evaluated");');
   result = await load();
   assert.deepEqual(result.errors, []);
-  assert.equal(result.extensions[0].tools.size, 29);
-  assert.equal(result.extensions[0].tools.get("comfyui_test").definition.label, "first");
-  await writeFile(path.join(tool, "index.ts"), source("changed"), "utf8");
+  assert.equal(result.extensions[0].tools.size, 26);
+  const selected = path.join(folder, "tools/desktop_show_image/index.ts");
+  const original = await readFile(selected, "utf8");
+  await writeFile(selected, original.replace('label: "Показать изображение в ответе"', 'label: "changed"'));
   result = await load();
   assert.deepEqual(result.errors, []);
-  assert.equal(result.extensions[0].tools.get("comfyui_test").definition.label, "changed");
-  const duplicate = path.join(folder, "tools/comfyui_duplicate");
-  await mkdir(duplicate);
-  await writeFile(path.join(duplicate, "index.ts"), source("duplicate"), "utf8");
+  assert.equal(result.extensions[0].tools.get("desktop_show_image").definition.label, "changed");
+  await writeFile(selected, original.replace('name: "desktop_show_image"', 'name: "comfyui_generate_image"'));
   result = await load();
   assert.equal(result.extensions.length, 0);
-  assert.match(result.errors[0].error, /duplicate tool comfyui_test/);
+  assert.match(result.errors[0].error, /duplicate tool comfyui_generate_image/);
+  await writeFile(selected, 'throw new Error("broken module");');
+  result = await load();
+  assert.equal(result.extensions.length, 0);
+  assert.ok(result.errors.length > 0);
 });
 
 test("new-model workflow runner selects final nodes, saves portable files and rejects cloud nodes", async t => {

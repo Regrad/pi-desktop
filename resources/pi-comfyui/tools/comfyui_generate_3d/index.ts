@@ -11,7 +11,7 @@ export default function register(pi: ExtensionAPI, context: ToolContext) {
   const { dataDir, reportText, generationStatus, vocalMode, musicOptions } = context;
   pi.registerTool({
     name: "comfyui_generate_3d", label: "Генерация 3D-модели",
-    description: "Generate a textured GLB model locally with Pixal3D/Trellis2. Supply exactly one image, or exactly four consistent views ordered front, left, back, right. Use original absolute paths or attachment: references from comfyui_list_attachments. For a text-only request, first generate an image with comfyui_generate_image, then pass its saved path here. The default solid workflow first unions valid closed components with Manifold, removing enclosed surfaces without resampling the exterior. Only damaged topology falls back to one standard WTiVo reconstruction at 1536/16M; 2048/25M is available when maximum detail is explicitly needed. The result must pass a watertight audit, then the graph produces about 700000 triangles and bakes 4096 textures. No separate low-poly copy or texture downscale is made unless explicitly requested through postprocess. Returns real model paths; the chat shows an interactive 3D viewer. No animation or rigging is provided. Visual inspection requires rendered images because the GLB itself is not visual input to the language model.",
+    description: "Generate a textured GLB locally: Pixal3D/Trellis2 builds geometry, then UltraTex FLUX.2 Klein creates PBR textures. Supply one image or four views ordered front, left, back, right; image paths and attachment: references are supported. A positive target_face_count performs approximate mesh reduction, not native generation at that face count; 0 skips final decimation. Postprocessing runs only when requested. For Idol use comfyui_generate_idol_3d. The result is displayed in an interactive viewer; GLB geometry is not visual input to the language model.",
     promptSnippet: "Generate textured 3D models locally from one image or four views; show an interactive model in chat.",
     promptGuidelines: [...modelGuidelines,
       "Before the first generation, briefly confirm use and style, references, solid or multipart geometry, removable internal parts, polygon and texture targets, and rig or animation needs. Reuse these answers on retries.",
@@ -22,17 +22,23 @@ export default function register(pi: ExtensionAPI, context: ToolContext) {
       images: Type.Array(Type.String(), { minItems: 1, maxItems: 4, description: "One image, or four views in order: front, left, back, right. Absolute paths or attachment: references." }),
       seed: Type.Optional(Type.Integer({ minimum: 0 })),
       postprocess: Type.Optional(Type.Object(processingProperties)),
+      texture_options: Type.Optional(Type.Object({
+        steps: Type.Optional(Type.Integer({ minimum: 1, maximum: 200 })), cfg: Type.Optional(Type.Number({ minimum: 0, maximum: 30 })),
+        albedo_resolution: Type.Optional(Type.Integer({ minimum: 256, maximum: 4096, multipleOf: 16 })),
+        mr_resolution: Type.Optional(Type.Integer({ minimum: 256, maximum: 4096, multipleOf: 16 })),
+        memory_factor: Type.Optional(Type.Number({ minimum: 0, maximum: 200 })),
+        attention: Type.Optional(Type.Union([Type.Literal("ultratex_sparse"), Type.Literal("comfy_default")])),
+        sparse_topk: Type.Optional(Type.Number({ minimum: 0.05, maximum: 1 })),
+        token_chunk: Type.Optional(Type.Integer({ minimum: 0, maximum: 131072, multipleOf: 1024 })),
+      })),
       model3d_options: Type.Optional(Type.Object({
-        target_face_count: Type.Optional(Type.Integer({ minimum: 0, maximum: 50000000, description: "Generated mesh budget (default 700000); approximate. This does not create a second low-poly copy. 0 disables final decimation." })),
+        target_face_count: Type.Optional(Type.Integer({ minimum: 0, maximum: 50000000, description: "Final mesh decimation target (default 700000), approximate; not a native generation size. 0 disables decimation." })),
         watertight: Type.Optional(Type.Boolean({ description: "Run solid-mesh cleanup before UV and texture baking. Default true; valid shells use Manifold, damaged topology falls back to WTiVo." })),
         watertight_resolution: Type.Optional(Type.Integer({ minimum: 1024, maximum: 2048, multipleOf: 512, description: "Resolution used only by the WTiVo fallback. Default 1536; use 2048 only when maximum detail is explicitly needed." })),
         watertight_proxy_points: Type.Optional(Type.Integer({ minimum: 1000000, maximum: 25000000, multipleOf: 1000000, description: "Proxy budget used only by the WTiVo fallback. Default 16000000; use 25000000 with the explicit 2048 maximum-detail mode." })),
         component_mode: Type.Optional(Type.Union([Type.Literal("largest"), Type.Literal("auto"), Type.Literal("keep_all")], { description: "Output components: largest for one solid asset (default), auto for intentional separate parts, keep_all only when every fragment matters." })),
         shape_resolution: Type.Optional(Type.Integer({ minimum: 1024, maximum: 2048, multipleOf: 128, description: "Trellis upsampled shape resolution. Default 1536; higher uses more VRAM." })),
-        texture_resolution: Type.Optional(Type.Integer({ minimum: 64, maximum: 8192, multipleOf: 64, description: "UV unwrap and color/metallic/roughness texture size. Default 4096." })),
-        normal_map_resolution: Type.Optional(Type.Integer({ minimum: 64, maximum: 8192, multipleOf: 64, description: "Baked normal-map size. Default 2048." })),
-        ao_resolution: Type.Optional(Type.Integer({ minimum: 64, maximum: 8192, multipleOf: 64, description: "Baked ambient-occlusion map size. Default 1024." })),
-        ao_samples: Type.Optional(Type.Integer({ minimum: 4, maximum: 1024, multipleOf: 4, description: "Ambient-occlusion rays per texel. Default 64; more is smoother but slower." })),
+        texture_resolution: Type.Optional(Type.Integer({ minimum: 512, maximum: 8192, multipleOf: 512, description: "UV atlas and UltraTex PBR texture size. Default 4096." })),
       })),
     }),
     async execute(_id, params, signal, onUpdate, ctx) {

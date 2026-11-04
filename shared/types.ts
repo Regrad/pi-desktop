@@ -450,8 +450,6 @@ export interface PiDesktopApi {
   getComfySettings(): Promise<import("./comfy.js").ComfySettings>;
   saveComfySettings(settings: import("./comfy.js").ComfySettings): Promise<import("./comfy.js").ComfySettings>;
   checkComfyConnection(url: string): Promise<string>;
-  listComfyWorkflows(query?: string, offset?: number): Promise<import("./comfy.js").ComfyWorkflowSummary>;
-  inspectComfyWorkflow(id: string): Promise<import("./comfy.js").ComfyWorkflowInspection>;
   importComfyWorkflow(): Promise<string | null>;
   saveGlobalPrompt(prompt: string): Promise<string>;
   getProjectInstructions(projectId: string): Promise<ProjectInstructions>;

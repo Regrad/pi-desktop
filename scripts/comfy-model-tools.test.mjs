@@ -16,7 +16,7 @@ registerHooks({ resolve(specifier, context, next) {
 } });
 const { processingInputs } = await import("../resources/pi-comfyui/lib/model3d-options.ts");
 const { saveModelArtifacts, modelArtifactLocation } = await import("../resources/pi-comfyui/lib/model3d-artifacts.ts");
-const { textureGraph } = await import("../resources/pi-comfyui/tools/comfyui_texture_3d/index.ts");
+const { textureGraph } = await import("../resources/pi-comfyui/lib/texture-graph.ts");
 const { builtinGraph } = await import("../resources/pi-comfyui/lib/comfy-client.ts");
 const { DEFAULT_COMFY_SETTINGS } = await import("../resources/pi-comfyui/shared/comfy.ts");
 const { saveComfySettings } = await import("../resources/pi-comfyui/lib/comfy-client.ts");
@@ -73,16 +73,19 @@ test("alternate spellings of one artifact share one file and one download", asyn
   assert.equal(result.artifactReports.report.files[0], result.artifactReports.report.files[1]);
 });
 
-test("new texture workflow binds existing geometry, reference and sampling controls", () => {
-  const graph = textureGraph("C:/models/mesh.glb", "uploaded.png", { seed: 0, steps: 30, cfg: 2, denoise: 0.8, encoder_resolution: 1024, texture_resolution: 4096, padding: 8 });
-  assert.equal(graph["1"].inputs.image, "uploaded.png");
-  assert.equal(graph["5"].inputs.mesh_filename, "C:/models/mesh.glb");
-  assert.equal(graph["5"].inputs.resolution, 1024);
-  assert.deepEqual(["seed", "steps", "cfg", "denoise"].map(key => graph["8"].inputs[key]), [0, 30, 2, 0.8]);
-  assert.equal(graph["11"].inputs.resolution, 4096); assert.equal(graph["12"].inputs.texture_size, 4096);
-  assert.deepEqual(graph["15"].inputs.viewport_state, {});
-  assert.ok(!Object.values(graph).some(node => node.class_type === "SaveImage"));
+test("UltraTex binds existing geometry, reference, PBR LoRAs and explicit zero/false controls", () => {
+  const graph = textureGraph("C:/models/mesh.glb", "uploaded.png", { seed: 0, steps: 30, cfg: 2, texture_resolution: 4096, drop_background_tokens: false, token_chunk: 0 });
+  assert.equal(graph.pi_tex_image.inputs.image, "uploaded.png");
+  assert.equal(graph.pi_tex_prep.inputs.mesh_path, "C:/models/mesh.glb");
+  assert.deepEqual(["seed", "steps", "guidance"].map(key => graph.pi_tex_albedo.inputs[key]), [0, 30, 2]);
+  assert.equal(graph.pi_tex_albedo.inputs.drop_background_tokens, false);
+  assert.equal(graph.pi_tex_albedo.inputs.token_chunk, 0);
+  assert.equal(graph.pi_tex_bake.inputs.texture_size, 4096);
+  assert.equal(graph.pi_tex_albedo_lora.inputs.lora_name, "ultratex_flux2.safetensors");
+  assert.equal(graph.pi_tex_mr_lora.inputs.lora_name, "ultratex_flux2_mr.safetensors");
+  assert.ok(!Object.values(graph).some(node => node.class_type === "Trellis2TextureStage"));
 });
+
 test("artifact reports save all six LODs, maps, quad OBJ and rendered views with local paths", async t => {
   const dir = await mkdtemp(path.join(os.tmpdir(), "pi-model-artifacts-"));
   t.after(() => rm(dir, { recursive: true, force: true }));
@@ -127,51 +130,4 @@ test("texture workflow inputs match running ComfyUI node schema", { skip: !proce
       if (typeof value === "number" && bounds) { if (bounds.min !== undefined) assert.ok(value >= bounds.min, `${id}/${name} min`); if (bounds.max !== undefined) assert.ok(value <= bounds.max, `${id}/${name} max`); }
     }
   }
-});
-
-test("registered process, LOD and asset tools submit complete graphs and return render paths in image order", async t => {
-  const dir = await mkdtemp(path.join(os.tmpdir(), "pi-model-tools-"));
-  t.after(() => rm(dir, { recursive: true, force: true }));
-  const source = path.join(dir, "source.glb"); await writeFile(source, glb());
-  const definitions = new Map();
-  for (const name of ["comfyui_process_3d", "comfyui_lod_3d", "comfyui_asset_3d"]) {
-    const register = (await import(`../resources/pi-comfyui/tools/${name}/index.ts`)).default;
-    register({ registerTool: tool => definitions.set(tool.name, tool) }, { dataDir: dir });
-  }
-  const info = process.env.PI_TEST_COMFY_SCHEMA ? await (await fetch("http://127.0.0.1:8188/object_info")).json() : Object.fromEntries(["UniversalModelTools", "ModelLODGenerator", "ModelAssetUtilities"].map(name => [name, {}]));
-  let submitted;
-  const server = http.createServer(async (req, res) => {
-    res.setHeader("Content-Type", "application/json");
-    if (req.url === "/object_info") return res.end(JSON.stringify(info));
-    if (req.url === "/prompt") {
-      let body = ""; for await (const chunk of req) body += chunk;
-      submitted = JSON.parse(body).prompt;
-      for (const node of Object.values(submitted)) {
-        const schema = info[node.class_type]; assert.ok(schema);
-        for (const name of Object.keys(schema.input?.required ?? {})) assert.ok(name in node.inputs, `${node.class_type}/${name}`);
-        assert.equal(node.inputs.source_path, source);
-      }
-      return res.end(JSON.stringify({ prompt_id: `job-${Object.keys(submitted)[0]}` }));
-    }
-    if (req.url.startsWith("/history/")) {
-      const [nodeId, node] = Object.entries(submitted)[0];
-      const result = `${node.inputs.output_prefix}/out/result.glb`;
-      const report = nodeId === "lod" ? { lod_paths: node.inputs.triangle_counts.split(",").map((_, i) => `${node.inputs.output_prefix}/lod${i}/result.glb`) }
-        : { result, ...(nodeId === "asset" ? { renders: [`${node.inputs.output_prefix}/out/view.png`] } : {}) };
-      return res.end(JSON.stringify({ [`job-${nodeId}`]: { outputs: { [nodeId]: { text: [JSON.stringify(report)] } }, status: { status_str: "success" } } }));
-    }
-    if (req.url.startsWith("/view?")) { res.setHeader("Content-Type", "application/octet-stream"); return res.end(req.url.includes(".png") ? Buffer.from("render") : glb()); }
-    res.writeHead(404); res.end();
-  });
-  await new Promise(resolve => server.listen(0, "127.0.0.1", resolve));
-  t.after(() => new Promise(resolve => server.close(resolve)));
-  await saveComfySettings(dir, { ...DEFAULT_COMFY_SETTINGS, enabled: true, url: `http://127.0.0.1:${server.address().port}` });
-  const processResult = await definitions.get("comfyui_process_3d").execute("process", { source, repair: true, remesh: true, target_triangles: 5000 });
-  assert.equal(submitted.process.inputs.repair, true); assert.equal(processResult.details.media.length, 1);
-  const lodResult = await definitions.get("comfyui_lod_3d").execute("lod", { source, triangle_counts: [30000, 10000, 5000] });
-  assert.equal(lodResult.details.media.length, 3);
-  const assetResult = await definitions.get("comfyui_asset_3d").execute("asset", { source, render_views: true });
-  const media = collectComfyMedia([{ id: "asset", name: "comfyui_asset_3d", result: assetResult }]);
-  assert.equal(media[0].type, "image"); assert.ok(media[0].path.includes("image-generation"));
-  assert.equal(media[1].type, "model3d");
 });

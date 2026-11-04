@@ -1,20 +1,19 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
-import { loadComfySettings, checkComfyConnection, listComfyMusicAdapters, runComfy, runInstrumentalComfy, editComfyMusicVocals, type ComfyInput } from "../../lib/comfy-client.js";
-import type { ComfyMode } from "../../shared/comfy.js";
-import { listHistoryImages, resolveHistoryImage } from "../../shared/image-attachments.js";
-import { imagePathForTool, publishImage } from "../../lib/image-input.js";
+import { listHistoryImages } from "../../shared/image-attachments.js";
 import type { ToolContext } from "../../lib/context.js";
+import { toolResult } from "../../lib/tool-result.js";
 
-export default function register(pi: ExtensionAPI, context: ToolContext) {
-  const { dataDir, reportText, generationStatus, vocalMode, musicOptions } = context;
+export default function register(pi: ExtensionAPI, _context: ToolContext) {
   pi.registerTool({
     name: "comfyui_list_attachments", label: "Изображения из чата",
-    description: "List the latest 20 user image attachments in this chat. Use the original absolute path when available. Pasted clipboard images have no original path: pass their attachment: reference directly to ComfyUI image/3D tools. If a command, script or precise crop requires a path, call desktop_get_image_path with just the chosen reference; this is the authoritative source instead of Temp searches or filename guesses. Listing does not copy images.",
+    outputSchema: Type.Object({ items: Type.Array(Type.Object({ reference: Type.String(), name: Type.String(), mimeType: Type.String(), path: Type.Optional(Type.String()), role: Type.Optional(Type.String()), maskFor: Type.Optional(Type.String()), convention: Type.Optional(Type.String()) })), guidance: Type.String() }),
+    promptGuidelines: ["Returns an object directly: result.items contains attachment metadata, not image bytes."],
+    description: "List the latest 20 user image attachments in this chat. ComfyUI image tools accept these attachment: references directly. Use original absolute paths when available. If a script or precise crop needs a file, resolve the chosen reference with desktop_get_image_path instead of guessing paths. Listing does not copy images.",
     parameters: Type.Object({}),
     async execute(_id, _params, _signal, _onUpdate, ctx) {
       const images = listHistoryImages(ctx.sessionManager.getBranch()).slice(-20);
-      return { content: [{ type: "text", text: JSON.stringify(images) }], details: {} };
+      return toolResult({ items: images, guidance: "Resolve a selected reference with desktop_get_image_path({image: reference}); use result.path for files or scripts." }, {});
     },
   });
 

@@ -58,7 +58,7 @@ test("built-in 3D graphs preserve stages, seeds and separately bound views", () 
   assert.equal(MODEL_GRAPHS.model3d[122].inputs.image, "{{image_1}}");
 });
 test("3D quality and watertight controls apply without automatic low-poly postprocessing", () => {
-  const options = { target_face_count: 20000, watertight_resolution: 1024, watertight_proxy_points: 6000000, component_mode: "auto", shape_resolution: 1024, texture_resolution: 2048, normal_map_resolution: 1024, ao_resolution: 512, ao_samples: 32 };
+  const options = { target_face_count: 20000, watertight_resolution: 1024, watertight_proxy_points: 6000000, component_mode: "auto", shape_resolution: 1024, texture_resolution: 2048 };
   for (const [mode, images] of [["model3d", ["one.png"]], ["model3d_multiview", ["front.png", "left.png", "back.png", "right.png"]]]) {
     const graph = builtinGraph(DEFAULT_COMFY_SETTINGS, mode, { model3d_options: options }, images);
     assert.equal(graph[186].inputs.target_face_count, 20000);
@@ -68,9 +68,9 @@ test("3D quality and watertight controls apply without automatic low-poly postpr
     assert.equal(graph.pi_watertight.inputs.faithc_component_mode, "auto");
     assert.equal(graph[94].inputs.target_resolution, 1024);
     assert.equal(graph[288].inputs.value, 2048);
-    assert.equal(graph[224].inputs.resolution, 1024);
-    assert.equal(graph[233].inputs.resolution, 512);
-    assert.equal(graph[233].inputs.samples, 32);
+    assert.equal(graph.pi_tex_prep.inputs.atlas_size, 2048);
+    assert.equal(graph.pi_tex_bake.inputs.texture_size, 2048);
+    assert.ok(!Object.values(graph).some(node => node.class_type === "Trellis2TextureStage"));
     assert.ok(!graph.pi_model_process);
     assert.equal(MODEL_GRAPHS[mode][186].inputs.target_face_count, 700000);
     assert.equal(MODEL_GRAPHS[mode].pi_watertight.inputs.input_res, 1536);
@@ -90,7 +90,7 @@ test("3D API round trip persists only file metadata and serves a portable model"
     const chunks = []; for await (const chunk of req) chunks.push(chunk);
     res.setHeader("Content-Type", "application/json");
     if (req.url === "/upload/image") return res.end('{"name":"upload.png"}');
-    if (req.url === "/object_info") return res.end(JSON.stringify(Object.fromEntries(Object.values(MODEL_GRAPHS.model3d).map(n => [n.class_type, { api_node: false }]))));
+    if (req.url === "/object_info") return res.end(JSON.stringify(Object.fromEntries(Object.values(builtinGraph(DEFAULT_COMFY_SETTINGS, "model3d", {}, ["upload.png"])).map(n => [n.class_type, { api_node: false }]))));
     if (req.url === "/prompt") { queued++; submitted = JSON.parse(Buffer.concat(chunks)).prompt; return res.end('{"prompt_id":"3d-job"}'); }
     if (req.url === "/history/3d-job") return res.end(JSON.stringify({ "3d-job": { status: { status_str: "success" }, outputs: { "322": { "3d": [{ filename: "result.glb", subfolder: submitted[322].inputs.filename_prefix, type: "output" }] }, preview: { images: [{ filename: "preview.png", type: "temp" }] } } } }));
     if (req.url.startsWith("/view?")) { res.setHeader("Content-Type", "application/octet-stream"); return res.end(bytes); }

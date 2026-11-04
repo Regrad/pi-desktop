@@ -1,5 +1,5 @@
-import { useEffect, useRef, useState } from "react";
-import { DEFAULT_COMFY_SETTINGS, type ComfyMode, type ComfySettings, type ComfyWorkflowSummary, type ComfyWorkflowInspection } from "../shared/comfy";
+import { useEffect, useState } from "react";
+import { DEFAULT_COMFY_SETTINGS, type ComfyMode, type ComfySettings } from "../shared/comfy";
 
 export function ComfySettingsPanel() {
   const [settings, setSettings] = useState<ComfySettings>(structuredClone(DEFAULT_COMFY_SETTINGS));
@@ -8,39 +8,6 @@ export function ComfySettingsPanel() {
   const [status, setStatus] = useState("");
   const [checking, setChecking] = useState(false);
   const [connectionStatus, setConnectionStatus] = useState("");
-  const [catalog, setCatalog] = useState<ComfyWorkflowSummary>();
-  const [inspection, setInspection] = useState<ComfyWorkflowInspection>();
-  const [query, setQuery] = useState("");
-  const [libraryBusy, setLibraryBusy] = useState(false);
-  const [libraryError, setLibraryError] = useState("");
-  const librarySequence = useRef(0);
-  useEffect(() => () => { librarySequence.current++; }, []);
-  function updateConnection(next: ComfySettings) {
-    librarySequence.current++;
-    setCatalog(undefined); setInspection(undefined); setLibraryError("");
-    setSettings(next);
-  }
-  async function loadLibrary(offset = 0) {
-    const sequence = ++librarySequence.current;
-    setLibraryBusy(true); setLibraryError(""); setInspection(undefined); setCatalog(undefined);
-    try {
-      const saved = await window.piDesktop.saveComfySettings(settings);
-      if (sequence !== librarySequence.current) return;
-      setSettings(saved);
-      const result = await window.piDesktop.listComfyWorkflows(query, offset);
-      if (sequence === librarySequence.current) setCatalog(result);
-    } catch (error) { if (sequence === librarySequence.current) setLibraryError(String(error)); }
-    finally { if (sequence === librarySequence.current) setLibraryBusy(false); }
-  }
-  async function inspect(id: string) {
-    const sequence = ++librarySequence.current;
-    setLibraryBusy(true); setLibraryError(""); setInspection(undefined);
-    try {
-      const result = await window.piDesktop.inspectComfyWorkflow(id);
-      if (sequence === librarySequence.current) setInspection(result);
-    } catch (error) { if (sequence === librarySequence.current) setLibraryError(String(error)); }
-    finally { if (sequence === librarySequence.current) setLibraryBusy(false); }
-  }
   useEffect(() => {
     let cancelled = false;
     void window.piDesktop.getComfySettings().then((value) => { if (!cancelled) setSettings(value); })
@@ -79,53 +46,17 @@ export function ComfySettingsPanel() {
   ];
   return <>
     <h1>ComfyUI</h1>
-    <p className="settings-description">Изображения, музыка YuE2 и 3D-модели на вашем компьютере или сервере локальной сети.</p>
-    <fieldset disabled={loading || busy || checking || libraryBusy} style={{ border: 0, padding: 0, margin: 0 }}>
+    <p className="settings-description">Отдельные инструменты аддона для изображений, музыки, речи и 3D. Подготовка описаний не требуется.</p>
+    <fieldset disabled={loading || busy || checking} style={{ border: 0, padding: 0, margin: 0 }}>
       <div className="settings-card" style={{ padding: 16 }}>
-        <label><input type="checkbox" checked={settings.enabled} onChange={(e) => updateConnection({ ...settings, enabled: e.target.checked })} /> Разрешить модели пользоваться ComfyUI</label>
+        <label><input type="checkbox" checked={settings.enabled} onChange={(e) => setSettings({ ...settings, enabled: e.target.checked })} /> Разрешить модели пользоваться ComfyUI</label>
         <label style={{ display: "block", marginTop: 16 }}>Адрес сервера
-          <input style={{ width: "100%", boxSizing: "border-box", marginTop: 6 }} value={settings.url} onChange={(e) => updateConnection({ ...settings, url: e.target.value })} placeholder="http://127.0.0.1:8188" />
+          <input style={{ width: "100%", boxSizing: "border-box", marginTop: 6 }} value={settings.url} onChange={(e) => setSettings({ ...settings, url: e.target.value })} placeholder="http://127.0.0.1:8188" />
         </label>
         <button style={{ marginTop: 12 }} onClick={() => void checkConnection()}>{checking ? "Проверяю…" : "Проверить подключение"}</button>
         {connectionStatus && <p role="status" aria-live="polite" style={{ margin: "10px 0 0", overflowWrap: "anywhere" }}>{connectionStatus}</p>}
       </div>
-      <h2>Библиотека воркфлоу</h2>
-      <div className="settings-card" style={{ padding: 16 }}>
-        <p className="muted">Сохраните workflow в ComfyUI — модель найдёт его, изучит параметры и выберет способ выполнения запроса. Графы редактора и Export (API) поддерживаются без отдельных инструментов и шаблонных подстановок.</p>
-        <div style={{ display: "flex", gap: 8 }}>
-          <input aria-label="Поиск воркфлоу" value={query} onChange={e => setQuery(e.target.value)} placeholder="Поиск по названию" style={{ flex: 1, minWidth: 0 }} />
-          <button disabled={!settings.enabled} onClick={() => void loadLibrary()}>{libraryBusy ? "Изучаю…" : "Обновить библиотеку"}</button>
-        </div>
-        <p className="muted">Обновление библиотеки сохраняет текущие настройки подключения. Генерация при этом не запускается.</p>
-        {catalog && <>
-          <p>Найдено: {catalog.total}</p>
-          {catalog.warnings.map(warning => <p role="status" key={warning}>{warning}</p>)}
-          {catalog.items.map(item => <div key={item.id} style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12, borderTop: "1px solid var(--border)", padding: "10px 0", overflowWrap: "anywhere" }}>
-            <div><strong>{item.name}</strong><div className="muted">{item.source === "server" ? "ComfyUI" : "Локальная папка"}</div></div>
-            <button onClick={() => void inspect(item.id)}>Параметры</button>
-          </div>)}
-          <button onClick={() => void loadLibrary()}>В начало</button>{" "}
-          {catalog.nextOffset !== null && <button onClick={() => void loadLibrary(catalog.nextOffset!)}>Следующая страница</button>}
-        </>}
-        {inspection && <section style={{ marginTop: 16, overflowWrap: "anywhere" }}>
-          <h3>{inspection.workflow.name}</h3>
-          <p className="muted">{inspection.format === "editor" ? "Штатный экспорт графа редактора" : "API-граф"} · узлов: {inspection.nodes.length} · параметров: {inspection.parameters.total}</p>
-          {inspection.problems.map(problem => <p role="alert" key={problem}>{problem}</p>)}
-          <dl>{inspection.parameters.items.map(parameter => <div key={`${parameter.node}/${parameter.input}`} style={{ marginBottom: 10 }}>
-            <dt><code>{parameter.node}.{parameter.input}</code> · {String(parameter.type)}</dt>
-            <dd style={{ marginLeft: 0 }}><code>{JSON.stringify(parameter.current) ?? "Не задано"}</code>{parameter.choices && <div className="muted">Варианты: {parameter.choices.map(String).join(", ")}{(parameter.choicesTotal ?? 0) > parameter.choices.length ? "…" : ""}</div>}</dd>
-          </div>)}</dl>
-          {inspection.parameters.nextOffset !== null && <p className="muted">Показана первая страница. Все параметры доступны модели через постраничное чтение.</p>}
-        </section>}
-        {libraryBusy && <p role="status" aria-live="polite"><span className="spinner" /> Получаю сведения ComfyUI…</p>}
-        {libraryError && <p role="alert">{libraryError}</p>}
-        <details style={{ marginTop: 12 }}><summary>Дополнительные локальные папки</summary>
-          <p className="muted">Необязательно. По одному абсолютному пути на строку. На сервере автоматически читается папка workflows выбранного пользователя ComfyUI.</p>
-          <textarea aria-label="Папки воркфлоу" style={{ width: "100%", boxSizing: "border-box" }} value={(settings.workflowFolders ?? []).join("\n")} onChange={e => updateConnection({ ...settings, workflowFolders: e.target.value.split(/\r?\n/).filter(line => line.trim()) })} />
-        </details>
-      </div>
-      <details><summary>Встроенные профили и прежние настройки — дополнительно</summary>
-      <h2>Профили</h2>
+      <h2>Workflows</h2>
       <div className="settings-card" style={{ padding: 16 }}>
         {profiles.map(({ mode, name, builtin }) => <div key={mode} style={{ marginBottom: 18 }}>
           <strong>{name}</strong>
@@ -153,9 +84,8 @@ export function ComfySettingsPanel() {
       </div>
       <p className="muted">3D: одно изображение или четыре отдельных ракурса в порядке «спереди, слева, сзади, справа». Для текстового описания модель сначала создаёт изображение. Встроенные 3D-workflows сохраняют GLB с текстурами; параметры сэмплирования и обработки сетки сохранены из ваших workflows. Для собственного 3D-workflow нужен Save3DAdvanced и GLB со встроенными текстурами.</p>
       <p className="muted">Qwen: создание и редактирование RGBA, композиции до 10 референсов, перенос позы/одежды/стиля/объектов, надписи, маски и расширение холста. На миниатюре вложения нажмите «Маска»: кисть, ластик, отмена штриха и загрузка готовой маски. Белое — изменять, чёрное — сохранить. Маска передаётся из памяти, без папки input в Pi Desktop. Изображения публикуются вне свёрнутых инструментов, включая показ уже существующих файлов.</p>
-      <p className="muted">ComfyUI нужно запустить заранее. Изображения сохраняются в image-generation, треки и редактируемые нотные планы ABC — в music-generation, модели — в 3d-generation внутри папки данных Pi Desktop. Модель может получать отчёты по ABC и отдельно планировать музыку до создания звука, но не прослушивает музыку и не видит геометрию GLB. В чате доступны предпросмотр, проигрыватель, интерактивный 3D-просмотр и открытие файла в проводнике. Вложения не копируются. При отмене удаляется только наше задание из очереди; уже запущенная генерация может завершиться в ComfyUI.</p>
+      <p className="muted">ComfyUI нужно запустить заранее. Изображения сохраняются в image-generation, треки и редактируемые нотные планы ABC — в music-generation, модели — в 3d-generation в папке соответствующего чата. Модель может получать отчёты по ABC и отдельно планировать музыку до создания звука, но не прослушивает музыку и не видит геометрию GLB. В чате доступны предпросмотр, проигрыватель, интерактивный 3D-просмотр и открытие файла в проводнике. Вложения не копируются. При отмене удаляется только наше задание из очереди; уже запущенная генерация может завершиться в ComfyUI.</p>
       <p className="muted">Встроенные workflows работают локально. Облачные API-узлы ComfyUI запрещены. Импортируйте только доверенные workflows и custom nodes: произвольные сторонние узлы могут самостоятельно обращаться в интернет.</p>
-      </details>
       <button className="primary" onClick={() => void action(async () => {
         setSettings(await window.piDesktop.saveComfySettings(settings));
         return "Сохранено. Настройки действуют при следующем вызове инструмента.";

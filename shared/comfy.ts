@@ -3,7 +3,6 @@ export type ComfyMode = "generate" | "edit" | "compose" | "inpaint" | "outpaint"
 export interface ComfySettings {
   enabled: boolean;
   url: string;
-  workflowFolders?: string[];
   diffusionModel: string;
   textEncoder: string;
   vae: string;
@@ -13,19 +12,6 @@ export interface ComfySettings {
   musicCheckpoint: string;
   musicSteps: number;
   workflows: Record<ComfyMode, string>;
-}
-
-export interface ComfyWorkflowSummary {
-  items: { id: string; name: string; source: "server" | "local"; location: string }[];
-  total: number;
-  nextOffset: number | null;
-  warnings: string[];
-}
-export interface ComfyWorkflowInspection {
-  workflow: ComfyWorkflowSummary["items"][number]; revision: string; format: string;
-  nodes: { id: string; type: string; title?: string; description?: string; output: boolean }[];
-  parameters: { items: { node: string; input: string; type: unknown; current?: unknown; constraints: Record<string, unknown>; choices?: unknown[]; choicesTotal?: number }[]; total: number; nextOffset: number | null };
-  problems: string[];
 }
 
 export const DEFAULT_COMFY_SETTINGS: ComfySettings = {
