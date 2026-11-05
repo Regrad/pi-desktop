@@ -256,9 +256,9 @@ test("native Pi prompt runner plus actual OpenAI serializer preserve the head an
   ]) }], {}, options.cwd, {}, {});
   runner.onError(error => errors.push(error));
   const base = { cwd: options.cwd, customPrompt: "Stable system instructions.", selectedTools: ["read", "codemode"] };
-  const initial = (await runner.emitBeforeAgentStart("Task", undefined, { ...base, skills: [] })).systemPromptOptions.forceSystemPrompt;
+  const initial = (await runner.emitBeforeAgentStart({ messageType: "user", prompt: "Task" }, { ...base, skills: [] })).systemPromptOptions.forceSystemPrompt;
   const skill = await save(store, "serializer-check");
-  const next = (await runner.emitBeforeAgentStart("Next task", undefined, { ...base, skills: [{ name: skill.name, filePath: skill.filePath,
+  const next = (await runner.emitBeforeAgentStart({ messageType: "user", prompt: "Next task" }, { ...base, skills: [{ name: skill.name, filePath: skill.filePath,
     description: skill.description, baseDir: path.dirname(skill.filePath), sourceInfo: {}, disableModelInvocation: false }] })).systemPromptOptions.forceSystemPrompt;
   assert.equal(initial, next); assert.deepEqual(errors, []);
   const providerRoot = path.dirname(findPackageJSON("@earendil-works/pi-ai", pathToFileURL(path.join(root, "node_modules/@earendil-works/pi-coding-agent/package.json")).href));

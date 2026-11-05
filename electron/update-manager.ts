@@ -182,8 +182,8 @@ export class UpdateManager {
 
   private async applyRpcBridge(): Promise<void> {
     const corePath = this.store.getEffectivePackagePath("@earendil-works/pi-coding-agent");
-    if (await readPackageVersion(corePath) !== "1.0.4") {
-      throw new Error("RPC и отложенные инструменты проверены для Pi 1.0.4; новая версия требует проверки совместимости");
+    if (await readPackageVersion(corePath) !== "1.5.0") {
+      throw new Error("RPC и отложенные инструменты проверены для Pi 1.5.0; новая версия требует проверки совместимости");
     }
     const destination = path.join(
       this.store.getEffectivePackagePath("@earendil-works/pi-coding-agent"),

@@ -22,7 +22,7 @@ async function patchFile(file, patch) {
 }
 
 export async function applyContextCompatibility(coreRoot) {
-  await requireVersion(coreRoot, "1.0.4");
+  await requireVersion(coreRoot, "1.5.0");
   const directory = path.join(coreRoot, "dist", "core");
   await copyFile(path.join(bridgeRoot, "service-context.js"), path.join(directory, "desktop-service-context.js"));
   await patchFile(path.join(directory, "messages.js"), patchServiceMessages);
@@ -35,7 +35,7 @@ export async function applyContextCompatibility(coreRoot) {
 export async function applyCoreRequestCompatibility(coreRoot) {
   await applyContextCompatibility(coreRoot);
   const providerRoot = path.dirname(findPackageJSON("@earendil-works/pi-ai", pathToFileURL(path.join(coreRoot, "package.json")).href));
-  await requireVersion(providerRoot, "1.0.4");
+  await requireVersion(providerRoot, "1.5.0");
   await patchFile(path.join(providerRoot, "dist", "api", "openai-completions.js"), patchToolResultImages);
 }
 

@@ -16,7 +16,7 @@
     "portable": "npm run pack"
   },
   "dependencies": {
-    "@earendil-works/pi-coding-agent": "1.0.4",
+    "@earendil-works/pi-coding-agent": "1.5.0",
     "@modelcontextprotocol/sdk": "1.27.1",
     "@zavora-ai/computer-use-mcp": "7.1.0",
     "ajv": "8.20.0",

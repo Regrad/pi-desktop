@@ -1,6 +1,6 @@
 const importLine = 'import { routeTool, declaredTools, routingEnabled } from "./desktop-tool-routing.js";\n';
 
-const discoveryOriginal = '        "- `ALL_TOOLS`, `searchTools(query, { limit?, namespace? })`, `describeTool(name)`, `describeNamespace(name)`: find unlisted tools, such as MCP tools.",';
+const discoveryOriginal = '        "- `ALL_TOOLS`, `await searchTools(query, { limit?, namespace? })`, `await describeTool(name)`, `await describeNamespace(name)`: find unlisted tools, such as MCP tools.",';
 const discoveryReplacement = [
   '        "- `ALL_TOOLS` is a synchronous array of `{ name, description }` objects, not an object keyed by tool name. List names with `text(ALL_TOOLS.map(t => t.name))`.",',
   '        "- `searchTools`, `describeTool`, and `describeNamespace` are asynchronous: always await their results before reading or printing them. Examples: `text(await searchTools(\"music\", { limit: 3 }))`; `text(await describeTool(\"tool_name\"))`; `text(await describeNamespace(\"namespace_name\"))`. Use names returned by discovery, then call `await tools.<name>({ ...args })`. Serializing an unawaited Promise gives `{}`, not discovery results.",',

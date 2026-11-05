@@ -8,7 +8,7 @@ import http from "node:http";
 import { fileURLToPath } from "node:url";
 import { patchLlamaStatsCancellation } from "./llama-stats-patch.mjs";
 
-const root = fileURLToPath(new URL("..", import.meta.url));
+const root = process.env.PI_TEST_APP_ROOT || fileURLToPath(new URL("..", import.meta.url));
 
 test("statistics cancellation patch is idempotent and fails closed on unknown source", async () => {
   const source = await readFile(path.join(root, "node_modules/pi-llama-cpp-stats/index.ts"), "utf8");
@@ -19,7 +19,7 @@ test("statistics cancellation patch is idempotent and fails closed on unknown so
   assert.throws(() => patchLlamaStatsCancellation("unknown source"), /no longer matches/);
 });
 
-test("Pi 1.0.4 desktop bridge loads add-ons, preserves user input, runs tools and aborts", { timeout: 60000 }, async t => {
+test("Pi 1.5.0 desktop bridge loads add-ons, preserves user input, runs tools and aborts", { timeout: 60000 }, async t => {
   const directory = await mkdtemp(path.join(tmpdir(), "pi-core-upgrade-smoke-"));
   const agent = path.join(directory, "agent");
   await mkdir(agent);
@@ -39,6 +39,12 @@ test("Pi 1.0.4 desktop bridge loads add-ons, preserves user input, runs tools an
     : message.content?.filter(block => block.type === "text").map(block => block.text).join("\n") ?? "";
   let hangingResponse;
   const server = http.createServer(async (req, res) => {
+    // Model/server discovery is separate from chat completions.
+    if (req.method !== "POST") {
+      res.writeHead(404, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ error: "Fixture exposes only chat completions" }));
+      return;
+    }
     const chunks = [];
     for await (const chunk of req) chunks.push(chunk);
     const body = JSON.parse(Buffer.concat(chunks).toString("utf8"));
@@ -75,7 +81,8 @@ test("Pi 1.0.4 desktop bridge loads add-ons, preserves user input, runs tools an
     "electron/browser-extension.ts",
     "resources/pi-single-slot-guard/index.js",
     "resources/pi-llama-generation-speed/index.js", "resources/pi-loop-police/index.js",
-  ].map(file => path.join(root, file));
+  ].map(file => path.join(root, process.env.PI_TEST_APP_ROOT && file.startsWith("electron/")
+    ? `dist-electron/${file.replace(/\.ts$/, ".js")}` : file));
   extensions.push(probePath);
   const packages=["pi-web-access","pi-tool-repair","pi-mcp-adapter","pi-lens","pi-llama-cpp-stats"].map(name=>path.join(root,"node_modules",name));
   await writeFile(path.join(agent, "settings.json"), JSON.stringify({ packages, extensions,
@@ -229,6 +236,7 @@ test("Pi 1.0.4 desktop bridge loads add-ons, preserves user input, runs tools an
   await request("reload");
   assert.ok((await request("get_extension_state")).tools.some(tool => tool.name === "update_notebook"));
   assert.doesNotMatch(stderr, /Failed to load extension|TypeError|SyntaxError/);
-  const launcher = await readFile(path.join(root, "electron/pi-rpc-process.ts"), "utf8");
+  const launcher = await readFile(path.join(root, process.env.PI_TEST_APP_ROOT
+    ? "dist-electron/electron/pi-rpc-process.js" : "electron/pi-rpc-process.ts"), "utf8");
   assert.match(launcher, /"--no-mcp"/);
 });

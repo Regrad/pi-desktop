@@ -19,9 +19,9 @@ const corePackagePath = path.join(
 );
 const corePackage = JSON.parse(await readFile(corePackagePath, "utf8"));
 
-if (corePackage.version !== "1.0.4") {
+if (corePackage.version !== "1.5.0") {
   throw new Error(
-    `Pi RPC bridge targets pi-coding-agent 1.0.4, found ${corePackage.version}. ` +
+    `Pi RPC bridge targets pi-coding-agent 1.5.0, found ${corePackage.version}. ` +
     "Review the bridge before changing the pinned core version.",
   );
 }
@@ -56,8 +56,8 @@ process.stdout.write("Pi Desktop native tool-exposure policy applied.\n");
 // electron-builder hoists the same provider into the portable runtime.
 const providerRoot = path.dirname(findPackageJSON("@earendil-works/pi-ai", pathToFileURL(corePackagePath).href));
 const providerPackage = JSON.parse(await readFile(path.join(providerRoot, "package.json"), "utf8"));
-if (providerPackage.version !== "1.0.4") {
-  throw new Error(`Tool image bridge targets pi-ai 1.0.4, found ${providerPackage.version}.`);
+if (providerPackage.version !== "1.5.0") {
+  throw new Error(`Tool image bridge targets pi-ai 1.5.0, found ${providerPackage.version}.`);
 }
 const providerPath = path.join(providerRoot, "dist", "api", "openai-completions.js");
 const providerBytes = await readFile(providerPath);
