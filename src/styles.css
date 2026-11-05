@@ -915,6 +915,22 @@ button:not(:disabled) {
     monospace;
   text-align: center;
 }
+.run-error {
+  margin: 12px 0;
+  padding: 12px 14px;
+  border: 1px solid #e4b6b6;
+  border-radius: 12px;
+  background: #fff4f3;
+  color: #9a3030;
+  font-size: 13px;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+}
+.run-error strong {
+  display: block;
+  margin-bottom: 4px;
+}
 .run-complete {
   width: 100%;
   display: flex;

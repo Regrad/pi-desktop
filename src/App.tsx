@@ -5872,6 +5872,12 @@ export default function App() {
                         </div>
                       </div>
                     )}
+                    {!working && !requestPending && snapshot?.run?.error && (
+                      <div className="run-error" role="alert">
+                        <strong>Работа прервана из-за ошибки</strong>
+                        <div>{snapshot.run.error}</div>
+                      </div>
+                    )}
                     {!working && !requestPending && lastDuration !== undefined && (
                       <div className="run-complete">
                         <span>

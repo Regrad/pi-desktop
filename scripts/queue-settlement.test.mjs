@@ -29,6 +29,62 @@ const controlGoal = method("controlGoal", "conversationId, action");
 const controlPlan = method("controlPlan", "conversationId, action");
 const resume = method("resumeConversation", "conversationId");
 
+test("terminal provider errors survive settlement and snapshot reload without an assistant body", async () => {
+  const f = fixture(false);
+  await f.event({ type: "message_end", message: { role: "assistant", stopReason: "error", errorMessage: "HTTP 500: backend unavailable", content: [] } });
+  await f.settle();
+  assert.equal(f.runtime.activeRun.error, "HTTP 500: backend unavailable");
+  assert.equal(f.runtime.snapshot.run.error, f.runtime.activeRun.error);
+  const event = f.events.find(item => item.event.type === "agent_settled").event;
+  assert.equal(JSON.parse(JSON.stringify(event.run)).error, f.runtime.activeRun.error);
+});
+
+test("exhausted retry retains its final error even if Pi drops the failed response", async () => {
+  const f = fixture(false);
+  await f.event({ type: "auto_retry_end", success: false, finalError: "ECONNRESET" });
+  await f.settle();
+  assert.equal(f.runtime.activeRun.error, "ECONNRESET");
+});
+
+test("successful recovery and user Stop are not displayed as terminal failures", async () => {
+  for (const stopped of [false, true]) {
+    const f = fixture(false);
+    await f.event({ type: "message_end", message: { role: "assistant", stopReason: "error", errorMessage: "Temporary failure" } });
+    if (stopped) f.runtime.runAborted = true;
+    else await f.answer("stop");
+    await f.settle();
+    assert.equal(f.runtime.activeRun.error, undefined);
+  }
+});
+
+test("an active process exit is persisted, but an idle exit does not rewrite prior success", async () => {
+  for (const error of [undefined, new Error("Pi exited with code 1")]) {
+    const f = fixture(false);
+    await exit.call(f.host, "chat", f.runtime, error);
+    assert.match(f.runtime.activeRun.error, error ? /code 1/ : /неожиданно завершился/);
+    assert.equal(f.runtime.snapshot.run.error, f.runtime.activeRun.error);
+  }
+  const idle = fixture(false);
+  idle.runtime.activeRun.completedAt = new Date().toISOString();
+  await exit.call(idle.host, "chat", idle.runtime);
+  assert.equal(idle.runtime.activeRun.error, undefined);
+  const stopped = fixture(false);
+  stopped.runtime.runAborted = true;
+  await exit.call(stopped.host, "chat", stopped.runtime, new Error("killed"));
+  assert.equal(stopped.runtime.activeRun.error, undefined);
+});
+
+test("a missing provider error description still yields a visible failure", async () => {
+  const f = fixture(false);
+  await f.answer("error");
+  await f.settle();
+  assert.match(f.runtime.activeRun.error, /без описания/);
+  const ui = readFileSync(new URL("../src/App.tsx", import.meta.url), "utf8");
+  assert.match(ui, /!working && !requestPending && snapshot\?\.run\?\.error/);
+  assert.match(ui, /className="run-error" role="alert"/);
+  assert.match(ui, /\{snapshot\.run\.error\}/);
+});
+
 function fixture(withWork = true) {
   const chat = { id: "chat", status: "working", ...(withWork ? {
     plan: updatedPlan({ plan: [{ step: "Unfinished task", status: "in_progress" }], execution: "active" }),

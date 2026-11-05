@@ -383,6 +383,7 @@ export interface ExtensionUiRequest {
 
 export interface ConversationRun {
   interruption?: { planRevision?: number; goalId?: string };
+  error?: string;
   startedAt: string;
   completedAt?: string;
   durationMs?: number;

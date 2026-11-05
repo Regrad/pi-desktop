@@ -79,6 +79,7 @@ interface RuntimeRecord {
   eventQueue: Promise<void>;
   activeRun?: ConversationRun;
   runStopReason?: string;
+  runError?: string;
   runAborted?: boolean;
   compactionStartedAt?: number;
   liveMessage?: JsonObject;
@@ -299,6 +300,7 @@ export class PiManager {
     ) {
       runtime.activeRun = { startedAt: new Date().toISOString() };
       runtime.runStopReason = undefined;
+      runtime.runError = undefined;
       runtime.runAborted = false;
       runtime.diffRefresh = undefined;
       runtime.diffRefreshQueued = false;
@@ -414,8 +416,11 @@ export class PiManager {
           ...runtime.activeRun,
           completedAt: new Date().toISOString(),
           durationMs: Date.now() - Date.parse(runtime.activeRun.startedAt),
+          error: runtime.runAborted ? undefined : error instanceof Error ? error.message : String(error),
         };
         await this.store.saveConversationRun(conversationId, runtime.activeRun);
+        if (runtime.snapshot) runtime.snapshot.run = structuredClone(runtime.activeRun);
+        this.publish("pi:event", { conversationId, event: { type: "desktop_run_state", stopped: true, run: runtime.activeRun } });
       }
       throw error;
     }
@@ -1506,12 +1511,19 @@ export class PiManager {
     if (!runtime) return;
     // Track this run's outcome from events, not the last projected message:
     // Pi may omit a failed attempt from model history before retry is cancelled.
-    if (event.type === "message_end" && (event.message as JsonObject | undefined)?.role === "assistant")
+    if (event.type === "message_end" && (event.message as JsonObject | undefined)?.role === "assistant") {
       runtime.runStopReason = (event.message as JsonObject).stopReason as string | undefined;
-    if (event.type === "auto_retry_end" && event.success === false)
+      runtime.runError = runtime.runStopReason === "error"
+        ? String((event.message as JsonObject).errorMessage || "Модель завершила запрос с ошибкой без описания.")
+        : runtime.runStopReason === "length" ? "Достигнут лимит длины ответа модели. Работа не завершена." : undefined;
+    }
+    if (event.type === "auto_retry_end" && event.success === false) {
       runtime.runStopReason = "error";
+      runtime.runError = String(event.finalError || runtime.runError || "Не удалось выполнить запрос после повторных попыток.");
+    }
     if (event.type === "agent_start") {
       runtime.runStopReason = undefined;
+      runtime.runError = undefined;
       const plan = this.store.getConversation(conversationId).plan;
       // Pi can emit another agent_start while recovering the same logical run.
       // Its confirmed checklist stays current until agent_settled or a revision change.
@@ -1550,6 +1562,7 @@ export class PiManager {
           ...runtime.activeRun,
           completedAt,
           interruption: !runtime.runAborted && runtime.runStopReason === "stop" ? undefined : runtime.activeRun.interruption ?? {},
+          error: runtime.runAborted ? undefined : runtime.runError,
           durationMs:
             Date.parse(completedAt) - Date.parse(runtime.activeRun.startedAt),
         };
@@ -1873,6 +1886,7 @@ export class PiManager {
     runtime: RuntimeRecord,
     error?: Error,
   ): Promise<void> {
+    const stoppedByUser = runtime.runAborted;
     runtime.runAborted = true;
     this.goalContinuationRequested.delete(conversationId);
     runtime.diffTracker?.close();
@@ -1895,6 +1909,7 @@ export class PiManager {
       runtime.activeRun = {
         ...runtime.activeRun,
         completedAt,
+        error: stoppedByUser ? undefined : error?.message || "Процесс Pi неожиданно завершился до окончания запроса.",
         interruption: { ...runtime.activeRun.interruption,
           ...(pausedPlan ? { planRevision: pausedPlan.revision } : {}),
           ...(goal?.status === "active" ? { goalId: goal.id } : {}),
@@ -1903,6 +1918,7 @@ export class PiManager {
           Date.parse(completedAt) - Date.parse(runtime.activeRun.startedAt),
       };
       await this.store.saveConversationRun(conversationId, runtime.activeRun);
+      if (runtime.snapshot) runtime.snapshot.run = structuredClone(runtime.activeRun);
     }
     await this.updateConversation(conversationId, {
       status: error ? "error" : "idle",
