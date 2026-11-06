@@ -5,7 +5,7 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import { patchServiceMessages, patchDesktopCompaction } from "./context-patch.js";
 import { patchToolResultImages } from "./tool-result-images-patch.js";
 import { patchLlamaStatsCancellation } from "./llama-stats-patch.js";
-import { patchMcpIndex, patchMcpProxy } from "../pi-mcp/config-patch.js";
+import { patchMcpIndex, patchMcpProxy, patchMcpOnDemandInit, patchMcpOnDemandManager } from "../pi-mcp/config-patch.js";
 import { patchCodemodeDiscoveryDescription } from "../tool-routing/patch.js";
 import { patchDesktopContinuation } from "./continuation-patch.js";
 import { patchShellTimeout } from "./shell-timeout-patch.js";
@@ -46,6 +46,8 @@ export async function applyAddonRequestCompatibility(name, root) {
   } else if (name === "pi-mcp-adapter") {
     await requireVersion(root, "5.1.0");
     await patchFile(path.join(root, "index.ts"), patchMcpIndex);
+    await patchFile(path.join(root, "init.ts"), patchMcpOnDemandInit);
+    await patchFile(path.join(root, "server-manager.ts"), patchMcpOnDemandManager);
     await patchFile(path.join(root, "proxy-modes.ts"), patchMcpProxy);
     await copyFile(path.join(bridgeRoot, "..", "pi-mcp", "desktop-config.js"), path.join(root, "desktop-config.js"));
   }

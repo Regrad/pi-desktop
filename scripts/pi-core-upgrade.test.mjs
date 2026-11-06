@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { spawn } from "node:child_process";
 import { mkdtemp, mkdir, readFile, writeFile, rm } from "node:fs/promises";
+import { existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import http from "node:http";
@@ -26,10 +27,27 @@ test("Pi 1.5.0 desktop bridge loads add-ons, preserves user input, runs tools an
   await writeFile(path.join(directory, "desktop-state.json"), JSON.stringify({ conversations: [{ id: "upgrade-smoke" }] }), "utf8");
   await writeFile(path.join(directory, "evidence.txt"), "upgrade evidence", "utf8");
   const mcpConfigPath=path.join(agent,"mcp-adapter.json");
-  await writeFile(mcpConfigPath,JSON.stringify({mcpServers:{}}),'utf8');
+  let unusedConnections = 0;
+  const unusedResponses = new Set();
+  const unusedServer = http.createServer((_req, res) => {
+    unusedConnections++;
+    unusedResponses.add(res);
+    res.once("close", () => unusedResponses.delete(res));
+  });
+  await new Promise(resolve => unusedServer.listen(0, "127.0.0.1", resolve));
+  t.after(() => { unusedServer.closeAllConnections(); unusedServer.close(); });
+  const coldMarker = path.join(directory, "unused-stdio-started.txt");
+  const usedMarker = path.join(directory, "used-stdio-started.txt");
   const mcpServerPath=path.join(directory,"mcp-fixture.cjs");
-  await writeFile(mcpServerPath,`const rl=require('node:readline').createInterface({input:process.stdin});rl.on('line',line=>{const m=JSON.parse(line);if(m.id===undefined)return;let result={};if(m.method==='initialize')result={protocolVersion:m.params.protocolVersion,capabilities:{tools:{}},serverInfo:{name:'fixture',version:'1'}};if(m.method==='tools/list')result={tools:[{name:'fixture_ping',description:'Fixture tool',inputSchema:{type:'object',properties:{}}}]};console.log(JSON.stringify({jsonrpc:'2.0',id:m.id,result}));});rl.on('close',()=>process.exit(0));`,'utf8');
-  const mcpConfig={mcpServers:{fixture:{command:process.execPath,args:[mcpServerPath],lifecycle:'lazy',directTools:true}}};
+  await writeFile(mcpServerPath,`if(process.argv[2])require('node:fs').appendFileSync(process.argv[2],'spawn;');const rl=require('node:readline').createInterface({input:process.stdin});rl.on('line',line=>{const m=JSON.parse(line);if(m.id===undefined)return;let result={};if(m.method==='initialize')result={protocolVersion:m.params.protocolVersion,capabilities:{tools:{}},serverInfo:{name:'fixture',version:'1'}};if(m.method==='tools/list')result={tools:[{name:'fixture_ping',description:'Fixture tool',inputSchema:{type:'object',properties:{}}}]};if(m.method==='tools/call')result={content:[{type:'text',text:'fixture-pong'}]};console.log(JSON.stringify({jsonrpc:'2.0',id:m.id,result}));});rl.on('close',()=>process.exit(0));`,'utf8');
+  const unusedConfig = {
+    unused: {url:`http://127.0.0.1:${unusedServer.address().port}/mcp`,lifecycle:'keep-alive',directTools:false},
+    cold: {command:process.execPath,args:[mcpServerPath,coldMarker],lifecycle:'eager',directTools:true},
+    fixture: {command:process.execPath,args:[mcpServerPath,usedMarker],lifecycle:'lazy',directTools:false},
+  };
+  await writeFile(mcpConfigPath,JSON.stringify({mcpServers:unusedConfig}),'utf8');
+  const mcpConfig={mcpServers:{...unusedConfig,fixture:{command:process.execPath,args:[mcpServerPath,usedMarker],lifecycle:'lazy',directTools:true}}};
+  const mcpDiscoveryCode = `const status=await tools.mcp({});if(status.details.connectedCount!==0)throw new Error('Status connected unused servers');const found=await tools.mcp({search:'no-matches-fixture'});if(!found.details.undiscoveredServers.some(s=>s.name==='cold'))throw new Error('Cold servers not discoverable');const listed=await tools.mcp({server:'fixture'});if(listed.details.error)throw new Error('Scoped discovery failed: '+JSON.stringify(listed));const pong=await tools.mcp({server:'fixture',tool:'fixture_ping',args:{}});if(!JSON.stringify(pong).includes('fixture-pong'))throw new Error('MCP tool did not execute');`;
   const mcpReloadCode=`const cfg=await tools.mcp({action:'config'});if(!cfg.details.desktopConfig.sources.some(s=>s.path===${JSON.stringify(mcpConfigPath)}))throw new Error('Wrong config path');await tools.write({path:${JSON.stringify(mcpConfigPath)},content:${JSON.stringify(JSON.stringify(mcpConfig))}});const connected=await tools.mcp({connect:'fixture'});if(connected.details.error)throw new Error(JSON.stringify(connected));text('MCP-RELOADED:'+JSON.stringify(connected));`;
   const probePath = path.join(directory, "routing-probe.mjs");
   const png = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aF3sAAAAASUVORK5CYII=";
@@ -55,11 +73,16 @@ test("Pi 1.5.0 desktop bridge loads add-ons, preserves user input, runs tools an
       hangingResponse = res;
       return;
     }
+    if (body.messages.some(m => m.role === "user" && messageText(m).endsWith("mcp-blocked-probe"))) {
+      res.end(`data: ${JSON.stringify({ id: "mcp-probe", object: "chat.completion.chunk", choices: [{ index: 0,
+        delta: { tool_calls: [{ index: 0, id: "mcp-wait", type: "function", function: { name: "codemode", arguments: JSON.stringify({code:"text(await tools.mcp({connect:'unused'}));"}) } }] }, finish_reason: "tool_calls" }] })}\n\ndata: [DONE]\n\n`);
+      return;
+    }
     const routing = body.messages.some(m => m.role === "user" && messageText(m).endsWith("routing-test"));
     const routingCalls = body.messages.filter(m => m.role === "tool" && String(m.tool_call_id).startsWith("routing-")).length;
     const code = routingCalls === 0
       ? "text(await describeTool('comfyui_routing_probe')); text(await searchTools('music')); const names=ALL_TOOLS.map(tool=>tool.name); for(const name of names) if(!await describeTool(name)) throw new Error('Missing declaration '+name); text('AUDIT:'+JSON.stringify(names));"
-      : "for (const token of ['blocked',42]) { let rejected=false; try { await tools.comfyui_routing_probe({token}); } catch(error) { rejected=true; text(String(error)); } if(!rejected) throw new Error('validation bypass'); } const result = await tools.comfyui_routing_probe({token:'ok'}); text(result.content[0].text); image(result.content[1]);" + mcpReloadCode;
+      : "for (const token of ['blocked',42]) { let rejected=false; try { await tools.comfyui_routing_probe({token}); } catch(error) { rejected=true; text(String(error)); } if(!rejected) throw new Error('validation bypass'); } const result = await tools.comfyui_routing_probe({token:'ok'}); text(result.content[0].text); image(result.content[1]);" + mcpDiscoveryCode + mcpReloadCode;
     const delta = routing ? (routingCalls < 2 ? { tool_calls: [{ index: 0, id: `routing-${routingCalls}`, type: "function", function: { name: "codemode", arguments: JSON.stringify({code}) } }] } : {content:"Routed."}) : body.messages.some(m => m.role === "tool")
       ? { content: "Verified." }
       : { reasoning_content: "Verified project X:/KDPI and editor https://tilda.ru/.", tool_calls: [{ index: 0, id: "upgrade-read", type: "function", function: {
@@ -146,6 +169,8 @@ test("Pi 1.5.0 desktop bridge loads add-ons, preserves user input, runs tools an
     throw error;
   }
   assert.equal(state.model.id, "upgrade");
+  assert.equal(unusedConnections, 0, "Starting Pi must not connect an unused HTTP server");
+  assert.equal(existsSync(coldMarker), false, "Starting Pi must not spawn an unused stdio server");
   const inventory = await request("get_extension_state");
   for (const name of ["get_goal", "update_plan", "update_notebook", "browser", "mcp", "comfyui_generate_music"]) {
     assert.ok(inventory.tools.some(tool => tool.name === name), `Missing ${name}: ${stderr}`);
@@ -182,6 +207,8 @@ test("Pi 1.5.0 desktop bridge loads add-ons, preserves user input, runs tools an
     await new Promise(resolve => setTimeout(resolve, 50));
   }
   assert.equal(captured.length, 2);
+  assert.equal(unusedConnections, 0, "Ordinary user input must not wait for MCP discovery");
+  assert.equal(existsSync(coldMarker), false);
   const acknowledged = [...initialHistory.messageIds, ...events.slice(firstPromptEventIndex)
     .filter(event => event.type === "message_end").map(event => event.desktopMessageId)];
   const settledHistory = await request("get_messages", { knownMessageIds: acknowledged });
@@ -222,6 +249,9 @@ test("Pi 1.5.0 desktop bridge loads add-ons, preserves user input, runs tools an
   const nestedResults=events.filter(event=>event.type==='tool_execution_end'&&event.toolName==='comfyui_routing_probe');
   assert.equal(nestedResults.filter(event=>event.isError).length,2,"permission or validation bypass");
   assert.ok(JSON.stringify(captured[4]).includes(`data:image/png;base64,${png}`),"codemode image lost");
+  assert.equal(unusedConnections, 0, "Using one MCP server must not connect another");
+  assert.equal(existsSync(coldMarker), false);
+  assert.equal(existsSync(usedMarker), true, "The requested MCP server must really start");
   // A completed run clears its temporary prompt options asynchronously. An
   // immediate continuation hides the bug; exercise the real idle boundary.
   for (const type of ["desktop_plan_continue", "desktop_goal_continue"]) {
@@ -236,6 +266,23 @@ test("Pi 1.5.0 desktop bridge loads add-ons, preserves user input, runs tools an
   }
   const history = await request("get_messages");
   assert.ok(JSON.stringify(history).includes("desktopNestedMedia"), "nested media missing from saved parent result");
+  await request("prompt", { message: "mcp-blocked-probe" });
+  const mcpDeadline = Date.now() + 10000;
+  while (!unusedConnections) {
+    assert.ok(Date.now() < mcpDeadline, "The requested MCP connection never started");
+    await new Promise(resolve => setTimeout(resolve, 25));
+  }
+  const mcpAbortStarted = Date.now();
+  const connectionsBeforeAbort = unusedConnections;
+  await request("abort");
+  assert.ok(Date.now() - mcpAbortStarted < 3000, "Stop must not wait for an MCP handshake");
+  assert.equal((await request("get_state")).isStreaming, false);
+  const closeDeadline = Date.now() + 3000;
+  while (unusedResponses.size) {
+    assert.ok(Date.now() < closeDeadline, "Cancelled MCP requests must release their HTTP connections");
+    await new Promise(resolve => setTimeout(resolve, 25));
+  }
+  assert.equal(unusedConnections, connectionsBeforeAbort, "Cancellation must not start another diagnostic connection");
   await request("prompt", { message: "abort-test" });
   const abortDeadline = Date.now() + 10000;
   while (!hangingResponse) {

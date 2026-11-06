@@ -1,9 +1,11 @@
 // Shipped with the desktop so runtime updates retain the same MCP fixes.
+import { patchMcpOnDemandIndex } from "./on-demand-patch.js";
+export { patchMcpOnDemandInit, patchMcpOnDemandManager } from "./on-demand-patch.js";
 export function patchMcpIndex(source) {
   if (source.includes('// Pi Desktop MCP configuration access v5')) {
     source = source.replace('const initialized = await initPromise;', 'const initialized = state;');
     const anchor = '              const fresh = loadMcpConfig(earlyConfigPath, _ctx.cwd);\n              if (JSON.stringify';
-    return source.replace(anchor, '              const fresh = loadMcpConfig(earlyConfigPath, _ctx.cwd);\n              const definition = fresh.mcpServers[params.connect];\n              if (definition && [definition.command, definition.url, definition.socket].filter(Boolean).length !== 1) throw new Error("MCP server must configure exactly one transport");\n              if (JSON.stringify');
+    return patchMcpOnDemandIndex(source.replace(anchor, '              const fresh = loadMcpConfig(earlyConfigPath, _ctx.cwd);\n              const definition = fresh.mcpServers[params.connect];\n              if (definition && [definition.command, definition.url, definition.socket].filter(Boolean).length !== 1) throw new Error("MCP server must configure exactly one transport");\n              if (JSON.stringify'));
   }
   const replacements = [
     ['import { cloneMcpConfig,', 'import { getConfigDiscoveryPaths, cloneMcpConfig,'],
@@ -67,7 +69,7 @@ export function patchMcpIndex(source) {
     if (source.split(from).length !== 2) throw new Error(`Unsupported pi-mcp-adapter 5.1.0: missing or ambiguous patch anchor ${from.slice(0,80)}`);
     source = source.replace(from,to);
   }
-  return '// Pi Desktop MCP configuration access v5\nimport { desktopMcpDescription, configInfo, validateConfigFiles, withConfigInfo, diagnosticError } from "./desktop-config.js";\n' + source;
+  return patchMcpOnDemandIndex('// Pi Desktop MCP configuration access v5\nimport { desktopMcpDescription, configInfo, validateConfigFiles, withConfigInfo, diagnosticError } from "./desktop-config.js";\n' + source);
 }
 
 export function patchMcpProxy(source) {

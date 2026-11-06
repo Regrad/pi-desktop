@@ -5,6 +5,7 @@ import stripJsonComments from "strip-json-comments";
 // Discovery stays live through tool results, without invalidating the prompt prefix.
 export const desktopMcpDescription = `MCP gateway: server status, discovery, configuration, URL installation, authentication, and single MCP tool calls. Use codemode for discovery and scripts, not mcpScript. Core file and shell tools remain direct.
 Discover current servers and capabilities through results, not a static inventory. Read server instructions before using unfamiliar tools.
+Connections open on demand. Status and global searches use saved metadata; mcp({server: "name"}) discovers that server when needed.
 Usage:
   mcp({}) -> Current server status
   mcp({action: "config", server: "name"}) -> Actual configuration paths and safe connection parameters (server optional)
@@ -27,6 +28,15 @@ export function safeEndpoint(value) {
     url.username = ""; url.password = ""; url.search = ""; url.hash = "";
     return url.toString();
   } catch { return "[invalid URL]"; }
+}
+
+export function withDeferredServers(result, state) {
+  const servers = Object.entries(state.config.mcpServers ?? {})
+    .filter(([name, definition]) => definition.disabled !== true && definition.enabled !== false && !state.toolMetadata.has(name))
+    .map(([name, definition]) => ({ name, ...(typeof definition.description === "string" ? { description: definition.description } : {}) }));
+  if (!servers.length) return result;
+  return { ...result, details: { ...result.details, undiscoveredServers: servers }, content: [...result.content,
+    { type: "text", text: `Tools from these servers have not been discovered yet: ${servers.map(server => server.name).join(", ")}. Use mcp({server: "NAME"}) to discover the server relevant to the task.` }] };
 }
 
 export function connectionSummary(definition = {}) {

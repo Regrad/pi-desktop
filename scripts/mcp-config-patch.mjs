@@ -1,1 +1,1 @@
-export { patchMcpIndex, patchMcpProxy } from "../resources/pi-mcp/config-patch.js";
+export { patchMcpIndex, patchMcpProxy, patchMcpOnDemandInit, patchMcpOnDemandManager } from "../resources/pi-mcp/config-patch.js";

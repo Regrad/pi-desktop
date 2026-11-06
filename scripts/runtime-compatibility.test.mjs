@@ -64,7 +64,7 @@ test("runtime core updates install request, summary and media bridges idempotent
 
 test("addon updates retain MCP configuration and statistics cancellation fixes", async t => {
   const directory = await fixture(t);
-  for (const [name, version, files] of [["pi-mcp-adapter", "5.1.0", ["index.ts", "proxy-modes.ts"]],
+  for (const [name, version, files] of [["pi-mcp-adapter", "5.1.0", ["index.ts", "proxy-modes.ts", "init.ts", "server-manager.ts"]],
     ["pi-llama-cpp-stats", "0.1.6", ["index.ts"]]]) {
     const target = path.join(directory, name);
     await put(target, "package.json", JSON.stringify({ name, version }));

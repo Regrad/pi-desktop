@@ -3,7 +3,7 @@ import { findPackageJSON } from "node:module";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { patchToolResultImages } from "./tool-result-images-patch.mjs";
-import { patchMcpIndex, patchMcpProxy } from "./mcp-config-patch.mjs";
+import { patchMcpIndex, patchMcpProxy, patchMcpOnDemandInit, patchMcpOnDemandManager } from "./mcp-config-patch.mjs";
 import { patchLlamaStatsCancellation } from "./llama-stats-patch.mjs";
 import { patchToolRouting } from "./tool-routing-patch.mjs";
 import { applyContextCompatibility } from "../resources/pi-rpc-bridge/compatibility.js";
@@ -69,7 +69,7 @@ process.stdout.write("Pi Desktop multimodal tool-result compatibility bridge app
 const adapterDir = path.join(root, "node_modules", "pi-mcp-adapter");
 const adapterPackage = JSON.parse(await readFile(path.join(adapterDir, "package.json"), "utf8"));
 if (adapterPackage.version !== "5.1.0") throw new Error(`MCP configuration bridge targets pi-mcp-adapter 5.1.0, found ${adapterPackage.version}`);
-for (const [name, patch] of [["index.ts", patchMcpIndex], ["proxy-modes.ts", patchMcpProxy]]) {
+for (const [name, patch] of [["index.ts", patchMcpIndex], ["proxy-modes.ts", patchMcpProxy], ["init.ts", patchMcpOnDemandInit], ["server-manager.ts", patchMcpOnDemandManager]]) {
   const file = path.join(adapterDir, name);
   const source = new TextDecoder("utf-8", { fatal: true }).decode(await readFile(file));
   const result = patch(source);
