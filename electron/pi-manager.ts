@@ -5,6 +5,7 @@ import { applyGoalReport, goalPrompt, settleGoal } from "../shared/goal.js";
 import { updatedPlan, planRequestSuffix, canContinuePlan } from "../shared/plan.js";
 import { confirmedPlanRevision } from "../shared/plan-activity.js";
 import { canResumeRun } from "../shared/run-state.js";
+import { selectConfiguredModel } from "../shared/model-selection.js";
 import { notebookUsage, updatedNotebook } from "../shared/notebook.js";
 import { StatePersistenceError } from "./atomic-state.js";
 import type { SkillsStore } from "./skills-store.js";
@@ -87,6 +88,7 @@ interface RuntimeRecord {
   planWorkingRevision?: number;
   pendingPlanStartRevision?: number;
   pendingInstructionsRevision?: number;
+  modelsRevision?: string;
 }
 
 function createExtensionUiState(): ExtensionUiState {
@@ -149,6 +151,7 @@ export class PiManager {
   private readonly startingRuntimes = new Map<string, Promise<ConversationSnapshot>>();
   private readonly startupEpochs = new Map<string, number>();
   private instructionsRevision = 0;
+  private modelCatalogSync: Promise<void> = Promise.resolve();
   private cachedCommands: ConversationSnapshot["commands"] =
     structuredClone(BUILTIN_COMMANDS);
   private cachedExtensionState: ExtensionState = createEmptyExtensionState();
@@ -173,6 +176,48 @@ export class PiManager {
   async createConversation(projectId?: string): Promise<ConversationSnapshot> {
     const conversation = await this.store.createConversation(projectId);
     return this.previewConversation(conversation);
+  }
+
+  async getModelServers(force = false) {
+    await this.store.refreshModelServers(force);
+    await this.modelConfigurationChanged();
+    return this.store.getModelServers();
+  }
+
+  async modelConfigurationChanged(): Promise<void> {
+    const sync = this.modelCatalogSync.then(async () => {
+      const configuration = await this.store.getAgentConfiguration();
+      for (const [id, runtime] of this.runtimes) {
+        if (!runtime.snapshot || runtime.snapshot.state.isStreaming || runtime.snapshot.state.isCompacting
+          || (runtime.activeRun && !runtime.activeRun.completedAt) || runtime.modelsRevision === configuration.revision) continue;
+        const conversation = this.store.getConversation(id);
+        const selected = selectConfiguredModel(configuration.models, conversation.provider, conversation.model,
+          configuration.defaultProvider, configuration.defaultModel);
+        const result = await runtime.rpc.request<{ models: ModelInfo[]; thinkingLevels: ThinkingLevel[] }>("desktop_refresh_models", {
+          provider: selected?.provider, modelId: selected?.id,
+        });
+        const state = await this.refreshState(id, runtime);
+        runtime.snapshot.models = result.models;
+        runtime.snapshot.thinkingLevels = result.thinkingLevels;
+        runtime.modelsRevision = configuration.revision;
+        if (state.model) await this.updateConversation(id, { provider: state.model.provider, model: state.model.id, thinkingLevel: state.thinkingLevel });
+        this.publish("pi:event", { conversationId: id, event: { type: "desktop_models_update", models: result.models, state,
+          thinkingLevels: runtime.snapshot.thinkingLevels } });
+      }
+      const activeId = this.store.snapshot().activeConversationId;
+      if (activeId && !this.runtimes.has(activeId)) {
+        const conversation = this.store.getConversation(activeId);
+        const model = selectConfiguredModel(configuration.models, conversation.provider, conversation.model,
+          configuration.defaultProvider, configuration.defaultModel);
+        const thinkingLevels = model?.thinkingLevels ?? ["off"];
+        const requestedLevel = conversation.thinkingLevel ?? configuration.defaultThinkingLevel;
+        const thinkingLevel = thinkingLevels.includes(requestedLevel) ? requestedLevel : thinkingLevels[0];
+        this.publish("pi:event", { conversationId: activeId, event: { type: "desktop_models_update", models: configuration.models,
+          model, thinkingLevels, thinkingLevel } });
+      }
+    });
+    this.modelCatalogSync = sync.catch(() => undefined);
+    await sync;
   }
 
   async inspectConversation(conversationId: string): Promise<ConversationSnapshot> {
@@ -264,7 +309,13 @@ export class PiManager {
         (!resumeBeforeQueue && this.store.getQueuedPrompts(conversationId).length > 0))
     )
       return;
+    if (!this.runtimes.get(conversationId)?.snapshot?.state.isStreaming) {
+      const epoch = this.startupEpochs.get(conversationId) ?? 0;
+      await this.getModelServers(true);
+      if ((this.startupEpochs.get(conversationId) ?? 0) !== epoch) throw new Error("Отправка отменена пользователем.");
+    }
     const runtime = await this.ensureRuntime(conversationId);
+    if (runtime.snapshot?.state.model === null) throw new Error("Выберите доступную модель: прежняя модель или API-подключение больше не доступны.");
     await this.reloadPendingInstructions(conversationId, runtime);
     if (
       expectedGoalId &&
@@ -486,6 +537,7 @@ export class PiManager {
   }
 
   async abort(conversationId: string): Promise<void> {
+    this.invalidateStartup(conversationId);
     this.cancelBrowserRequests?.(conversationId);
     const conversation = this.store.getConversation(conversationId);
     const changes: Partial<ConversationRecord> = {};
@@ -860,6 +912,7 @@ export class PiManager {
     provider: string,
     modelId: string,
   ): Promise<RuntimeState> {
+    await this.modelCatalogSync;
     const runtime = this.runtimes.get(conversationId);
     if (!runtime) {
       const updated = await this.updateConversation(conversationId, {
@@ -1223,12 +1276,8 @@ export class PiManager {
       configuration.defaultProvider;
     const modelId =
       conversation.model ?? sessionModel?.modelId ?? configuration.defaultModel;
-    const model: ModelInfo | null =
-      provider && modelId
-        ? (configuration.models.find(
-            (item) => item.provider === provider && item.id === modelId,
-          ) ?? { provider, id: modelId })
-        : null;
+    const model = selectConfiguredModel(configuration.models, provider, modelId,
+      configuration.defaultProvider, configuration.defaultModel);
     const thinkingLevels: ThinkingLevel[] =
       model?.thinkingLevels ??
       (model?.reasoning ? allThinkingLevels() : ["off"]);
@@ -1304,6 +1353,13 @@ export class PiManager {
   private async startConversationOnce(conversation: ConversationRecord): Promise<ConversationSnapshot> {
     const existing = this.runtimes.get(conversation.id);
     if (existing?.snapshot) return structuredClone(existing.snapshot);
+    const configuration = await this.store.getAgentConfiguration();
+    const selected = selectConfiguredModel(configuration.models, conversation.provider, conversation.model,
+      configuration.defaultProvider, configuration.defaultModel);
+    if (!selected && conversation.provider && configuration.managedProviders.includes(conversation.provider))
+      throw new Error("Прежнее API-подключение больше не доступно. Выберите модель в списке.");
+    if (selected && (selected.provider !== conversation.provider || selected.id !== conversation.model))
+      conversation = await this.updateConversation(conversation.id, { provider: selected.provider, model: selected.id });
     const epoch = this.startupEpochs.get(conversation.id) ?? 0;
     const assertCurrentStartup = () => {
       if ((this.startupEpochs.get(conversation.id) ?? 0) !== epoch) throw new Error("Запуск чата отменён.");
@@ -1411,6 +1467,7 @@ export class PiManager {
     });
     record = {
       rpc,
+      modelsRevision: configuration.revision,
       extensionUi: createExtensionUiState(),
       extensionErrors: [],
       eventQueue: Promise.resolve(),

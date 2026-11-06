@@ -10,6 +10,7 @@ type JsonObject = Record<string, unknown>;
 
 export interface DiscoveredProviderConfiguration {
   baseUrl: string;
+  propertiesAvailable: boolean;
   suggestedId: string;
   provider: JsonObject;
   publicResult: Omit<ModelServerDiscoveryResult, "server" | "addedModels" | "updatedModels">;
@@ -40,7 +41,7 @@ function finitePositive(value: unknown): number | undefined {
   return typeof value === "number" && Number.isFinite(value) && value > 0 ? Math.round(value) : undefined;
 }
 
-function normalizeServer(input: ModelServerDiscoveryInput): { rootUrl: string; baseUrl: string } {
+export function normalizeServer(input: ModelServerDiscoveryInput): { rootUrl: string; baseUrl: string } {
   const address = input.address.trim();
   if (!address) throw new Error("Введите адрес сервера");
   const withScheme = /^[a-z][a-z\d+.-]*:\/\//i.test(address) ? address : `http://${address}`;
@@ -135,7 +136,11 @@ export async function discoverProvider(input: ModelServerDiscoveryInput): Promis
     fetchJson(`${rootUrl}/health`, apiKey),
   ]);
   const discoveredModels = serverModels(modelsResponse!);
-  if (!discoveredModels.length) throw new Error("Сервер не вернул ни одной модели через /v1/models");
+  if (!Array.isArray(modelsResponse?.data) && !Array.isArray(modelsResponse?.models))
+    throw new Error("Сервер не вернул список моделей через /v1/models");
+  if (!discoveredModels.length && [...(Array.isArray(modelsResponse.data) ? modelsResponse.data : []),
+    ...(Array.isArray(modelsResponse.models) ? modelsResponse.models : [])].length)
+    throw new Error("Сервер вернул некорректные идентификаторы моделей через /v1/models");
 
   const template = typeof props?.chat_template === "string" ? props.chat_template : "";
   const templateCaps = objectValue(props?.chat_template_caps);
@@ -190,6 +195,7 @@ export async function discoverProvider(input: ModelServerDiscoveryInput): Promis
   const host = new URL(rootUrl).hostname;
   return {
     baseUrl,
+    propertiesAvailable: props !== undefined,
     suggestedId: sanitizeProviderId(serverKind === "llama.cpp" ? "llama-cpp" : `local-${host}`),
     provider: {
       baseUrl,
@@ -218,7 +224,7 @@ export function configuredServerView(id: string, provider: JsonObject): Configur
     id,
     baseUrl: typeof provider.baseUrl === "string" ? provider.baseUrl : "",
     api: typeof provider.api === "string" ? provider.api : "openai-completions",
-    apiKeyConfigured: typeof provider.apiKey === "string" && provider.apiKey.length > 0,
+    apiKeyConfigured: typeof provider.apiKey === "string" && provider.apiKey.length > 0 && provider.apiKey !== "local-server",
     models: models.map((model): ConfiguredModelInfo => {
       const map = objectValue(model.thinkingLevelMap);
       const levels: ThinkingLevel[] = map

@@ -1,4 +1,4 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { atomicStateWrite } from "./atomic-state.js";
 import { notebookLimit, validateNotebookLimit } from "../shared/notebook.js";
 import { migrateLegacyAdapterConfig, parseMcpConfiguration } from "../shared/mcp-config.js";
@@ -40,6 +40,8 @@ import type {
 import {
   configuredServerView,
   discoverProvider,
+  normalizeServer,
+  type DiscoveredProviderConfiguration,
 } from "./model-server-discovery.js";
 import { migratePortableSessions, portableSessionsDir, storedSessionReference } from "./portable-sessions.js";
 import { ensureComfyAddon } from "./comfy-addon.js";
@@ -58,6 +60,9 @@ interface DesktopState {
 
 interface ModelsFileConfig {
   providers?: Record<string, Record<string, unknown>>;
+  desktopModelOverrides?: Record<string, Record<string, Record<string, unknown>>>;
+  desktopHiddenModels?: Record<string, string[]>;
+  desktopManagedProviders?: string[];
 }
 
 const EMPTY_STATE: DesktopState = {
@@ -171,6 +176,8 @@ export class DataStore {
   };
   private writeQueue: Promise<void> = Promise.resolve();
   private modelsMutationQueue: Promise<unknown> = Promise.resolve();
+  private modelsRefreshedAt = 0;
+  private modelsRefresh?: Promise<void>;
   private sessionRefreshes = new Map<string, Promise<void>>();
 
   constructor(
@@ -669,21 +676,54 @@ export class DataStore {
       .map(([id, provider]) => configuredServerView(id, provider));
   }
 
+  async refreshModelServers(force = false): Promise<void> {
+    if (this.modelsRefresh) return this.modelsRefresh;
+    if (!force && Date.now() - this.modelsRefreshedAt < 30_000) return;
+    const refresh = this.mutateModels(async () => {
+      const servers = await this.getModelServers();
+      const config = await this.readModelsConfig();
+      const results = await Promise.all(servers.filter(server => server.api === "openai-completions").map(async server => {
+        const input = { address: server.baseUrl, port: "", providerId: server.id };
+        const key = config.providers?.[server.id]?.apiKey;
+        try {
+          const discovered = await discoverProvider({ ...input, apiKey: typeof key === "string" && key !== "local-server" ? key : undefined });
+          return { input, discovered };
+        } catch {
+          // Offline/auth failures are not an authoritative empty model list.
+          return undefined;
+        }
+      }));
+      for (const result of results) if (result) await this.discoverModelServerSerial(result.input, result.discovered);
+      this.modelsRefreshedAt = Date.now();
+    });
+    this.modelsRefresh = refresh;
+    try { await refresh; }
+    finally { if (this.modelsRefresh === refresh) this.modelsRefresh = undefined; }
+  }
+
   async discoverModelServer(
     input: ModelServerDiscoveryInput,
   ): Promise<ModelServerDiscoveryResult> {
     return this.mutateModels(() => this.discoverModelServerSerial(input));
   }
 
-  private async discoverModelServerSerial(input: ModelServerDiscoveryInput): Promise<ModelServerDiscoveryResult> {
-    const discovered = await discoverProvider(input);
+  private async discoverModelServerSerial(input: ModelServerDiscoveryInput, prepared?: DiscoveredProviderConfiguration): Promise<ModelServerDiscoveryResult> {
     const config = await this.readModelsConfig();
     const providers = config.providers ?? {};
+    // Resolve saved credentials BEFORE probing the protected endpoint. Omitting
+    // apiKey keeps it; an explicitly empty value removes it.
+    const editing = input.providerId ? providers[input.providerId] : Object.values(providers).find(provider => {
+      try { return typeof provider.baseUrl === "string" && normalizeServer({ address: provider.baseUrl, port: "" }).baseUrl === normalizeServer(input).baseUrl; }
+      catch { return false; }
+    });
+    const storedKey = typeof editing?.apiKey === "string" && editing.apiKey !== "local-server" ? editing.apiKey : undefined;
+    if (input.providerId && !providers[input.providerId]) throw new Error("Настраиваемый сервер больше не существует");
+    const discovered = prepared ?? await discoverProvider({ ...input, apiKey: input.apiKey === undefined ? storedKey : input.apiKey });
     const addressEntry = Object.entries(providers).find(
-      ([, provider]) =>
-        typeof provider.baseUrl === "string" &&
-        provider.baseUrl.replace(/\/+$/, "").toLocaleLowerCase() ===
-          discovered.baseUrl.toLocaleLowerCase(),
+      ([, provider]) => {
+        try { return typeof provider.baseUrl === "string" && normalizeServer({ address: provider.baseUrl, port: "" }).baseUrl === discovered.baseUrl; }
+        catch { return false; }
+      },
     );
     if (input.providerId && !providers[input.providerId])
       throw new Error("Настраиваемый сервер больше не существует");
@@ -709,21 +749,19 @@ export class DataStore {
             Boolean(item) && typeof item === "object" && !Array.isArray(item),
         )
       : [];
+    if (!prepared && config.desktopHiddenModels) delete config.desktopHiddenModels[providerId];
+    const hiddenModels = new Set(config.desktopHiddenModels?.[providerId] ?? []);
     const discoveredModels = Array.isArray(discovered.provider.models)
       ? discovered.provider.models.filter(
           (item): item is Record<string, unknown> =>
-            Boolean(item) && typeof item === "object" && !Array.isArray(item),
+            Boolean(item) && typeof item === "object" && !Array.isArray(item) && !hiddenModels.has(String(item.id)),
         )
       : [];
     const existingById = new Map(
       existingModels.map((model) => [String(model.id ?? ""), model]),
     );
-    const detectedIds = new Set(
-      discoveredModels.map((model) => String(model.id ?? "")),
-    );
     const mergedDetected = discoveredModels.map((model) => {
-      const previous = existingById.get(String(model.id ?? ""));
-      if (!previous) return model;
+      const previous = existingById.get(String(model.id ?? "")) ?? {};
       const previousCompat =
         previous.compat &&
         typeof previous.compat === "object" &&
@@ -736,11 +774,27 @@ export class DataStore {
         !Array.isArray(model.compat)
           ? (model.compat as Record<string, unknown>)
           : {};
-      return {
+      const merged: Record<string, unknown> = {
         ...previous,
         ...model,
         compat: { ...previousCompat, ...detectedCompat },
       };
+      // Capabilities absent from the fresh detection must not survive an old template.
+      for (const field of ["thinkingLevelMap", "contextWindow", "maxTokens", "samplingParams"])
+        if (!(field in model)) delete merged[field];
+      if (!model.reasoning) delete merged.compat;
+      if (!discovered.propertiesAvailable) {
+        // A failed optional /props probe is not evidence that thinking, vision
+        // or context support disappeared from an otherwise reachable server.
+        for (const field of ["reasoning", "input", "thinkingLevelMap", "compat", "samplingParams"])
+          if (field in previous) merged[field] = previous[field];
+        for (const field of ["contextWindow", "maxTokens"])
+          if (!(field in model) && field in previous) merged[field] = previous[field];
+      }
+      for (const [field, value] of Object.entries(config.desktopModelOverrides?.[providerId]?.[String(model.id)] ?? {})) {
+        if (value === null) delete merged[field]; else merged[field] = value;
+      }
+      return merged;
     });
     const previousCompat =
       existingProvider.compat &&
@@ -754,8 +808,7 @@ export class DataStore {
       !Array.isArray(discovered.provider.compat)
         ? (discovered.provider.compat as Record<string, unknown>)
         : {};
-    const apiKey =
-      input.apiKey?.trim() ||
+    const apiKey = input.apiKey !== undefined ? input.apiKey.trim() || "local-server" :
       (typeof existingProvider.apiKey === "string"
         ? existingProvider.apiKey
         : discovered.provider.apiKey);
@@ -764,15 +817,11 @@ export class DataStore {
       ...discovered.provider,
       apiKey,
       compat: { ...previousCompat, ...detectedCompat },
-      models: [
-        ...existingModels.filter(
-          (model) => !detectedIds.has(String(model.id ?? "")),
-        ),
-        ...mergedDetected,
-      ],
+      models: mergedDetected,
     };
     providers[providerId] = provider;
     config.providers = providers;
+    config.desktopManagedProviders = [...new Set([...(config.desktopManagedProviders ?? []), providerId])];
     await this.writeModelsConfig(config);
     const addedModels = discoveredModels.filter(
       (model) => !existingById.has(String(model.id ?? "")),
@@ -868,8 +917,17 @@ export class DataStore {
     } else {
       delete updated.thinkingLevelMap;
     }
+    const previous = models[modelIndex];
     models[modelIndex] = updated;
     provider.models = models;
+    const overrides = config.desktopModelOverrides ??= {};
+    const providerOverrides = overrides[input.providerId] ??= {};
+    const modelOverrides = providerOverrides[input.originalModelId] ?? {};
+    for (const field of ["name", "reasoning", "input", "contextWindow", "maxTokens", "samplingParams", "thinkingLevelMap"])
+      if (JSON.stringify(previous[field]) !== JSON.stringify(updated[field]))
+        modelOverrides[field] = updated[field] ?? null;
+    providerOverrides[id] = modelOverrides;
+    if (id !== input.originalModelId) delete providerOverrides[input.originalModelId];
     await this.writeModelsConfig(config);
     return configuredServerView(input.providerId, provider);
   }
@@ -896,6 +954,9 @@ export class DataStore {
     if (nextModels.length === models.length)
       return configuredServerView(providerId, provider);
     provider.models = nextModels;
+    const hiddenModels = config.desktopHiddenModels ??= {};
+    hiddenModels[providerId] = [...new Set([...(hiddenModels[providerId] ?? []), modelId])];
+    if (config.desktopModelOverrides?.[providerId]) delete config.desktopModelOverrides[providerId][modelId];
     await this.writeModelsConfig(config);
     return configuredServerView(providerId, provider);
   }
@@ -908,6 +969,9 @@ export class DataStore {
     const config = await this.readModelsConfig();
     if (!config.providers?.[providerId]) return false;
     delete config.providers[providerId];
+    config.desktopManagedProviders = [...new Set([...(config.desktopManagedProviders ?? []), providerId])];
+    if (config.desktopModelOverrides) delete config.desktopModelOverrides[providerId];
+    if (config.desktopHiddenModels) delete config.desktopHiddenModels[providerId];
     await this.writeModelsConfig(config);
     return true;
   }
@@ -1141,6 +1205,8 @@ export class DataStore {
   }
 
   async getAgentConfiguration(): Promise<{
+    revision: string;
+    managedProviders: string[];
     models: ModelInfo[];
     defaultProvider?: string;
     defaultModel?: string;
@@ -1150,6 +1216,7 @@ export class DataStore {
       readFile(path.join(this.agentDir, "models.json"), "utf8").then(
         (content) =>
           JSON.parse(content) as {
+            desktopManagedProviders?: string[];
             providers?: Record<
               string,
               { models?: Array<Record<string, unknown>> }
@@ -1194,6 +1261,8 @@ export class DataStore {
     }
     const configuredThinking = settings.defaultThinkingLevel;
     return {
+      revision: createHash("sha256").update(JSON.stringify(modelsConfig)).digest("hex"),
+      managedProviders: [...new Set([...(modelsConfig.desktopManagedProviders ?? []), ...Object.keys(modelsConfig.providers ?? {})])],
       models,
       defaultProvider:
         typeof settings.defaultProvider === "string"
@@ -1516,6 +1585,7 @@ export class DataStore {
   private async writeModelsConfig(config: ModelsFileConfig): Promise<void> {
     const destination = path.join(this.agentDir, "models.json");
     await this.enqueueWrite(async () => {
+      if (JSON.stringify(await this.readModelsConfig()) === JSON.stringify(config)) return;
       await atomicStateWrite(destination, `${JSON.stringify(config, null, 2)}\n`);
     });
   }

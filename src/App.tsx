@@ -2346,6 +2346,7 @@ function SettingsPage({
   const [serverAddress, setServerAddress] = useState("");
   const [serverPort, setServerPort] = useState("1234");
   const [serverApiKey, setServerApiKey] = useState("");
+  const [serverApiKeyChanged, setServerApiKeyChanged] = useState(false);
   const [serverDiscovering, setServerDiscovering] = useState(false);
   const [serverDiscoveryStatus, setServerDiscoveryStatus] = useState("");
   const [serverDiscoveryError, setServerDiscoveryError] = useState(false);
@@ -2567,6 +2568,9 @@ function SettingsPage({
             const url = new URL(servers[0].baseUrl);
             const basePath = url.pathname.replace(/\/v1\/?$/i, "");
             setServerAddress(`${url.protocol}//${url.hostname}${basePath}`);
+            setEditingServerId(servers[0].id);
+            setServerApiKey(servers[0].apiKeyConfigured ? "********" : "");
+            setServerApiKeyChanged(false);
             setServerPort(
               url.port || (url.protocol === "https:" ? "443" : "80"),
             );
@@ -2599,7 +2603,7 @@ function SettingsPage({
       const result = await window.piDesktop.discoverModelServer({
         address: serverAddress,
         port: serverPort,
-        ...(serverApiKey.trim() ? { apiKey: serverApiKey.trim() } : {}),
+        ...(serverApiKeyChanged ? { apiKey: serverApiKey.trim() } : {}),
         ...(editingServerId ? { providerId: editingServerId } : {}),
       });
       setModelServers((current) => [
@@ -2615,8 +2619,9 @@ function SettingsPage({
       setServerDiscoveryStatus(
         `${result.serverKind}${result.buildInfo ? ` ${result.buildInfo}` : ""}: ${changes || "конфигурация актуальна"}.`,
       );
-      setEditingServerId(undefined);
-      setServerApiKey("");
+      setEditingServerId(result.server.id);
+      setServerApiKey(result.server.apiKeyConfigured ? "********" : "");
+      setServerApiKeyChanged(false);
     } catch (error) {
       setServerDiscoveryError(true);
       setServerDiscoveryStatus(
@@ -2627,13 +2632,25 @@ function SettingsPage({
     }
   };
 
+  useEffect(() => {
+    if (section !== "models" || !modelServersLoaded) return;
+    let cancelled = false;
+    const refresh = () => { void window.piDesktop.getModelServers().then(servers => {
+      if (!cancelled) setModelServers(servers);
+    }).catch(() => undefined); };
+    const timer = window.setInterval(refresh, 30_000);
+    window.addEventListener("focus", refresh);
+    return () => { cancelled = true; window.clearInterval(timer); window.removeEventListener("focus", refresh); };
+  }, [section, modelServersLoaded]);
+
   const editModelServer = (server: ConfiguredModelServer) => {
     try {
       const url = new URL(server.baseUrl);
       const basePath = url.pathname.replace(/\/v1\/?$/i, "");
       setServerAddress(`${url.protocol}//${url.hostname}${basePath}`);
       setServerPort(url.port || (url.protocol === "https:" ? "443" : "80"));
-      setServerApiKey("");
+      setServerApiKey(server.apiKeyConfigured ? "********" : "");
+      setServerApiKeyChanged(false);
       setEditingServerId(server.id);
       setServerDiscoveryError(false);
       setServerDiscoveryStatus(
@@ -2655,6 +2672,7 @@ function SettingsPage({
   const cancelServerEdit = () => {
     setEditingServerId(undefined);
     setServerApiKey("");
+    setServerApiKeyChanged(false);
     setServerDiscoveryStatus("");
     setServerDiscoveryError(false);
   };
@@ -2830,7 +2848,9 @@ function SettingsPage({
                     <input
                       type="password"
                       value={serverApiKey}
-                      onChange={(event) => setServerApiKey(event.target.value)}
+                      autoComplete="off"
+                      onFocus={(event) => { if (!serverApiKeyChanged) event.currentTarget.select(); }}
+                      onChange={(event) => { setServerApiKey(event.target.value); setServerApiKeyChanged(true); }}
                       placeholder="Необязательно"
                     />
                   </label>
@@ -2842,8 +2862,7 @@ function SettingsPage({
                       `/props` и `/health`.
                     </span>
                     <small>
-                      Повторное добавление того же адреса обновляет найденные
-                      модели, не удаляя остальные.
+                      Список моделей обновляется автоматически. Исчезнувшие с сервера модели удаляются из списка.
                     </small>
                     {serverDiscoveryStatus && (
                       <strong className={serverDiscoveryError ? "error" : ""}>
@@ -3685,6 +3704,15 @@ export default function App() {
     [],
   );
 
+  useEffect(() => {
+    if (!bootstrap) return;
+    const refresh = () => { void window.piDesktop.getModelServers().catch(() => undefined); };
+    refresh();
+    const timer = window.setInterval(refresh, 30_000);
+    window.addEventListener("focus", refresh);
+    return () => { window.clearInterval(timer); window.removeEventListener("focus", refresh); };
+  }, [Boolean(bootstrap)]);
+
   useEffect(() => window.piDesktop.onControlSelect(async ({ requestId, snapshot: selected }) => {
     setSettingsOpen(false);
     setConversations((current) => [selected.conversation, ...current.filter((item) => item.id !== selected.conversation.id)]);
@@ -3981,6 +4009,12 @@ export default function App() {
   }, []);
 
   const handlePiEvent = (event: JsonObject) => {
+    if (event.type === "desktop_models_update") {
+      setSnapshot(current => current ? { ...current, models: event.models ?? current.models,
+        state: event.state ?? { ...current.state, model: event.model, thinkingLevel: event.thinkingLevel ?? current.state.thinkingLevel },
+        thinkingLevels: event.thinkingLevels ?? current.thinkingLevels } : current);
+      return;
+    }
     if (event.run) setSnapshot(current => current ? { ...current, run: event.run } : current);
     if (event.type === "desktop_run_state" && event.stopped === true) {
       setWorking(false);
@@ -6286,6 +6320,7 @@ export default function App() {
                           onClick={() => {
                             setThinkingMenuOpen(false);
                             setModelMenuOpen((value) => !value);
+                            void window.piDesktop.getModelServers().catch(() => undefined);
                           }}
                         >
                           <span className="selector-label">

@@ -85,6 +85,20 @@ test("a missing provider error description still yields a visible failure", asyn
   assert.match(ui, /\{snapshot\.run\.error\}/);
 });
 
+test("Stop during model discovery prevents the delayed request from starting", async () => {
+  const f = fixture(false);
+  f.runtime.snapshot.state.isStreaming = false;
+  let release;
+  f.host.getModelServers = () => new Promise(resolve => { release = resolve; });
+  let started = false;
+  f.host.ensureRuntime = async () => { started = true; return f.runtime; };
+  const pending = send.call(f.host, "chat", "Work", []);
+  await abort.call(f.host, "chat");
+  release([]);
+  await assert.rejects(pending, /отменена пользователем/);
+  assert.equal(started, false);
+});
+
 function fixture(withWork = true) {
   const chat = { id: "chat", status: "working", ...(withWork ? {
     plan: updatedPlan({ plan: [{ step: "Unfinished task", status: "in_progress" }], execution: "active" }),
@@ -96,6 +110,9 @@ function fixture(withWork = true) {
   const runtime = { snapshot: { messages: [oldAnswer], state: { isStreaming: true } }, liveTools: {},
     activeRun: { startedAt: new Date().toISOString() }, rpc: { async request(type) { requests.push(type); } } };
   const host = {
+    async getModelServers() { return []; },
+    startupEpochs: new Map(),
+    invalidateStartup(id) { this.startupEpochs.set(id, (this.startupEpochs.get(id) ?? 0) + 1); },
     runtimes: new Map([["chat", runtime]]), resumingRuns: new Set(), goalLaunching: new Set(), goalContinuationRequested: new Set(["chat"]),
     store: { getConversation: () => chat, getQueuedPrompts: () => queue, async saveConversationRun() {},
       async removeQueuedPrompt(_id, promptId) { queue = queue.filter(item => item.id !== promptId); return queue; } },

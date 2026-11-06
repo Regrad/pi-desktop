@@ -751,6 +751,19 @@ export async function runRpcMode(runtimeHost) {
             // =================================================================
             // Model
             // =================================================================
+            case "desktop_refresh_models": {
+                if (session.isStreaming || session.isCompacting) {
+                    return error(id, "desktop_refresh_models", "Wait for the current operation to finish before refreshing models");
+                }
+                await session.modelRuntime.refresh({ allowNetwork: false });
+                const models = session.modelRuntime.getAvailableSnapshot();
+                const model = command.provider && command.modelId
+                    ? models.find(m => m.provider === command.provider && m.id === command.modelId)
+                    : models.find(m => m.provider === session.model?.provider && m.id === session.model?.id);
+                if (model) await session.setModel(model);
+                else session.agent.state.model = undefined;
+                return success(id, "desktop_refresh_models", { models, thinkingLevels: session.getAvailableThinkingLevels() });
+            }
             case "set_model": {
                 const models = session.modelRuntime.getAvailableSnapshot();
                 const model = models.find((m) => m.provider === command.provider && m.id === command.modelId);

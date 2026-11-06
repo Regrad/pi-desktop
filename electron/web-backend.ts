@@ -58,7 +58,7 @@ export function webBackend(store: DataStore, manager: PiManager, options?: { met
     getGlobalPrompt: () => store.getGlobalPrompt(),
     getProjectInstructions: (id: string) => store.getProjectInstructions(id),
     getComfySettings: () => loadComfySettings(store.dataDir),
-    getModelServers: () => store.getModelServers(),
+    getModelServers: () => manager.getModelServers(),
     getModuleSettings: () => store.getModuleSettings(),
     manageSkills: (id: string, command: import("../shared/skills.js").SkillsCommand) => manager.manageSkills(id, command),
     ...options?.methods,

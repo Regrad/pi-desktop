@@ -316,9 +316,17 @@ function registerIpc(): void {
     piManager.invalidateInstructions(projectId);
     return saved;
   });
-  ipcMain.handle("desktop:get-model-servers", () => store.getModelServers());
-  ipcMain.handle("desktop:discover-model-server", (_event, input: ModelServerDiscoveryInput) => store.discoverModelServer(input));
-  ipcMain.handle("desktop:update-configured-model", (_event, input: ConfiguredModelUpdate) => store.updateConfiguredModel(input));
+  ipcMain.handle("desktop:get-model-servers", () => piManager.getModelServers());
+  ipcMain.handle("desktop:discover-model-server", async (_event, input: ModelServerDiscoveryInput) => {
+    const result = await store.discoverModelServer(input);
+    await piManager.modelConfigurationChanged();
+    return result;
+  });
+  ipcMain.handle("desktop:update-configured-model", async (_event, input: ConfiguredModelUpdate) => {
+    const result = await store.updateConfiguredModel(input);
+    await piManager.modelConfigurationChanged();
+    return result;
+  });
   ipcMain.handle("desktop:delete-configured-model", async (_event, providerId: string, modelId: string) => {
     const server = (await store.getModelServers()).find((item) => item.id === providerId);
     const model = server?.models.find((item) => item.id === modelId);
@@ -333,7 +341,10 @@ function registerIpc(): void {
       cancelId: 0,
       noLink: true,
     });
-    return result.response === 1 ? store.deleteConfiguredModel(providerId, modelId) : null;
+    if (result.response !== 1) return null;
+    const updated = await store.deleteConfiguredModel(providerId, modelId);
+    await piManager.modelConfigurationChanged();
+    return updated;
   });
   ipcMain.handle("desktop:delete-model-server", async (_event, providerId: string) => {
     const server = (await store.getModelServers()).find((item) => item.id === providerId);
@@ -348,7 +359,10 @@ function registerIpc(): void {
       cancelId: 0,
       noLink: true,
     });
-    return result.response === 1 ? store.deleteModelServer(providerId) : false;
+    if (result.response !== 1) return false;
+    const deleted = await store.deleteModelServer(providerId);
+    await piManager.modelConfigurationChanged();
+    return deleted;
   });
   ipcMain.handle("desktop:get-update-status", (_event, force?: boolean) => updateManager.getStatus(Boolean(force)));
   ipcMain.handle("desktop:update-component", async (_event, id: UpdateComponentId): Promise<UpdateResult> => {

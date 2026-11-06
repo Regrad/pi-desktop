@@ -151,6 +151,24 @@ test("Pi 1.5.0 desktop bridge loads add-ons, preserves user input, runs tools an
     assert.ok(inventory.tools.some(tool => tool.name === name), `Missing ${name}: ${stderr}`);
   }
   assert.doesNotMatch(stderr, /Failed to load extension|TypeError|SyntaxError/);
+  const modelsFile = path.join(agent, "models.json");
+  const initialModels = JSON.parse(await readFile(modelsFile, "utf8"));
+  const changedModels = structuredClone(initialModels);
+  changedModels.providers["upgrade-test"].models[0].id = "replacement-model";
+  changedModels.providers["upgrade-test"].models[0].contextWindow = 131072;
+  changedModels.desktopModelOverrides = { "upgrade-test": { "replacement-model": { name: "Manual label" } } };
+  await writeFile(modelsFile, JSON.stringify(changedModels), "utf8");
+  const refreshed = await request("desktop_refresh_models", { provider: "upgrade-test", modelId: "replacement-model" });
+  assert.ok(refreshed.models.some(model => model.id === "replacement-model"));
+  assert.ok(!refreshed.models.some(model => model.id === "upgrade"));
+  assert.equal((await request("get_state")).model.id, "replacement-model");
+  assert.equal((await request("get_state")).model.contextWindow, 131072);
+  changedModels.providers["upgrade-test"].models = [];
+  await writeFile(modelsFile, JSON.stringify(changedModels), "utf8");
+  await request("desktop_refresh_models");
+  assert.equal((await request("get_state")).model, undefined, "An unavailable model must not survive in the session");
+  await writeFile(modelsFile, JSON.stringify(initialModels), "utf8");
+  await request("desktop_refresh_models", { provider: "upgrade-test", modelId: "upgrade" });
   const retired=new Set(["tool_search","pi_lens_activate_tools","mcpScript","codemode"]);
   const core=new Set(["read","bash","powershell","edit","write","grep","find","ls","get_goal","create_goal","update_goal","desktop_goal_report","update_plan","update_notebook"]);
   for(const tool of inventory.tools) if(!core.has(tool.name)&&!retired.has(tool.name)) assert.equal(tool.active,false,`Eager addon tool ${tool.name}`);
@@ -225,6 +243,7 @@ test("Pi 1.5.0 desktop bridge loads add-ons, preserves user input, runs tools an
     await new Promise(resolve => setTimeout(resolve, 30));
   }
   assert.ok((await request("steer", { message: "queued-steer" })).disposition);
+  await assert.rejects(request("desktop_refresh_models"), /current operation/);
   assert.ok((await request("follow_up", { message: "queued-follow-up" })).disposition);
   await request("clear_queue");
   const start = Date.now();
