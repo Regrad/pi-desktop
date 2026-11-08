@@ -1,21 +1,21 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
-import { loadComfySettings, checkComfyConnection, listComfyMusicAdapters, runComfy, runInstrumentalComfy, editComfyMusicVocals, type ComfyInput } from "../../lib/comfy-client.js";
-import type { ComfyMode } from "../../shared/comfy.js";
-import { listHistoryImages, resolveHistoryImage } from "../../shared/image-attachments.js";
-import { imagePathForTool, publishImage } from "../../lib/image-input.js";
+import { writeFile } from "node:fs/promises";
+import { runComfy } from "../../lib/comfy-client.js";
+import { resolveHistoryImage } from "../../shared/image-attachments.js";
 import type { ToolContext } from "../../lib/context.js";
 import { processingProperties, modelGuidelines } from "../../lib/model3d-options.js";
+import { modelSummary } from "./model-summary.js";
 
 export default function register(pi: ExtensionAPI, context: ToolContext) {
-  const { dataDir, reportText, generationStatus, vocalMode, musicOptions } = context;
+  const { dataDir, reportText } = context;
   pi.registerTool({
     name: "media_generate_3d", label: "Генерация 3D-модели",
-    description: "Generate a textured GLB locally: Pixal3D/Trellis2 builds geometry, then UltraTex FLUX.2 Klein creates PBR textures. Supply one image or four views ordered front, left, back, right; image paths and attachment: references are supported. A positive target_face_count performs approximate mesh reduction, not native generation at that face count; 0 skips final decimation. Postprocessing runs only when requested. The result is displayed in an interactive viewer; GLB geometry is not visual input to the language model.",
+    description: "Generate a textured GLB from one image or four views ordered front, left, back, right. Pixal3D/Trellis2 geometry is prepared as a solid mesh, reduced to the requested triangle budget, and given a high-to-low normal map and UltraTex PBR textures. Defaults: 12000 triangles, 2K textures. target_face_count controls approximate reduction, not native generation at that count; 0 skips final reduction. Accepts absolute image paths or attachment: references. The finished model appears in the chat's interactive viewer; the language model receives file metadata, not visual geometry.",
     promptSnippet: "Generate textured 3D models locally from one image or four views; show an interactive model in chat.",
     promptGuidelines: [...modelGuidelines,
-      "Before the first generation, briefly confirm use and style, references, solid or multipart geometry, removable internal parts, polygon and texture targets, and rig or animation needs. Reuse these answers on retries.",
-      "Use the default watertight=true and component_mode=largest for one solid game mesh. Use component_mode=auto for intentional separate parts. Valid closed geometry is repaired without resampling; damaged topology receives one WTiVo reconstruction.",
+      "Use the supplied reference and requirements; ask only about missing choices that materially affect the result. Reuse agreed settings on retries.",
+      "Default output is one solid static mesh with watertight preparation and baked normal/PBR maps. Use component_mode=auto for intentional separate parts. One-image generation supports Pixal3D or Trellis2; four views use Pixal3D and guide both shape and textures.",
       "The default completion is the first finished GLB in the interactive viewer. Choose additional rendered views or another iteration when the request or a meaningful validation need justifies them.",
       "The generated result stays at its requested generation budget and texture resolution. Use postprocess only for an explicitly requested repair, retopology, polygon reduction or texture reduction. Inspect returned processing reports, not just the success label."],
     parameters: Type.Object({
@@ -23,22 +23,23 @@ export default function register(pi: ExtensionAPI, context: ToolContext) {
       seed: Type.Optional(Type.Integer({ minimum: 0 })),
       postprocess: Type.Optional(Type.Object(processingProperties)),
       texture_options: Type.Optional(Type.Object({
-        steps: Type.Optional(Type.Integer({ minimum: 1, maximum: 200 })), cfg: Type.Optional(Type.Number({ minimum: 0, maximum: 30 })),
+        steps: Type.Optional(Type.Integer({ minimum: 1, maximum: 100, description: "Texture sampling steps; default 4, increase for a deliberate quality comparison." })), cfg: Type.Optional(Type.Number({ minimum: 0, maximum: 20 })),
         albedo_resolution: Type.Optional(Type.Integer({ minimum: 256, maximum: 4096, multipleOf: 16 })),
         mr_resolution: Type.Optional(Type.Integer({ minimum: 256, maximum: 4096, multipleOf: 16 })),
-        memory_factor: Type.Optional(Type.Number({ minimum: 0, maximum: 200 })),
-        attention: Type.Optional(Type.Union([Type.Literal("ultratex_sparse"), Type.Literal("standard")])),
+        memory_factor: Type.Optional(Type.Union([Type.Literal(0), Type.Number({ minimum: 4, maximum: 64, multipleOf: 0.5 })], { description: "Activation-memory estimate; 0 uses the installed default." })),
+        attention: Type.Optional(Type.Literal("ultratex_sparse")),
         sparse_topk: Type.Optional(Type.Number({ minimum: 0.05, maximum: 1 })),
-        token_chunk: Type.Optional(Type.Integer({ minimum: 0, maximum: 131072, multipleOf: 1024 })),
+        token_chunk: Type.Optional(Type.Integer({ minimum: 0, maximum: 32768, multipleOf: 256 })),
       })),
       model3d_options: Type.Optional(Type.Object({
-        target_face_count: Type.Optional(Type.Integer({ minimum: 0, maximum: 50000000, description: "Final mesh decimation target (default 700000), approximate; not a native generation size. 0 disables decimation." })),
-        watertight: Type.Optional(Type.Boolean({ description: "Run solid-mesh cleanup before UV and texture baking. Default true; valid shells use Manifold, damaged topology falls back to WTiVo." })),
-        watertight_resolution: Type.Optional(Type.Integer({ minimum: 1024, maximum: 2048, multipleOf: 512, description: "Resolution used only by the WTiVo fallback. Default 1536; use 2048 only when maximum detail is explicitly needed." })),
-        watertight_proxy_points: Type.Optional(Type.Integer({ minimum: 1000000, maximum: 25000000, multipleOf: 1000000, description: "Proxy budget used only by the WTiVo fallback. Default 16000000; use 25000000 with the explicit 2048 maximum-detail mode." })),
+        geometry_model: Type.Optional(Type.Union([Type.Literal("pixal3d"), Type.Literal("trellis2")], { description: "Geometry model; default Pixal3D. Trellis2 accepts one image." })),
+        target_face_count: Type.Optional(Type.Integer({ minimum: 0, maximum: 10000000, description: "Approximate final triangle target, default 12000. 0 skips final reduction; the high-poly preparation cap remains 6 million." })),
+        watertight: Type.Optional(Type.Boolean({ description: "Solid-mesh preparation before normal/PBR baking; default true. False skips reconstruction and voxel rebuilding." })),
+        watertight_resolution: Type.Optional(Type.Integer({ minimum: 1024, maximum: 2048, multipleOf: 512, description: "Solid-mesh reconstruction resolution; default 1536. Higher uses more memory and time." })),
+        watertight_proxy_points: Type.Optional(Type.Integer({ minimum: 1000000, maximum: 25000000, multipleOf: 1000000, description: "Reconstruction proxy budget, default 12000000. Higher uses more RAM and time." })),
         component_mode: Type.Optional(Type.Union([Type.Literal("largest"), Type.Literal("auto"), Type.Literal("keep_all")], { description: "Output components: largest for one solid asset (default), auto for intentional separate parts, keep_all only when every fragment matters." })),
         shape_resolution: Type.Optional(Type.Integer({ minimum: 1024, maximum: 2048, multipleOf: 128, description: "Trellis upsampled shape resolution. Default 1536; higher uses more VRAM." })),
-        texture_resolution: Type.Optional(Type.Integer({ minimum: 512, maximum: 8192, multipleOf: 512, description: "UV atlas and UltraTex PBR texture size. Default 4096." })),
+        texture_resolution: Type.Optional(Type.Integer({ minimum: 512, maximum: 8192, multipleOf: 512, description: "Normal map, UV atlas and PBR texture size; default 2048." })),
       })),
     }),
     async execute(_id, params, signal, onUpdate, ctx) {
@@ -46,9 +47,13 @@ export default function register(pi: ExtensionAPI, context: ToolContext) {
       const result = await runComfy(dataDir, params.images.length === 1 ? "model3d" : "model3d_multiview", params, signal,
         (text) => onUpdate?.({ content: [{ type: "text", text }], details: {} }),
         (reference) => resolveHistoryImage(ctx.sessionManager.getBranch(), reference));
+      const summary = await Promise.all(result.models.map(async model => ({ file: model.path, ...await modelSummary(model.path) })));
+      const reports = { ...result.reports, model_summary: JSON.stringify(summary) };
+      const recordFile = `${result.models[0].path}.generation.json`;
+      await writeFile(recordFile, JSON.stringify({ job: result.promptId, request: { seed: params.seed, model3d_options: params.model3d_options, texture_options: params.texture_options }, models: summary }, null, 2), { encoding: "utf8", flag: "wx" });
       return {
-        content: [{ type: "text", text: `3D generation completed. Saved GLB models:\n${result.models.map((model) => model.path).join("\n")}\nReport: ${result.recordFile ?? "not supplied by custom operation"}\n${reportText(result.reports)}\nJob: ${result.promptId}. Returned ${result.models.length} of ${result.totalModels} models. Interactive preview is available to the user; model geometry was not supplied to the language model.` }],
-        details: { promptId: result.promptId, files: [...result.models.map((model) => model.path), ...(result.recordFile ? [result.recordFile] : [])], reports: result.reports, media: result.models.map((model) => ({ type: "model3d", ...model })) },
+        content: [{ type: "text", text: `3D generation completed. Saved GLB models:\n${result.models.map((model) => model.path).join("\n")}\nReport: ${recordFile}\n${reportText(reports)}\nJob: ${result.promptId}. Returned ${result.models.length} of ${result.totalModels} models. Interactive preview is available to the user; model geometry was not supplied to the language model.` }],
+        details: { promptId: result.promptId, files: [...result.models.map((model) => model.path), recordFile], reports, media: result.models.map((model) => ({ type: "model3d", ...model })) },
       };
     },
   });

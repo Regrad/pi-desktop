@@ -16,7 +16,6 @@ registerHooks({ resolve(specifier, context, next) {
 } });
 const { DEFAULT_COMFY_SETTINGS } = await import("../shared/comfy.ts");
 const { validateLocalGlb } = await import("../shared/glb.ts");
-const { MODEL_GRAPHS } = await import("../electron/comfy-3d-graphs.ts");
 const { builtinGraph, runComfy, saveComfySettings } = await import("../electron/comfy-client.ts");
 const { collectComfyMedia } = await import("../src/comfy-images.ts");
 const { generatedFile, generatedMediaResponse } = await import("../electron/generated-media.ts");
@@ -45,42 +44,41 @@ test("built-in 3D graphs preserve stages, seeds and separately bound views", () 
   for (const n of Object.values(single)) if (n.class_type === "KSampler") assert.equal(n.inputs.seed, 0);
   assert.equal(single[322].class_type, "Save3DAdvanced");
   assert.deepEqual(single[322].inputs.viewport_state, {});
-  assert.ok(!Object.values(single).some(node => node.class_type === "MeshReconstructWithQuad"));
-  assert.deepEqual(single.pi_memory_clean.inputs.input_1, ["202", 0]);
-  assert.equal(single.pi_watertight.class_type, "SmartWatertightMesh");
-  assert.deepEqual(single.pi_watertight.inputs.mesh, ["pi_memory_clean", 0]);
-  assert.deepEqual(single[186].inputs.mesh, ["pi_watertight", 0]);
+  assert.equal(single[325].class_type, "MeshReconstructWithQuad");
+  assert.equal(single[327].class_type, "WTiVoNativeMeshToMesh");
+  assert.equal(single[341].class_type, "LODTailorBakeForger");
+  assert.equal(single[341].inputs.bake_normal_detail, true);
   assert.ok(!single.pi_model_process);
   const multi = builtinGraph(DEFAULT_COMFY_SETTINGS, "model3d_multiview", { seed: 42 }, ["front.png", "left.png", "back.png", "right.png"]);
-  assert.deepEqual([338, 341, 342, 345].map(id => multi[id].inputs.image), ["front.png", "left.png", "back.png", "right.png"]);
+  assert.deepEqual([338, 341, 342, 345].map(id => multi[`mv_${id}`].inputs.image), ["front.png", "left.png", "back.png", "right.png"]);
   assert.ok(!Object.values(multi).some(n => ["ImageCropV2", "SaveImageAdvanced"].includes(n.class_type)));
   assert.throws(() => builtinGraph(DEFAULT_COMFY_SETTINGS, "model3d_multiview", {}, ["one.png"]), /image_2/);
-  assert.equal(MODEL_GRAPHS.model3d[122].inputs.image, "{{image_1}}");
+  assert.equal(builtinGraph(DEFAULT_COMFY_SETTINGS, "model3d", {}, ["other.png"])[122].inputs.image, "other.png");
 });
 test("3D quality and watertight controls apply without automatic low-poly postprocessing", () => {
   const options = { target_face_count: 20000, watertight_resolution: 1024, watertight_proxy_points: 6000000, component_mode: "auto", shape_resolution: 1024, texture_resolution: 2048 };
   for (const [mode, images] of [["model3d", ["one.png"]], ["model3d_multiview", ["front.png", "left.png", "back.png", "right.png"]]]) {
     const graph = builtinGraph(DEFAULT_COMFY_SETTINGS, mode, { model3d_options: options }, images);
-    assert.equal(graph[186].inputs.target_face_count, 20000);
-    assert.equal(graph.pi_watertight.inputs.input_res, 1024);
-    assert.equal(graph.pi_watertight.inputs.final_res, 1024);
-    assert.equal(graph.pi_watertight.inputs.proxy_points, 6000000);
-    assert.equal(graph.pi_watertight.inputs.faithc_component_mode, "auto");
-    assert.equal(graph[94].inputs.target_resolution, 1024);
-    assert.equal(graph[288].inputs.value, 2048);
-    assert.equal(graph.pi_tex_prep.inputs.atlas_size, 2048);
-    assert.equal(graph.pi_tex_bake.inputs.texture_size, 2048);
+    assert.equal(graph[335].inputs.target_tris, 20000);
+    assert.equal(graph[327].inputs.input_res, 1024);
+    assert.equal(graph[327].inputs.final_res, 1024);
+    assert.equal(graph[327].inputs.proxy_points, 6000000);
+    assert.equal(graph[327].inputs.faithc_component_mode, "auto");
+    assert.equal(graph[mode === "model3d" ? "94" : "mv_94"].inputs.target_resolution, 1024);
+    assert.equal(graph[374].inputs.atlas_size, 2048);
+    assert.equal(graph[377].inputs.texture_size, 2048);
     assert.ok(!Object.values(graph).some(node => node.class_type === "Trellis2TextureStage"));
     assert.ok(!graph.pi_model_process);
-    assert.equal(MODEL_GRAPHS[mode][186].inputs.target_face_count, 700000);
-    assert.equal(MODEL_GRAPHS[mode].pi_watertight.inputs.input_res, 1536);
-    assert.equal(MODEL_GRAPHS[mode].pi_watertight.inputs.final_res, 1536);
-    assert.equal(MODEL_GRAPHS[mode].pi_watertight.inputs.proxy_points, 16000000);
+    const defaults = builtinGraph(DEFAULT_COMFY_SETTINGS, mode, {}, images);
+    assert.equal(defaults[335].inputs.target_tris, 12000);
+    assert.equal(defaults[327].inputs.input_res, 1536);
+    assert.equal(defaults[327].inputs.final_res, 1536);
+    assert.equal(defaults[327].inputs.proxy_points, 12000000);
     assert.throws(() => builtinGraph(DEFAULT_COMFY_SETTINGS, mode, { model3d_options: { shape_resolution: 1100 } }, images), /shape_resolution/);
     const raw = builtinGraph(DEFAULT_COMFY_SETTINGS, mode, { model3d_options: { watertight: false } }, images);
-    assert.ok(!raw.pi_watertight); assert.ok(!raw.pi_memory_clean); assert.deepEqual(raw[186].inputs.mesh, ["202", 0]);
+    assert.ok(!raw[325]); assert.ok(!raw[327]); assert.deepEqual(raw[328].inputs.mesh, [mode === "model3d" ? "92" : "mv_92", 0]);
     for (const node of Object.values(raw)) for (const value of Object.values(node.inputs))
-      assert.ok(!(Array.isArray(value) && value[0] === "pi_watertight"));
+      assert.ok(!(Array.isArray(value) && value[0] === "327"));
   }
 });
 test("3D API round trip persists only file metadata and serves a portable model", async (t) => {
@@ -124,7 +122,9 @@ test("3D API round trip persists only file metadata and serves a portable model"
 });
 test("bundled 3D graphs match the running ComfyUI schema", { skip: !process.env.PI_TEST_COMFY_SCHEMA }, async () => {
   const info = await (await fetch("http://127.0.0.1:8188/object_info")).json();
-  for (const [mode, graph] of Object.entries(MODEL_GRAPHS)) for (const [id, node] of Object.entries(graph)) {
+  for (const mode of ["model3d", "model3d_multiview"]) {
+    const graph = builtinGraph(DEFAULT_COMFY_SETTINGS, mode, {}, mode === "model3d" ? ["one.png"] : ["a.png", "b.png", "c.png", "d.png"]);
+    for (const [id, node] of Object.entries(graph)) {
     const schema = info[node.class_type];
     assert.ok(schema && !schema.api_node, `${mode}/${id}: local node exists`);
     for (const name of Object.keys(schema.input.required ?? {})) assert.ok(name in node.inputs, `${mode}/${id}: missing ${name}`);
@@ -136,10 +136,11 @@ test("bundled 3D graphs match the running ComfyUI schema", { skip: !process.env.
         const expected = schema.input.required?.[name] ?? schema.input.optional?.[name];
         assert.ok(expected || name.includes("."), `${mode}/${id}: unknown input ${name}`);
         if (expected && !String(value).includes("{{")) {
-          if (Array.isArray(expected[0])) assert.ok(expected[0].includes(value), `${mode}/${id}/${name}: unsupported choice ${value}`);
+        if (Array.isArray(expected[0]) && node.class_type !== "LoadImage") assert.ok(expected[0].includes(value), `${mode}/${id}/${name}: unsupported choice ${value}`);
           if (expected[0] === "INT") assert.ok(Number.isInteger(value), `${mode}/${id}/${name}: integer`);
         }
       }
     }
+  }
   }
 });

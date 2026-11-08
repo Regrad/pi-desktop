@@ -33,10 +33,10 @@ test("processing runs only when explicitly requested", () => {
     const images = mode === "model3d" ? ["one.png"] : ["a.png", "b.png", "c.png", "d.png"];
     const base = builtinGraph(DEFAULT_COMFY_SETTINGS, mode, {}, images);
     assert.ok(!base.pi_model_process);
-    assert.equal(base[186].inputs.target_face_count, 700000);
-    assert.equal(base[288].inputs.value, 4096);
+    assert.equal(base[335].inputs.target_tris, 12000);
+    assert.equal(base[377].inputs.texture_size, 2048);
     const generatedBudget = builtinGraph(DEFAULT_COMFY_SETTINGS, mode, { model3d_options: { target_face_count: 20000 } }, images);
-    assert.equal(generatedBudget[186].inputs.target_face_count, 20000);
+    assert.equal(generatedBudget[335].inputs.target_tris, 20000);
     assert.ok(!generatedBudget.pi_model_process);
     const explicit = builtinGraph(DEFAULT_COMFY_SETTINGS, mode, { postprocess: { simplify: true, target_triangles: 5000, transfer_textures: true } }, images).pi_model_process.inputs;
     assert.equal(explicit.target_triangles, 5000);
@@ -48,21 +48,16 @@ test("processing runs only when explicitly requested", () => {
   for (const invalid of [{ repair: "yes" }, { target_triangles: 0 }, { texture_resolution: 111 }, { components: "none" }, { unknown: 1 }]) assert.throws(() => processingInputs(invalid));
 });
 
-test("both generation modes bridge MESH to UltraTex through a path without processing geometry", () => {
+test("both generation modes preserve the baked mesh and its UV layout for PBR texturing", () => {
   for (const mode of ["model3d", "model3d_multiview"]) {
     const images = mode === "model3d" ? ["one.png"] : ["front.png", "left.png", "back.png", "right.png"];
     const graph = builtinGraph(DEFAULT_COMFY_SETTINGS, mode, { model3d_options: { target_face_count: 50000 } }, images);
-    assert.equal(graph.pi_model_mesh_file.class_type, "MeshToFile3D");
-    assert.deepEqual(graph.pi_model_mesh_file.inputs.mesh, ["196", 0]);
-    assert.equal(graph.pi_model_mesh_path.class_type, "UniversalModelTools");
-    assert.deepEqual(graph.pi_model_mesh_path.inputs.source_model, ["pi_model_mesh_file", 0]);
-    for (const flag of ["repair", "remesh", "simplify", "transfer_textures", "bake_normal", "bake_ao"])
-      assert.equal(graph.pi_model_mesh_path.inputs[flag], false, flag);
-    assert.deepEqual(graph.pi_tex_prep.inputs.mesh_path, ["pi_model_mesh_path", 1]);
-    assert.equal(graph.pi_tex_prep.inputs.trimesh, undefined);
-    assert.equal(graph[186].inputs.target_face_count, 50000);
-    assert.equal(graph.pi_tex_prep.inputs.uv_mode, "keep_existing");
-    assert.deepEqual(graph[mode === "model3d" ? "322" : "372"].inputs.model_3d, ["pi_tex_bake", 4]);
+    assert.equal(graph[353].class_type, "UTXFileToMesh");
+    assert.equal(graph[341].inputs.bake_normal_detail, true);
+    assert.equal(graph[335].inputs.target_tris, 50000);
+    assert.equal(graph[374].inputs.uv_mode, "keep_existing");
+    assert.deepEqual(graph[mode === "model3d" ? "322" : "372"].inputs.model_3d, ["388", 0]);
+    assert.ok(!graph.pi_model_mesh_path);
   }
   const trimesh = textureGraph(["existing_trimesh", 0], "reference.png");
   assert.deepEqual(trimesh.pi_tex_prep.inputs.trimesh, ["existing_trimesh", 0]);
@@ -159,6 +154,7 @@ test("texture and both generation workflows match installed node input and outpu
         continue;
       }
       const expected = schema.input.required?.[name] ?? schema.input.optional?.[name];
+      if (!expected && name.startsWith("mode.") && node.class_type === "RotateMesh") continue;
       assert.ok(expected, `${id}: unknown ${name}`);
       if (Array.isArray(expected[0]) && !(node.class_type === "LoadImage" && name === "image")) assert.ok(expected[0].includes(value), `${id}/${name}: choice ${value}`);
       const bounds = expected[1];
