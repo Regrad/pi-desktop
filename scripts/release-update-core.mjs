@@ -5,6 +5,7 @@ import path from "node:path";
 export const FAST_RELEASE_MANIFEST = ".pi-desktop-fast-update.json";
 export const FAST_RELEASE_FORMAT = 2;
 
+const PORTABLE_ROOT_FILES = ["LICENSE", "README.md", "CONNECT_CODEX.md", "docs/assets/pi-desktop.png"];
 const ROOT_FILES = [
   "index.html",
   "vite.config.ts",
@@ -12,8 +13,7 @@ const ROOT_FILES = [
   "tsconfig.electron.json",
   "package.json",
   "package-lock.json",
-  "README.md",
-  "CONNECT_CODEX.md",
+  ...PORTABLE_ROOT_FILES,
 ];
 const SOURCE_DIRECTORIES = ["src", "shared", "electron", "resources", "client-agent", "vendor"];
 const BRIDGE_SCRIPTS = new Set([
@@ -133,7 +133,7 @@ export function classifyReleaseChanges(changedPaths) {
       }
       if (BRIDGE_RESOURCE_PREFIXES.some((prefix) => name.startsWith(prefix))) result.bridge = true;
     } else if (BRIDGE_SCRIPTS.has(name)) result.bridge = true;
-    else if (name === "README.md" || name === "CONNECT_CODEX.md") result.rootFiles.push(name);
+    else if (PORTABLE_ROOT_FILES.includes(name)) result.rootFiles.push(name);
   }
   return result;
 }

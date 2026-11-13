@@ -76,6 +76,10 @@
     ],
     "extraFiles": [
       {
+        "from": "LICENSE",
+        "to": "LICENSE"
+      },
+      {
         "from": "docs/assets/pi-desktop.png",
         "to": "docs/assets/pi-desktop.png"
       },

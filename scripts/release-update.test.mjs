@@ -5,6 +5,25 @@ import path from "node:path";
 import test from "node:test";
 import { FAST_RELEASE_MANIFEST, changedReleaseInputs, classifyReleaseChanges, collectReleaseInputs, createFastReleaseManifest, assertReleaseInputsUnchanged, writeFastReleaseManifest } from "./release-update-core.mjs";
 
+test("portable license and README image are tracked and shipped by both update paths", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "pi-release-public-files-"));
+  try {
+    await mkdir(path.join(root, "docs", "assets"), { recursive: true });
+    const files = ["LICENSE", "docs/assets/pi-desktop.png"];
+    for (const file of files) await writeFile(path.join(root, file), "original");
+    const before = await collectReleaseInputs(root);
+    for (const file of files) await writeFile(path.join(root, file), "updated");
+    const changed = changedReleaseInputs(before, await collectReleaseInputs(root));
+    assert.deepEqual(changed, files);
+    const update = classifyReleaseChanges(changed);
+    assert.deepEqual(update.rootFiles, files);
+    assert.equal(update.renderer, false);
+    assert.equal(update.fullRequired, false);
+    const pkg = JSON.parse(await readFile(new URL("../package.json", import.meta.url), "utf8"));
+    for (const file of files) assert.ok(pkg.build.extraFiles.some(item => item.from === file && item.to === file), file);
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
+
 test("changes to the bridge packaging graph trigger a modular bridge update", async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), "pi-release-bridge-graph-"));
   try {
