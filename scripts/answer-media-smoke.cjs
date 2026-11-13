@@ -22,9 +22,13 @@ app.whenReady().then(async () => {
     ];
     const live = { role: "assistant", content: [{ type: "text", text: "Streaming final answer" }], timestamp: 4 };
     const state = { isStreaming: true, isCompacting: false, thinkingLevel: "medium", steeringMessages: [], followUpMessages: [] };
-    ipcMain.handle("desktop:bootstrap", () => ({ projects: [], conversations: [conversation], archivedConversations: [], activeConversationId: conversation.id, dataDir: temporary, sessionsDir: temporary }));
+    ipcMain.handle("desktop:bootstrap", () => ({ interfaceLanguage: "ru", projects: [], conversations: [conversation], archivedConversations: [], activeConversationId: conversation.id, dataDir: temporary, sessionsDir: temporary }));
     ipcMain.handle("desktop:open-conversation", () => ({ conversation, messages, state, liveMessage: live, models: [], thinkingLevels: ["medium"], commands: [], entries: [], compactions: [], queuedPrompts: [], extensionState: { extensionPaths: [], activeTools: [], tools: [], commandDiagnostics: [], shortcutDiagnostics: [], errors: [] }, extensionUi: { statuses: {}, widgets: [], headerLines: [], footerLines: [], workingVisible: true, pendingDialogs: [] } }));
     ipcMain.handle("pi:set-editor-text", () => undefined);
+    ipcMain.handle("desktop:get-model-servers", () => []);
+    ipcMain.handle("desktop:get-notebook-limit", () => 12000);
+    ipcMain.handle("desktop:browser", () => ({ tabs: [], visible: false }));
+
     window = new BrowserWindow({ show: false, width: 1280, height: 900,
       titleBarStyle: "hidden", titleBarOverlay: { color: "#f6f6f4", symbolColor: "#656560", height: 36 },
       webPreferences: { preload: path.join(appRoot, "dist-electron/electron/preload.cjs"), contextIsolation: true, nodeIntegration: false, sandbox: false } });

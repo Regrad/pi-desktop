@@ -1,3 +1,4 @@
+import { t } from "./i18n";
 import { useEffect, useRef, useState } from "react";
 import type { PointerEvent } from "react";
 import type { Attachment } from "../shared/types";
@@ -37,7 +38,7 @@ export function MaskEditor({ image, initialMask, onClose, onSave }: { image: Att
     await bitmap.decode();
     const element = canvas.current;
     if (!element) return;
-    if (Math.abs(bitmap.naturalWidth / bitmap.naturalHeight - element.width / element.height) > 0.01) throw new Error("У маски должны быть те же пропорции, что и у изображения");
+    if (Math.abs(bitmap.naturalWidth / bitmap.naturalHeight - element.width / element.height) > 0.01) throw new Error(t("У маски должны быть те же пропорции, что и у изображения"));
     const mask = document.createElement("canvas"); mask.width = element.width; mask.height = element.height;
     mask.getContext("2d")!.drawImage(bitmap, 0, 0, mask.width, mask.height);
     const preview = document.createElement("canvas"); preview.width = mask.width; preview.height = mask.height;
@@ -54,7 +55,7 @@ export function MaskEditor({ image, initialMask, onClose, onSave }: { image: Att
   function initialize() {
     const img = sourceImage.current, element = canvas.current;
     if (!img || !element) return;
-    if (img.naturalWidth > 4096 || img.naturalHeight > 4096) { setError("Редактирование по маске: максимум 4096 пикселей по стороне"); return; }
+    if (img.naturalWidth > 4096 || img.naturalHeight > 4096) { setError(t("Редактирование по маске: максимум 4096 пикселей по стороне")); return; }
     element.width = img.naturalWidth; element.height = img.naturalHeight; setReady(true);
     if (initialMask?.data && initialMask.mimeType) void loadMask(initialMask.data, initialMask.mimeType).catch(failure => setError(String(failure)));
   }
@@ -72,17 +73,17 @@ export function MaskEditor({ image, initialMask, onClose, onSave }: { image: Att
     const pixels = ctx.getImageData(0, 0, output.width, output.height);
     let selected = false;
     for (let i = 0; i < pixels.data.length; i += 4) { const value = pixels.data[i]; pixels.data[i + 1] = pixels.data[i + 2] = value; pixels.data[i + 3] = 255; if (value) selected = true; }
-    if (!selected) { setError("Выделите область для изменения"); return; }
+    if (!selected) { setError(t("Выделите область для изменения")); return; }
     ctx.putImageData(pixels, 0, 0);
     const name = `${image.name.replace(/\.[^.]+$/, "")}-mask.png`;
     onSave({ id: crypto.randomUUID(), name, path: `clipboard:${name}`, mimeType: "image/png", data: output.toDataURL("image/png").split(",")[1], maskFor: image.id });
   }
-  return <div className="mask-editor-overlay" role="dialog" aria-modal="true" aria-label="Редактор маски">
+  return <div className="mask-editor-overlay" role="dialog" aria-modal="true" aria-label={t("Редактор маски")}>
     <div className="mask-editor-dialog">
-      <h2>Маска для {image.name}</h2>
-      <p>Закрасьте область, которую нужно изменить. Остальное будет сохранено.</p>
+      <h2>{t("Маска для")}{" "}{image.name}</h2>
+      <p>{t("Закрасьте область, которую нужно изменить. Остальное будет сохранено.")}</p>
       <div className="mask-editor-stage">
-        <img ref={sourceImage} src={`data:${image.mimeType};base64,${image.data}`} onLoad={initialize} onError={() => setError("Изображение недоступно")} alt={image.name} />
+        <img ref={sourceImage} src={`data:${image.mimeType};base64,${image.data}`} onLoad={initialize} onError={() => setError(t("Изображение недоступно"))} alt={image.name} />
         <canvas ref={canvas} onPointerDown={event => {
           if (!ready || event.button !== 0) return;
           event.preventDefault(); event.currentTarget.setPointerCapture(event.pointerId);
@@ -92,16 +93,16 @@ export function MaskEditor({ image, initialMask, onClose, onSave }: { image: Att
           onPointerUp={() => { active.current = null; }} onPointerCancel={() => { active.current = null; }} />
       </div>
       <div className="mask-editor-controls">
-        <label>Кисть: {brush}px <input type="range" min={1} max={256} value={brush} onChange={event => setBrush(Number(event.target.value))} /></label>
-        <button onClick={() => setErase(!erase)} aria-pressed={erase}>{erase ? "Ластик включён" : "Кисть включена"}</button>
-        <button onClick={() => { strokes.current.pop(); redraw(); }}>Отменить штрих</button>
-        <button onClick={() => { strokes.current = []; base.current = null; basePreview.current = null; redraw(); }}>Очистить</button>
+        <label>{t("Кисть:")}{" "}{brush}px <input type="range" min={1} max={256} value={brush} onChange={event => setBrush(Number(event.target.value))} /></label>
+        <button onClick={() => setErase(!erase)} aria-pressed={erase}>{erase ? t("Ластик включён") : t("Кисть включена")}</button>
+        <button onClick={() => { strokes.current.pop(); redraw(); }}>{t("Отменить штрих")}</button>
+        <button onClick={() => { strokes.current = []; base.current = null; basePreview.current = null; redraw(); }}>{t("Очистить")}</button>
         <button disabled={!ready} onClick={() => void window.piDesktop.chooseAttachments().then(files => {
           if (!files.length) return;
-          const mask = files[0]; if (!mask?.data || !mask.mimeType?.startsWith("image/")) throw new Error("Выберите PNG, JPEG или WebP с чёрно-белой маской");
+          const mask = files[0]; if (!mask?.data || !mask.mimeType?.startsWith("image/")) throw new Error(t("Выберите PNG, JPEG или WebP с чёрно-белой маской"));
           return loadMask(mask.data, mask.mimeType);
-        }).catch(failure => setError(String(failure)))}>Загрузить маску</button>
-        <button disabled={!ready} onClick={save}>Прикрепить маску</button><button onClick={onClose}>Отмена</button>
+        }).catch(failure => setError(String(failure)))}>{t("Загрузить маску")}</button>
+        <button disabled={!ready} onClick={save}>{t("Прикрепить маску")}</button><button onClick={onClose}>{t("Отмена")}</button>
       </div>
       {error && <p role="status">{error}</p>}
     </div>

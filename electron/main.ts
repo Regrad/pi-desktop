@@ -17,6 +17,7 @@ import { randomUUID } from "node:crypto";
 import type { RemoteRuntime } from "./remote-runtime.js";
 import { StartupTasks } from "./startup-tasks.js";
 import { installImageContextMenu } from "./image-context-menu.js";
+import { translateUi, type InterfaceLanguage } from "../shared/interface-language.js";
 import type { WebAccessSettings } from "../shared/web-access.js";
 
 protocol.registerSchemesAsPrivileged([{ scheme: "pi-generated", privileges: { standard: true, secure: true, supportFetchAPI: true, stream: true, corsEnabled: true } }]);
@@ -25,6 +26,7 @@ const currentDir = path.dirname(fileURLToPath(import.meta.url));
 const projectRoot = path.resolve(currentDir, "..", "..");
 let mainWindow: BrowserWindow | null = null;
 let store: DataStore;
+const t = (key: string, ...values: unknown[]) => translateUi(key, store?.getInterfaceLanguage() ?? "en", ...values);
 let piManager: PiManager;
 let browserManager: BrowserManager;
 let shuttingDown = false;
@@ -63,9 +65,9 @@ async function writeDiagnostic(scope: string, error: unknown): Promise<void> {
 
 async function prepareAttachments(paths: string[]): Promise<Attachment[]> {
   if (!Array.isArray(paths) || paths.some((filePath) => typeof filePath !== "string" || !path.isAbsolute(filePath)))
-    throw new Error("Нужны абсолютные пути к файлам вложений");
+    throw new Error(t("Нужны абсолютные пути к файлам вложений"));
   return Promise.all([...new Set(paths)].map(async (filePath) => {
-    if (!(await stat(filePath)).isFile()) throw new Error(`Можно прикреплять только файлы: ${filePath}`);
+    if (!(await stat(filePath)).isFile()) throw new Error(t("Можно прикреплять только файлы: {0}", filePath));
     const image = nativeImage.createFromPath(filePath);
     return {
       id: crypto.randomUUID(), name: path.basename(filePath), path: filePath,
@@ -100,7 +102,7 @@ async function createWindow(): Promise<void> {
       sandbox: false,
     },
   });
-  installImageContextMenu(mainWindow);
+  installImageContextMenu(mainWindow, () => store?.getInterfaceLanguage() ?? "en");
   const shown = new Promise<void>(resolve => {
     mainWindow!.once("ready-to-show", () => { mainWindow?.show(); resolve(); });
     mainWindow!.once("closed", resolve);
@@ -132,11 +134,11 @@ function registerIpc(): void {
     startBackgroundServices();
   });
   ipcMain.handle("desktop:skills", (event, id: string, command: import("../shared/skills.js").SkillsCommand) => {
-    if (event.sender !== mainWindow?.webContents) throw new Error("Управление навыками разрешено только интерфейсу Pi Desktop.");
+    if (event.sender !== mainWindow?.webContents) throw new Error(t("Управление навыками разрешено только интерфейсу Pi Desktop."));
     return piManager.manageSkills(id, command);
   });
   ipcMain.handle("desktop:browser", (event, command: BrowserUiCommand) => {
-    if (event.sender !== mainWindow?.webContents) throw new Error("Доступ к браузеру разрешён только интерфейсу Pi Desktop.");
+    if (event.sender !== mainWindow?.webContents) throw new Error(t("Доступ к браузеру разрешён только интерфейсу Pi Desktop."));
     if (command.conversationId) store.getConversation(command.conversationId);
     return browserManager.ui(command);
   });
@@ -153,7 +155,7 @@ function registerIpc(): void {
   });
   ipcMain.handle("desktop:choose-project-folders", async () => {
     const result = await dialog.showOpenDialog(mainWindow!, {
-      title: "Добавить папки проекта",
+      title: t("Добавить папки проекта"),
       properties: ["openDirectory", "createDirectory", "multiSelections"],
     });
     return result.canceled ? [] : result.filePaths;
@@ -174,7 +176,7 @@ function registerIpc(): void {
   );
   ipcMain.handle("desktop:choose-attachments", async (): Promise<Attachment[]> => {
     const result = await dialog.showOpenDialog(mainWindow!, {
-      title: "Добавить вложения",
+      title: t("Добавить вложения"),
       properties: ["openFile", "multiSelections"],
     });
     if (result.canceled) return [];
@@ -185,10 +187,10 @@ function registerIpc(): void {
     const project = store.getProject(projectId);
     const result = await dialog.showMessageBox(mainWindow!, {
       type: "question",
-      title: "Убрать проект?",
-      message: `Убрать проект «${project.name}» из Pi Desktop?`,
-      detail: "Папка и штатные сессии Pi останутся на диске. Удалится только запись проекта из приложения.",
-      buttons: ["Отмена", "Убрать"],
+      title: t("Убрать проект?"),
+      message: t("Убрать проект «{0}» из Pi Desktop?", project.name),
+      detail: t("Папка и штатные сессии Pi останутся на диске. Удалится только запись проекта из приложения."),
+      buttons: [t("Отмена"), t("Убрать")],
       defaultId: 0,
       cancelId: 0,
       noLink: true,
@@ -210,10 +212,10 @@ function registerIpc(): void {
     const conversation = store.getConversation(conversationId);
     const result = await dialog.showMessageBox(mainWindow!, {
       type: "warning",
-      title: "Удалить чат?",
-      message: `Удалить чат «${conversation.title}»?`,
-      detail: "История и собственные файлы чата будут перемещены в корзину Windows. Внешние проекты и файлы-ссылки останутся нетронутыми.",
-      buttons: ["Отмена", "Удалить"],
+      title: t("Удалить чат?"),
+      message: t("Удалить чат «{0}»?", conversation.title),
+      detail: t("История и собственные файлы чата будут перемещены в корзину Windows. Внешние проекты и файлы-ссылки останутся нетронутыми."),
+      buttons: [t("Отмена"), t("Удалить")],
       defaultId: 0,
       cancelId: 0,
       noLink: true,
@@ -262,6 +264,7 @@ function registerIpc(): void {
   ipcMain.handle("pi:control-planning", (_event, id: string, action: "start" | "revise" | "approve" | "cancel", revision: number) => piManager.controlPlanning(id, action, revision));
   ipcMain.handle("pi:save-notebook", (_event, id: string, content: string, revision: number) => piManager.saveNotebook(id, content, revision));
   ipcMain.handle("desktop:get-notebook-limit", () => store.getNotebookCharacterLimit());
+  ipcMain.handle("desktop:set-interface-language", (_event, language: InterfaceLanguage) => store.setInterfaceLanguage(language));
   ipcMain.handle("desktop:set-notebook-limit", (_event, value: number) => store.setNotebookCharacterLimit(value));
   ipcMain.handle("pi:set-model", (_event, conversationId: string, provider: string, modelId: string) =>
     piManager.setModel(conversationId, provider, modelId),
@@ -300,7 +303,7 @@ function registerIpc(): void {
   ipcMain.handle("desktop:save-comfy-settings", (_event, settings: ComfySettings) => saveComfySettings(store.dataDir, settings));
   ipcMain.handle("desktop:check-comfy-connection", (_event, url: string) => checkComfyConnection(url));
   ipcMain.handle("desktop:import-comfy-workflow", async () => {
-    const selection = await dialog.showOpenDialog(mainWindow!, { title: "Workflow ComfyUI в формате API", filters: [{ name: "API workflow", extensions: ["json"] }], properties: ["openFile"] });
+    const selection = await dialog.showOpenDialog(mainWindow!, { title: t("Workflow ComfyUI в формате API"), filters: [{ name: "API workflow", extensions: ["json"] }], properties: ["openFile"] });
     return selection.canceled || !selection.filePaths[0] ? null : importComfyWorkflow(store.dataDir, selection.filePaths[0]);
   });
   ipcMain.handle("desktop:save-global-prompt", async (_event, prompt: string) => {
@@ -332,10 +335,10 @@ function registerIpc(): void {
     if (!server || !model) return null;
     const result = await dialog.showMessageBox(mainWindow!, {
       type: "warning",
-      title: "Удалить модель?",
-      message: `Удалить модель «${model.name ?? model.id}»?`,
-      detail: `Она будет удалена из конфигурации сервера «${providerId}». Файлы модели на сервере не затрагиваются.`,
-      buttons: ["Отмена", "Удалить"],
+      title: t("Удалить модель?"),
+      message: t("Удалить модель «{0}»?", model.name ?? model.id),
+      detail: t("Она будет удалена из конфигурации сервера «{0}». Файлы модели на сервере не затрагиваются.", providerId),
+      buttons: [t("Отмена"), t("Удалить")],
       defaultId: 0,
       cancelId: 0,
       noLink: true,
@@ -350,10 +353,10 @@ function registerIpc(): void {
     if (!server) return false;
     const result = await dialog.showMessageBox(mainWindow!, {
       type: "warning",
-      title: "Удалить сервер?",
-      message: `Удалить сервер «${providerId}» из Pi?`,
-      detail: `Из models.json будут удалены сервер и ${server.models.length} ${server.models.length === 1 ? "модель" : "моделей"}. Сам сервер и файлы моделей не затрагиваются.`,
-      buttons: ["Отмена", "Удалить"],
+      title: t("Удалить сервер?"),
+      message: t("Удалить сервер «{0}» из Pi?", providerId),
+      detail: t("Из models.json будут удалены сервер и {0} {1}. Сам сервер и файлы моделей не затрагиваются.", server.models.length, server.models.length === 1 ? t("модель") : t("моделей")),
+      buttons: [t("Отмена"), t("Удалить")],
       defaultId: 0,
       cancelId: 0,
       noLink: true,
@@ -367,17 +370,17 @@ function registerIpc(): void {
   ipcMain.handle("desktop:update-component", async (_event, id: UpdateComponentId): Promise<UpdateResult> => {
     const status = await updateManager.getStatus();
     const component = status.components.find((item) => item.id === id && item.updateable);
-    if (!component) throw new Error("Этот компонент нельзя обновить из Pi Desktop");
+    if (!component) throw new Error(t("Этот компонент нельзя обновить из Pi Desktop"));
     const result = await dialog.showMessageBox(mainWindow!, {
       type: "question",
-      title: `Обновить ${component.name}?`,
+      title: t("Обновить {0}?", component.name),
       message: component.updateAvailable
-        ? `Установить ${component.name} ${component.latestVersion}?`
-        : `${component.name} уже имеет последнюю доступную версию.`,
+        ? t("Установить {0} {1}?", component.name, component.latestVersion)
+        : t("{0} уже имеет последнюю доступную версию.", component.name),
       detail: component.updateAvailable
-        ? "Открытые процессы Pi будут перезапущены при следующем сообщении. Активная генерация не прерывается: во время неё обновление будет отклонено."
-        : "Обновление не требуется.",
-      buttons: component.updateAvailable ? ["Отмена", "Обновить"] : ["Закрыть"],
+        ? t("Открытые процессы Pi будут перезапущены при следующем сообщении. Активная генерация не прерывается: во время неё обновление будет отклонено.")
+        : t("Обновление не требуется."),
+      buttons: component.updateAvailable ? [t("Отмена"), t("Обновить")] : [t("Закрыть")],
       defaultId: 0,
       cancelId: 0,
       noLink: true,
@@ -392,10 +395,10 @@ function registerIpc(): void {
     if (!pending.length) return { status, updated: [], errors: [] };
     const result = await dialog.showMessageBox(mainWindow!, {
       type: "question",
-      title: "Обновить Pi и модули?",
-      message: `Будет обновлено компонентов: ${pending.length}.`,
-      detail: `${pending.map((item) => `${item.name}: ${item.currentVersion ?? "?"} → ${item.latestVersion ?? "?"}`).join("\n")}\n\nЛокальные защищённые модули не изменяются.`,
-      buttons: ["Отмена", "Обновить всё"],
+      title: t("Обновить Pi и модули?"),
+      message: t("Будет обновлено компонентов: {0}.", pending.length),
+      detail: t("{0}\n\nЛокальные защищённые модули не изменяются.", pending.map((item) => `${item.name}: ${item.currentVersion ?? "?"} → ${item.latestVersion ?? "?"}`).join("\n")),
+      buttons: [t("Отмена"), t("Обновить всё")],
       defaultId: 0,
       cancelId: 0,
       noLink: true,
@@ -411,11 +414,11 @@ function registerIpc(): void {
   });
   ipcMain.handle("desktop:add-user-extension", async (_event, kind: "file" | "directory") => {
     const result = await dialog.showOpenDialog(mainWindow!, kind === "directory"
-      ? { title: "Добавить папку расширения Pi", properties: ["openDirectory"] }
+      ? { title: t("Добавить папку расширения Pi"), properties: ["openDirectory"] }
       : {
-          title: "Добавить файл расширения Pi",
+          title: t("Добавить файл расширения Pi"),
           properties: ["openFile"],
-          filters: [{ name: "Расширения Pi", extensions: ["ts", "js", "mjs", "cjs"] }],
+          filters: [{ name: t("Расширения Pi"), extensions: ["ts", "js", "mjs", "cjs"] }],
         });
     if (result.canceled || !result.filePaths[0]) return null;
     await piManager.prepareForRuntimeUpdate();
@@ -427,10 +430,10 @@ function registerIpc(): void {
     if (!extension) return null;
     const result = await dialog.showMessageBox(mainWindow!, {
       type: "warning",
-      title: "Удалить пользовательское расширение?",
-      message: `Удалить «${extension.name}»?`,
-      detail: "Расширение будет удалено из пользовательской папки Pi Desktop. Встроенные модули эта операция не затрагивает.",
-      buttons: ["Отмена", "Удалить"],
+      title: t("Удалить пользовательское расширение?"),
+      message: t("Удалить «{0}»?", extension.name),
+      detail: t("Расширение будет удалено из пользовательской папки Pi Desktop. Встроенные модули эта операция не затрагивает."),
+      buttons: [t("Отмена"), t("Удалить")],
       defaultId: 0,
       cancelId: 0,
       noLink: true,
@@ -443,7 +446,7 @@ function registerIpc(): void {
   ipcMain.handle("desktop:show-generated", async (_event, kind: string, filename: string) => shell.showItemInFolder(await generatedFile(store.dataDir, kind, filename)));
   ipcMain.handle("desktop:open-generated-link", async (_event, url: string) => {
     const link = typeof url === "string" ? parseGeneratedLink(url) : undefined;
-    if (!link) throw new Error("Некорректная ссылка на медиафайл");
+    if (!link) throw new Error(t("Некорректная ссылка на медиафайл"));
     const file = await generatedFile(store.dataDir, link.kind, link.filename);
     // The original absolute path is historical. Open only the asset resolved
     // inside current data, including results moved into their owning chat.
@@ -467,7 +470,7 @@ async function initializeDesktop(): Promise<void> {
     // inspectConversation captures the snapshot before Pi launches queued work.
     void piManager.inspectConversation(conversation.id).then((snapshot) => controlApi?.settled(conversation.id, snapshot)).catch((error) => writeDiagnostic("control-api-result", error));
     if (!mainWindow?.isFocused() && Notification.isSupported()) {
-      new Notification({ title: "Pi Desktop", body: `Задача завершена: ${conversation.title}` }).show();
+      new Notification({ title: "Pi Desktop", body: t("Задача завершена: {0}", conversation.title) }).show();
     }
   }, (channel, payload) => webAccess?.publish(channel, payload), undefined, (id, params) => browserManager.request(id, params), id => browserManager.cancel(id));
   updateManager = new UpdateManager(store, projectRoot, process.execPath);
@@ -540,12 +543,12 @@ async function ensureControlApi() {
         create: (projectId) => piManager.createConversation(projectId),
         inspect: (id) => piManager.inspectConversation(id),
         select: async (id) => {
-          if (!mainWindow || mainWindow.isDestroyed()) throw new Error("Окно Pi Desktop не готово");
+          if (!mainWindow || mainWindow.isDestroyed()) throw new Error(t("Окно Pi Desktop не готово"));
           const selected = await piManager.openConversation(id);
           const requestId = randomUUID();
           const contents = mainWindow.webContents;
           await new Promise<void>((resolve, reject) => {
-            const timer = setTimeout(() => { cleanup(); reject(new Error("Интерфейс Pi Desktop не ответил")); }, 10000);
+            const timer = setTimeout(() => { cleanup(); reject(new Error(t("Интерфейс Pi Desktop не ответил"))); }, 10000);
             const listener = (event: Electron.IpcMainEvent, acknowledged: string) => {
               if (event.sender !== contents || acknowledged !== requestId) return;
               cleanup(); resolve();
@@ -567,7 +570,7 @@ async function ensureControlApi() {
 
 if (hasSingleInstanceLock) void app.whenReady().then(initializeDesktop).catch(async (error) => {
   await writeDiagnostic("startup", error);
-  dialog.showErrorBox("Не удалось запустить Pi Desktop", error instanceof Error ? error.message : String(error));
+  dialog.showErrorBox(t("Не удалось запустить Pi Desktop"), error instanceof Error ? error.message : String(error));
   app.quit();
 });
 

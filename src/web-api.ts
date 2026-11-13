@@ -1,10 +1,14 @@
+import { t, getLanguage, setLanguage } from "./i18n";
+import { normalizeInterfaceLanguage } from "../shared/interface-language";
 import type { PiDesktopApi, Attachment } from "../shared/types";
 
 /** Reuses the chat UI, with a separate authenticated browser transport. */
 export async function installWebApi(): Promise<boolean> {
   if (window.piDesktop) return true;
+  // Browser preferences belong to this device, not the host's desktop window.
+  setLanguage(localStorage.getItem("pi-interface-language"));
   if (location.protocol !== "https:") {
-    document.body.textContent = "Веб-доступ Pi Desktop работает только через HTTPS.";
+    document.body.textContent = t("Веб-доступ Pi Desktop работает только через HTTPS.");
     return false;
   }
   const response = await fetch("/api/session", { cache: "no-store" });
@@ -12,7 +16,7 @@ export async function installWebApi(): Promise<boolean> {
   const session = await response.json() as { csrf: string; localEnabled: boolean; remoteEnabled: boolean; remoteReady: boolean; fingerprint: string; url: string; device?: { id: string; name: string; connected: boolean } };
   const request = async (endpoint: string) => {
     const result = await fetch(endpoint, { method: "POST", headers: { "X-Pi-CSRF": session.csrf } });
-    const value = await result.json(); if (!result.ok) throw new Error(value.error || "Не удалось выполнить запрос"); return value;
+    const value = await result.json(); if (!result.ok) throw new Error(value.error || t("Не удалось выполнить запрос")); return value;
   };
   const connect = async () => {
     const pair = await request("/api/device/pair");
@@ -37,15 +41,15 @@ export async function installWebApi(): Promise<boolean> {
   const action = (parent: HTMLElement, title: string, callback: () => void) => { const button = document.createElement("button"); button.textContent = title; button.onclick = callback; parent.append(button); return button; };
   if (!selected || mode === "remote" && !session.device) {
     const panel = document.createElement("main"); panel.style.cssText = "max-width:600px;margin:10vh auto;font:16px system-ui;display:grid;gap:16px;padding:24px";
-    const heading = document.createElement("h1"); heading.textContent = "Pi Desktop — где работать?"; panel.append(heading);
-    if (session.localEnabled) action(panel, "Компьютер Pi Desktop и его чаты", () => { sessionStorage.setItem("pi-web-mode", "local"); location.reload(); });
+    const heading = document.createElement("h1"); heading.textContent = t("Pi Desktop — где работать?"); panel.append(heading);
+    if (session.localEnabled) action(panel, t("Компьютер Pi Desktop и его чаты"), () => { sessionStorage.setItem("pi-web-mode", "local"); location.reload(); });
     if (session.remoteEnabled) {
-      const note = document.createElement("p"); note.textContent = "Для управления этим ПК один раз скачайте и запустите помощник. После установки он запускается кнопкой ниже. Чаты этого ПК будут храниться отдельно на сервере."; panel.append(note);
-      const download = document.createElement("a"); download.href = "/api/device/helper"; download.textContent = "Скачать помощник для Windows x64"; download.setAttribute("download", "Pi Desktop Agent.exe"); panel.append(download);
-      action(panel, "Подключить управление этого ПК", () => void connect().catch(error => alert(String(error)))).disabled = !session.remoteReady;
-      if (!session.remoteReady) { const status = document.createElement("p"); status.textContent = "Помощник ещё не собран в этой версии приложения."; panel.append(status); }
+      const note = document.createElement("p"); note.textContent = t("Для управления этим ПК один раз скачайте и запустите помощник. После установки он запускается кнопкой ниже. Чаты этого ПК будут храниться отдельно на сервере."); panel.append(note);
+      const download = document.createElement("a"); download.href = "/api/device/helper"; download.textContent = t("Скачать помощник для Windows x64"); download.setAttribute("download", "Pi Desktop Agent.exe"); panel.append(download);
+      action(panel, t("Подключить управление этого ПК"), () => void connect().catch(error => alert(String(error)))).disabled = !session.remoteReady;
+      if (!session.remoteReady) { const status = document.createElement("p"); status.textContent = t("Помощник ещё не собран в этой версии приложения."); panel.append(status); }
     }
-    action(panel, "Выйти", () => void request("/api/logout").then(() => location.replace("/")));
+    action(panel, t("Выйти"), () => void request("/api/logout").then(() => location.replace("/")));
     document.body.replaceChildren(panel); return false;
   }
   const listeners = new Map<string, Set<(value: unknown) => void>>();
@@ -76,9 +80,9 @@ export async function installWebApi(): Promise<boolean> {
       method: "POST", headers: { "Content-Type": "application/json", "X-Pi-CSRF": session.csrf },
       body: JSON.stringify({ mode, method, args }),
     });
-    if (result.status === 401) { events.close(); location.replace("/"); throw new Error("Сессия завершена. Войдите снова."); }
+    if (result.status === 401) { events.close(); location.replace("/"); throw new Error(t("Сессия завершена. Войдите снова.")); }
     const body = await result.json() as { result?: unknown; error?: string };
-    if (!result.ok) throw new Error(body.error || "Не удалось выполнить запрос");
+    if (!result.ok) throw new Error(body.error || t("Не удалось выполнить запрос"));
     return body.result;
   };
   const subscribe = (channel: string, listener: (value: unknown) => void) => {
@@ -98,7 +102,7 @@ export async function installWebApi(): Promise<boolean> {
     input.click();
   });
   const upload = async (file: File): Promise<Attachment> => {
-    if (file.size > 8 * 1024 * 1024) throw new Error("Вложение должно быть не больше 8 МБ");
+    if (file.size > 8 * 1024 * 1024) throw new Error(t("Вложение должно быть не больше 8 МБ"));
     const data = await new Promise<string>((resolve, reject) => {
       const reader = new FileReader();
       reader.onload = () => resolve(String(reader.result).split(",")[1]);
@@ -110,6 +114,12 @@ export async function installWebApi(): Promise<boolean> {
     get(_target, name: string) {
       if (name === "webClient") return true;
       if (name === "webMode") return mode;
+      if (name === "bootstrap") return async () => ({ ...await rpc(name) as object, interfaceLanguage: getLanguage() });
+      if (name === "setInterfaceLanguage") return async (value: unknown) => {
+        const language = normalizeInterfaceLanguage(value);
+        localStorage.setItem("pi-interface-language", language);
+        return language;
+      };
       if (name === "getGeneratedMediaUrl") return (kind: string, filename: string) => `/api/media/${kind}/${encodeURIComponent(filename)}?mode=${mode}`;
       if (name === "getDroppedFilePath") return () => "";
       if (name === "chooseAttachments") return mode === "remote" ? () => rpc("chooseAttachments") : chooseAttachments;
@@ -122,21 +132,21 @@ export async function installWebApi(): Promise<boolean> {
         const anchor = document.createElement("a");
         anchor.href = `/api/media/${kind}/${encodeURIComponent(filename)}?mode=${mode}`; anchor.download = filename.split("/").pop()!; anchor.click();
       };
-      if (name === "showItemInFolder") return mode === "remote" ? (...args: unknown[]) => rpc(name, args) : async () => { throw new Error("В браузере используйте скачивание файла."); };
+      if (name === "showItemInFolder") return mode === "remote" ? (...args: unknown[]) => rpc(name, args) : async () => { throw new Error(t("В браузере используйте скачивание файла.")); };
       if (name === "showGeneratedOnClient") return (kind: string, filename: string) => rpc("showGeneratedFile", [kind, filename]);
-      if (name === "getWebAccessSettings") return async () => { throw new Error("Настройки доступа меняются в Pi Desktop."); };
+      if (name === "getWebAccessSettings") return async () => { throw new Error(t("Настройки доступа меняются в Pi Desktop.")); };
       return (...args: unknown[]) => rpc(name, args);
     },
   }) as PiDesktopApi;
   const controls = document.createElement("div"); controls.style.cssText = "position:fixed;top:4px;right:8px;z-index:10000;font:12px system-ui;display:flex;gap:6px;background:var(--surface,#fff);padding:4px";
-  const status = document.createElement("span"); status.textContent = mode === "local" ? "ПК Pi Desktop" : `${session.device!.name} · ${session.device!.connected ? "Подключён" : "Отключён"}`; controls.append(status);
-  if (mode === "remote") subscribe("web:device", value => { const state = value as { connected: boolean; reason?: string }; status.textContent = `${session.device!.name} · ${state.connected ? "Подключён" : "Отключён"}`; status.title = state.reason ?? ""; });
-  if (session.localEnabled && session.remoteEnabled) action(controls, "Сменить режим", () => { sessionStorage.removeItem("pi-web-mode"); events.close(); location.reload(); });
+  const status = document.createElement("span"); status.textContent = mode === "local" ? t("ПК Pi Desktop") : `${session.device!.name} · ${session.device!.connected ? t("Подключён") : t("Отключён")}`; controls.append(status);
+  if (mode === "remote") subscribe("web:device", value => { const state = value as { connected: boolean; reason?: string }; status.textContent = `${session.device!.name} · ${state.connected ? t("Подключён") : t("Отключён")}`; status.title = state.reason ?? ""; });
+  if (session.localEnabled && session.remoteEnabled) action(controls, t("Сменить режим"), () => { sessionStorage.removeItem("pi-web-mode"); events.close(); location.reload(); });
   if (mode === "remote") {
-    action(controls, "Подключить ПК", () => void connect().catch(error => alert(String(error)))).disabled = !session.remoteReady;
-    action(controls, "Отключить", () => void request("/api/device/disconnect").then(() => { events.close(); location.reload(); }));
+    action(controls, t("Подключить ПК"), () => void connect().catch(error => alert(String(error)))).disabled = !session.remoteReady;
+    action(controls, t("Отключить"), () => void request("/api/device/disconnect").then(() => { events.close(); location.reload(); }));
   }
-  action(controls, "Выйти", () => void request("/api/logout").then(() => { events.close(); location.replace("/"); }));
+  action(controls, t("Выйти"), () => void request("/api/logout").then(() => { events.close(); location.replace("/"); }));
   document.body.append(controls);
   return true;
 }

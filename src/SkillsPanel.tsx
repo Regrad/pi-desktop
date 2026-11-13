@@ -1,3 +1,4 @@
+import { t } from "./i18n";
 import { BookOpen, Check, FileText, Folder, LockKeyhole, Plus, RefreshCw, Save, Sparkles, Trash2, X } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import ReactMarkdown from "react-markdown";
@@ -19,7 +20,7 @@ export function SkillsPanel({ conversationId, onClose }: { conversationId: strin
   const mounted = useRef(true);
   const dirty = draft !== undefined && (draft.content !== draft.original || !draft.id);
   const conflict = draft?.id && catalog && catalog.skills.find(skill => skill.id === draft.id)?.revision !== draft.expectedRevision;
-  const close = () => { if (!busy && (!dirty || window.confirm("Закрыть навыки? Несохранённый текст останется в черновике этого чата до закрытия приложения."))) onClose(); };
+  const close = () => { if (!busy && (!dirty || window.confirm(t("Закрыть навыки? Несохранённый текст останется в черновике этого чата до закрытия приложения.")))) onClose(); };
   const updateDraft = (next: Draft) => { setDraft(next); drafts.set(conversationId, next); };
   const changeName = (name: string) => {
     if (!draft) return;
@@ -45,7 +46,7 @@ export function SkillsPanel({ conversationId, onClose }: { conversationId: strin
     void refresh();
     return () => { mounted.current = false; dialog.current?.close(); };
   }, [conversationId]);
-  const canLeave = () => !dirty || window.confirm("Отбросить несохранённые изменения этого навыка?");
+  const canLeave = () => !dirty || window.confirm(t("Отбросить несохранённые изменения этого навыка?"));
   const open = async (skill: DesktopSkill) => {
     if (!canLeave()) return;
     const value = await request({ action: "read", id: skill.id });
@@ -59,7 +60,7 @@ export function SkillsPanel({ conversationId, onClose }: { conversationId: strin
   const create = () => {
     if (!canLeave()) return;
     setSelected(undefined); setPreview(false); setError("");
-    updateDraft({ name: "my-skill", scope: catalog?.roots.project ? "project" : "user", content: "---\nname: my-skill\ndescription: Когда нужен этот навык и что он помогает сделать.\n---\n\n", expectedRevision: "", original: "" });
+    updateDraft({ name: "my-skill", scope: catalog?.roots.project ? "project" : "user", content: t("---\nname: my-skill\ndescription: Когда нужен этот навык и что он помогает сделать.\n---\n\n"), expectedRevision: "", original: "" });
   };
   const save = async () => {
     if (!draft) return;
@@ -74,40 +75,40 @@ export function SkillsPanel({ conversationId, onClose }: { conversationId: strin
     if (value && "skills" in value && mounted.current) { setCatalog(value); setSelected(value.skills.find(item => item.id === skill.id)); }
   };
   const remove = async (skill: DesktopSkill) => {
-    if (!window.confirm(`Удалить навык «${skill.name}» вместе с его скриптами, ссылочными файлами и ресурсами?\n\n${skill.filePath}\n\nОтменить удаление из приложения нельзя. Старые инструкции останутся в истории, но будут отозваны из каталога.`)) return;
+    if (!window.confirm(t("Удалить навык «{0}» вместе с его скриптами, ссылочными файлами и ресурсами?\n\n{1}\n\nОтменить удаление из приложения нельзя. Старые инструкции останутся в истории, но будут отозваны из каталога.", skill.name, skill.filePath))) return;
     const value = await request({ action: "delete", id: skill.id, expectedRevision: skill.revision, confirm: true });
     if (value && "skills" in value && mounted.current) { setCatalog(value); setSelected(undefined); setDraft(undefined); drafts.delete(conversationId); }
   };
   const current = catalog?.skills.find(skill => skill.id === (selected?.id ?? draft?.id));
   const editable = !draft?.id || Boolean(current?.editable);
   return <dialog ref={dialog} className="skills-dialog" aria-labelledby="skills-title" onCancel={event => { event.preventDefault(); close(); }}>
-    <header className="skills-heading"><Sparkles size={21} /><div><h2 id="skills-title">Навыки</h2><p>Полезные инструкции — только когда нужны</p></div>
-      <button className="icon-button" aria-label="Закрыть навыки" disabled={busy} onClick={close}><X size={18} /></button></header>
+    <header className="skills-heading"><Sparkles size={21} /><div><h2 id="skills-title">{t("Навыки")}</h2><p>{t("Полезные инструкции — только когда нужны")}</p></div>
+      <button className="icon-button" aria-label={t("Закрыть навыки")} disabled={busy} onClick={close}><X size={18} /></button></header>
     {error && <p className="skills-alert" role="alert">{error}</p>}
     <div className="skills-workspace">
-      <nav className="skills-list" aria-label="Список навыков"><div className="skills-list-toolbar"><span>{catalog?.skills.length ?? "…"} навыков</span>
-        <button className="icon-button" title="Обновить список" aria-label="Обновить список" disabled={busy} onClick={() => void refresh()}><RefreshCw size={16} /></button>
-        <button disabled={busy || !catalog} onClick={create}><Plus size={15} />Создать</button></div>
+      <nav className="skills-list" aria-label={t("Список навыков")}><div className="skills-list-toolbar"><span>{catalog?.skills.length ?? "…"}{t(" навыков")}</span>
+        <button className="icon-button" title={t("Обновить список")} aria-label={t("Обновить список")} disabled={busy} onClick={() => void refresh()}><RefreshCw size={16} /></button>
+        <button disabled={busy || !catalog} onClick={create}><Plus size={15} />{t("Создать")}</button></div>
         <div className="skills-list-items">{catalog?.skills.map(skill => <button key={skill.id} className={`skill-item${(selected?.id ?? draft?.id) === skill.id ? " selected" : ""}${skill.enabled ? "" : " disabled"}`}
           disabled={busy} onClick={() => void open(skill)}><span><FileText size={16} /><strong>{skill.name}</strong>{!skill.editable && <LockKeyhole size={13} />}</span>
-          <small>{skill.description}</small><em>{scopeLabels[skill.scope]} · {skill.enabled ? skill.automatic ? "Доступен модели" : "По явному вызову" : "Отключён"}</em></button>)}</div>
-        <p className="skills-note">В контекст попадают названия и описания. Полный текст модель читает при использовании навыка.</p>
+          <small>{skill.description}</small><em>{t(scopeLabels[skill.scope])} · {skill.enabled ? skill.automatic ? t("Доступен модели") : t("По явному вызову") : t("Отключён")}</em></button>)}</div>
+        <p className="skills-note">{t("В контекст попадают названия и описания. Полный текст модель читает при использовании навыка.")}</p>
       </nav>
-      <section className="skills-editor" aria-label="Содержание навыка">{draft ? <>
-        <div className="skills-fields"><label>Имя<input aria-label="Имя навыка" placeholder="my-skill" disabled={busy || Boolean(draft.id)} value={draft.name} onChange={event => changeName(event.target.value)} /></label>
-          <label>Область{current && !current.editable ? <input aria-label="Область навыка" value={scopeLabels[current.scope]} readOnly /> : <select aria-label="Область навыка" disabled={busy || Boolean(draft.id)} value={draft.scope} onChange={event => updateDraft({ ...draft, scope: event.target.value as Draft["scope"] })}><option value="user">Все проекты</option>{catalog?.roots.project && <option value="project">Этот проект</option>}</select>}</label></div>
+      <section className="skills-editor" aria-label={t("Содержание навыка")}>{draft ? <>
+        <div className="skills-fields"><label>{t("Имя")}<input aria-label={t("Имя навыка")} placeholder="my-skill" disabled={busy || Boolean(draft.id)} value={draft.name} onChange={event => changeName(event.target.value)} /></label>
+          <label>{t("Область")}{current && !current.editable ? <input aria-label={t("Область навыка")} value={t(scopeLabels[current.scope])} readOnly /> : <select aria-label={t("Область навыка")} disabled={busy || Boolean(draft.id)} value={draft.scope} onChange={event => updateDraft({ ...draft, scope: event.target.value as Draft["scope"] })}><option value="user">{t("Все проекты")}</option>{catalog?.roots.project && <option value="project">{t("Этот проект")}</option>}</select>}</label></div>
         {current && <div className="skills-file"><Folder size={13} /><span>{current.filePath}</span></div>}
-        {conflict && <p className="skills-alert">Файл изменился или был удалён. Скопируйте нужные правки и откройте актуальную версию; старый черновик не перезапишет её.</p>}
+        {conflict && <p className="skills-alert">{t("Файл изменился или был удалён. Скопируйте нужные правки и откройте актуальную версию; старый черновик не перезапишет её.")}</p>}
         {current?.warnings.map((warning, index) => <p className="skills-alert" key={index}>{warning}</p>)}
         <div className="skills-document">{preview ? <div className="notebook-preview"><ReactMarkdown remarkPlugins={[remarkGfm]} components={{ img: () => null }}>{draft.content.replace(/^---\r?\n[\s\S]*?\r?\n---(?:\r?\n|$)/, "")}</ReactMarkdown></div>
-          : <textarea autoFocus aria-label="Инструкции SKILL.md" spellCheck={false} disabled={busy || !editable} value={draft.content} onChange={event => updateDraft({ ...draft, content: event.target.value })} />}</div>
-        <footer className="skills-actions"><button onClick={() => setPreview(value => !value)}><BookOpen size={15} />{preview ? "Исходный текст" : "Просмотр"}</button>
-          <button className="skills-primary" disabled={!editable || !dirty || busy || Boolean(conflict)} onClick={() => void save()}><Save size={15} />Сохранить</button>
-          {current && <><button disabled={busy} onClick={() => void toggle(current)}><Check size={15} />{current.enabled ? "Отключить" : "Включить"}</button>
-            <button className="icon-button" title="Удалить навык" aria-label="Удалить навык" disabled={busy || !current.editable} onClick={() => void remove(current)}><Trash2 size={16} /></button></>}
-          <small>{!editable ? "Защищён от изменения" : dirty ? "Есть несохранённые изменения" : "Сохранено"}</small></footer>
-      </> : <div className="skills-empty"><Sparkles size={38} /><h3>Опыт, который можно использовать снова</h3><p>Выберите навык или создайте новый. Модель тоже умеет создавать и обновлять навыки по вашему запросу.</p><button className="skills-primary" disabled={!catalog || busy} onClick={create}><Plus size={16} />Создать навык</button></div>}</section>
+          : <textarea autoFocus aria-label={t("Инструкции SKILL.md")} spellCheck={false} disabled={busy || !editable} value={draft.content} onChange={event => updateDraft({ ...draft, content: event.target.value })} />}</div>
+        <footer className="skills-actions"><button onClick={() => setPreview(value => !value)}><BookOpen size={15} />{preview ? t("Исходный текст") : t("Просмотр")}</button>
+          <button className="skills-primary" disabled={!editable || !dirty || busy || Boolean(conflict)} onClick={() => void save()}><Save size={15} />{t("Сохранить")}</button>
+          {current && <><button disabled={busy} onClick={() => void toggle(current)}><Check size={15} />{current.enabled ? t("Отключить") : t("Включить")}</button>
+            <button className="icon-button" title={t("Удалить навык")} aria-label={t("Удалить навык")} disabled={busy || !current.editable} onClick={() => void remove(current)}><Trash2 size={16} /></button></>}
+          <small>{!editable ? t("Защищён от изменения") : dirty ? t("Есть несохранённые изменения") : t("Сохранено")}</small></footer>
+      </> : <div className="skills-empty"><Sparkles size={38} /><h3>{t("Опыт, который можно использовать снова")}</h3><p>{t("Выберите навык или создайте новый. Модель тоже умеет создавать и обновлять навыки по вашему запросу.")}</p><button className="skills-primary" disabled={!catalog || busy} onClick={create}><Plus size={16} />{t("Создать навык")}</button></div>}</section>
     </div>
-    {Boolean(catalog?.diagnostics.length) && <details className="skills-diagnostics"><summary>Замечания каталога ({catalog!.diagnostics.length})</summary>{catalog!.diagnostics.map((message, index) => <p key={index}>{message}</p>)}</details>}
+    {Boolean(catalog?.diagnostics.length) && <details className="skills-diagnostics"><summary>{t("Замечания каталога (")}{catalog!.diagnostics.length})</summary>{catalog!.diagnostics.map((message, index) => <p key={index}>{message}</p>)}</details>}
   </dialog>;
 }

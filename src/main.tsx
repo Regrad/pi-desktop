@@ -1,3 +1,4 @@
+import { t } from "./i18n";
 import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
 import App from "./App";
@@ -12,4 +13,4 @@ void installWebApi().then(ready => {
       <ImagePreviewProvider><App /></ImagePreviewProvider>
     </StrictMode>,
   );
-}).catch(() => { document.body.textContent = "Не удалось подключиться к Pi Desktop. Обновите страницу."; });
+}).catch(() => { document.body.textContent = t("Не удалось подключиться к Pi Desktop. Обновите страницу."); });

@@ -1,3 +1,4 @@
+import { t } from "./i18n";
 import { useEffect, useRef, useState } from "react";
 import { validateLocalGlb } from "../shared/glb";
 
@@ -89,8 +90,8 @@ export default function ModelViewer({ source }: { source: string }) {
       };
       resize();
       const response = await fetch(source, { signal: abort.signal });
-      if (!response.ok) throw new Error("Файл 3D-модели не найден в папке данных");
-      if (Number(response.headers.get("content-length")) > 256 * 1024 * 1024) throw new Error("3D-модель больше 256 МБ");
+      if (!response.ok) throw new Error(t("Файл 3D-модели не найден в папке данных"));
+      if (Number(response.headers.get("content-length")) > 256 * 1024 * 1024) throw new Error(t("3D-модель больше 256 МБ"));
       const buffer = await response.arrayBuffer();
       if (disposed) return;
       validateLocalGlb(new Uint8Array(buffer));
@@ -100,7 +101,7 @@ export default function ModelViewer({ source }: { source: string }) {
       let textureLoadFailed = false;
       manager.onError = () => { textureLoadFailed = true; };
       manager.setURLModifier((url) => {
-        if (!url.startsWith("blob:") && !url.startsWith("data:")) throw new Error("Внешние ресурсы 3D-модели запрещены");
+        if (!url.startsWith("blob:") && !url.startsWith("data:")) throw new Error(t("Внешние ресурсы 3D-модели запрещены"));
         return url;
       });
       const loader = new GLTFLoader(manager);
@@ -112,7 +113,7 @@ export default function ModelViewer({ source }: { source: string }) {
       if (disposed) { disposeObject(gltf.scene); return; }
       if (textureLoadFailed) {
         disposeObject(gltf.scene);
-        throw new Error("Не удалось загрузить встроенные текстуры 3D-модели");
+        throw new Error(t("Не удалось загрузить встроенные текстуры 3D-модели"));
       }
       scene.add(gltf.scene);
       wireframeMaterial = new THREE.MeshBasicMaterial({ color: 0x333333, wireframe: true, side: THREE.DoubleSide });
@@ -126,7 +127,7 @@ export default function ModelViewer({ source }: { source: string }) {
       };
       applyMode.current(currentMode.current);
       const bounds = new THREE.Box3().setFromObject(gltf.scene);
-      if (bounds.isEmpty()) throw new Error("В GLB нет отображаемой геометрии");
+      if (bounds.isEmpty()) throw new Error(t("В GLB нет отображаемой геометрии"));
       const center = bounds.getCenter(new THREE.Vector3());
       const size = Math.max(...bounds.getSize(new THREE.Vector3()).toArray(), 0.001);
       camera.near = size / 1000; camera.far = size * 100;
@@ -142,20 +143,20 @@ export default function ModelViewer({ source }: { source: string }) {
     return () => { disposed = true; abort.abort(); cleanup(); };
   }, [source, visible]);
   return <div ref={shell} className="model-viewer">
-    <div ref={host} className="model-viewer-canvas" onContextMenu={(event) => event.preventDefault()} aria-label="Интерактивная 3D-модель" />
-    {(loading || error) && <div className="model-viewer-status" role="status">{error || "Загрузка 3D-модели…"}</div>}
+    <div ref={host} className="model-viewer-canvas" onContextMenu={(event) => event.preventDefault()} aria-label={t("Интерактивная 3D-модель")} />
+    {(loading || error) && <div className="model-viewer-status" role="status">{error || t("Загрузка 3D-модели…")}</div>}
     <div className="model-viewer-toolbar">
-      <small>Левая кнопка — вращать · Правая — сдвиг · Колесо — масштаб</small>
-      <div className="model-viewer-modes" role="group" aria-label="Режим просмотра модели">
-        {([ ["texture", "Текстура"], ["clay", "Глина"], ["wireframe", "Сетка"] ] as const).map(([value, label]) =>
+      <small>{t("Левая кнопка — вращать · Правая — сдвиг · Колесо — масштаб")}</small>
+      <div className="model-viewer-modes" role="group" aria-label={t("Режим просмотра модели")}>
+        {([ ["texture", t("Текстура")], ["clay", t("Глина")], ["wireframe", t("Сетка")] ] as const).map(([value, label]) =>
           <button key={value} type="button" aria-pressed={mode === value} onClick={() => { currentMode.current = value; setMode(value); applyMode.current(value); }}>{label}</button>
         )}
       </div>
-      <button onClick={() => reset.current()}>Сбросить вид</button>
+      <button onClick={() => reset.current()}>{t("Сбросить вид")}</button>
       <button onClick={() => {
         const action = document.fullscreenElement === shell.current ? document.exitFullscreen() : shell.current?.requestFullscreen();
-        void action?.catch(() => setError("Полноэкранный просмотр недоступен"));
-      }}>На весь экран / свернуть</button>
+        void action?.catch(() => setError(t("Полноэкранный просмотр недоступен")));
+      }}>{t("На весь экран / свернуть")}</button>
     </div>
   </div>;
 }

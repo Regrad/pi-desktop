@@ -1,3 +1,4 @@
+import { t } from "./i18n";
 import { Target, X } from "lucide-react";
 import { useEffect, useState } from "react";
 import type { ConversationRecord } from "../shared/types";
@@ -18,15 +19,15 @@ export function GoalPanel({ conversation, working }: { conversation: Conversatio
     catch (cause) { setError(cause instanceof Error ? cause.message : String(cause)); }
     finally { setBusy(false); }
   }
-  return <section className="goal-panel" aria-label="Цель чата">
+  return <section className="goal-panel" aria-label={t("Цель чата")}>
     <>
-      <div className="goal-heading"><Target size={16} /><strong>{labels[goal.status]}</strong>
+      <div className="goal-heading"><Target size={16} /><strong>{t(labels[goal.status])}</strong>
         <span>{goal.objective}</span>
-        <button disabled={busy} onClick={() => { setDraft(goal.objective); setEditing(true); setError(""); }}>Изменить</button>
+        <button disabled={busy} onClick={() => { setDraft(goal.objective); setEditing(true); setError(""); }}>{t("Изменить")}</button>
         {goal.status === "active"
-          ? <button title="Приостановить следующие этапы цели; текущий ответ продолжится" disabled={busy} onClick={() => void perform(() => window.piDesktop.controlGoal(conversation.id, "pause"))}>Пауза</button>
-          : goal.status !== "complete" && <button title={goal.status === "budget_limited" ? "Возобновить цель и снять исчерпанный лимит токенов" : working ? "Возобновить цель; следующий этап начнётся после текущего ответа" : "Продолжить выполнение цели"} disabled={busy} onClick={() => void perform(() => window.piDesktop.controlGoal(conversation.id, "resume"))}>{goal.status === "budget_limited" ? "Продолжить без лимита" : "Продолжить"}</button>}
-        <button title="Убрать цель; текущий ответ продолжится" disabled={busy} onClick={() => void perform(() => window.piDesktop.controlGoal(conversation.id, "remove"))}><X size={14} /></button>
+          ? <button title={t("Приостановить следующие этапы цели; текущий ответ продолжится")} disabled={busy} onClick={() => void perform(() => window.piDesktop.controlGoal(conversation.id, "pause"))}>{t("Пауза")}</button>
+          : goal.status !== "complete" && <button title={goal.status === "budget_limited" ? t("Возобновить цель и снять исчерпанный лимит токенов") : working ? t("Возобновить цель; следующий этап начнётся после текущего ответа") : t("Продолжить выполнение цели")} disabled={busy} onClick={() => void perform(() => window.piDesktop.controlGoal(conversation.id, "resume"))}>{goal.status === "budget_limited" ? t("Продолжить без лимита") : t("Продолжить")}</button>}
+        <button title={t("Убрать цель; текущий ответ продолжится")} disabled={busy} onClick={() => void perform(() => window.piDesktop.controlGoal(conversation.id, "remove"))}><X size={14} /></button>
       </div>
       {editing && <form className="goal-editor" onSubmit={(event) => {
         event.preventDefault();
@@ -35,18 +36,18 @@ export function GoalPanel({ conversation, working }: { conversation: Conversatio
           setEditing(false);
         });
       }}>
-        <textarea aria-label="Текст цели" autoFocus value={draft} maxLength={8000} rows={4} disabled={busy}
+        <textarea aria-label={t("Текст цели")} autoFocus value={draft} maxLength={8000} rows={4} disabled={busy}
           onChange={(event) => setDraft(event.target.value)}
           onKeyDown={(event) => { if (event.key === "Escape" && !busy) { event.preventDefault(); setEditing(false); } }} />
-        <small>Текущий ответ не прервётся. Новая формулировка применяется со следующего этапа; отчёт о прогрессе начнётся заново.</small>
-        <div><button type="submit" disabled={busy || !draft.trim()}>Сохранить</button>
-          <button type="button" disabled={busy} onClick={() => setEditing(false)}>Отмена</button></div>
+        <small>{t("Текущий ответ не прервётся. Новая формулировка применяется со следующего этапа; отчёт о прогрессе начнётся заново.")}</small>
+        <div><button type="submit" disabled={busy || !draft.trim()}>{t("Сохранить")}</button>
+          <button type="button" disabled={busy} onClick={() => setEditing(false)}>{t("Отмена")}</button></div>
       </form>}
-      {(goal.progress || goal.evidence) && <details><summary>Прогресс</summary>
-        <p>{goal.progress || "Отчёта о прогрессе пока нет."}</p>
+      {(goal.progress || goal.evidence) && <details><summary>{t("Прогресс")}</summary>
+        <p>{goal.progress || t("Отчёта о прогрессе пока нет.")}</p>
         {goal.evidence && <p>{goal.evidence}</p>}
       </details>}
-      {goal.tokenBudget !== undefined && <small>Токены цели: {goal.tokensUsed ?? 0} / {goal.tokenBudget}</small>}
+      {goal.tokenBudget !== undefined && <small>{t("Токены цели:")}{" "}{goal.tokensUsed ?? 0} / {goal.tokenBudget}</small>}
       {error && <p role="alert">{error}</p>}
     </>
   </section>;

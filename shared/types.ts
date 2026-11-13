@@ -25,6 +25,7 @@ export interface ConversationRecord {
   id: string;
   projectId?: string;
   title: string;
+  titleIsPlaceholder?: boolean;
   sessionFile?: string;
   createdAt: string;
   updatedAt: string;
@@ -311,6 +312,7 @@ export interface RunDiff {
 }
 
 export interface BootstrapPayload {
+  interfaceLanguage?: import("./interface-language.js").InterfaceLanguage;
   projects: ProjectRecord[];
   conversations: ConversationRecord[];
   archivedConversations: ConversationRecord[];
@@ -402,6 +404,7 @@ export interface ConversationRun {
 }
 
 export interface PiDesktopApi {
+  setInterfaceLanguage(language: import("./interface-language.js").InterfaceLanguage): Promise<import("./interface-language.js").InterfaceLanguage>;
   manageSkills(conversationId: string, command: import("./skills.js").SkillsCommand): Promise<import("./skills.js").SkillsCatalog | import("./skills.js").SkillDocument | { valid: boolean; errors: string[] }>;
   getNotebookCharacterLimit(): Promise<number>;
   setNotebookCharacterLimit(value: number): Promise<number>;

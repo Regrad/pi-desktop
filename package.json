@@ -76,6 +76,10 @@
     ],
     "extraFiles": [
       {
+        "from": "docs/assets/pi-desktop.png",
+        "to": "docs/assets/pi-desktop.png"
+      },
+      {
         "from": "README.md",
         "to": "README.md"
       },

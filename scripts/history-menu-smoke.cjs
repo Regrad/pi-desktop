@@ -14,7 +14,7 @@ app.whenReady().then(async () => {
     const conversation = { id: "smoke", title: "Selection smoke", status: "idle", createdAt: new Date(1).toISOString(), updatedAt: new Date(2).toISOString() };
     const state = { isStreaming: false, isCompacting: false, thinkingLevel: "medium", steeringMessages: [], followUpMessages: [] };
     const sent = [], queued = [];
-    ipcMain.handle("desktop:bootstrap", () => ({ projects: [], conversations: [conversation], archivedConversations: [], activeConversationId: "smoke", dataDir: temporary, sessionsDir: temporary }));
+    ipcMain.handle("desktop:bootstrap", () => ({ interfaceLanguage: "ru", projects: [], conversations: [conversation], archivedConversations: [], activeConversationId: "smoke", dataDir: temporary, sessionsDir: temporary }));
     ipcMain.handle("desktop:open-conversation", () => ({ conversation, messages: [{ role: "assistant", content: [{ type: "text", text: "Проверяем выделенный текст из истории." }], stopReason: "stop", timestamp: 2 }], state, models: [], thinkingLevels: ["medium"], commands: [], entries: [], compactions: [], queuedPrompts: [], extensionState: { extensionPaths: [], activeTools: [], tools: [], commandDiagnostics: [], shortcutDiagnostics: [], errors: [] }, extensionUi: { statuses: {}, widgets: [], headerLines: [], footerLines: [], workingVisible: true, pendingDialogs: [] } }));
     ipcMain.handle("pi:set-editor-text", () => undefined);
     ipcMain.handle("pi:send-prompt", (_event, id, message, attachments) => { sent.push({ id, message, attachments }); });

@@ -22,9 +22,12 @@ app.whenReady().then(async () => {
       state: { isStreaming: false, isCompacting: false, thinkingLevel: "medium", steeringMessages: [], followUpMessages: [] }, models: [], thinkingLevels: ["medium"], commands: [], entries: [], compactions: [], queuedPrompts: [],
       extensionState: { extensionPaths: [], activeTools: [], tools: [], commandDiagnostics: [], shortcutDiagnostics: [], errors: [] },
       extensionUi: { statuses: {}, widgets: [], headerLines: [], footerLines: [], workingVisible: true, pendingDialogs: [] } };
-    ipcMain.handle("desktop:bootstrap", () => ({ projects: [], conversations: [conversation], archivedConversations: [], activeConversationId: conversation.id, dataDir: temporary, sessionsDir: temporary }));
+    ipcMain.handle("desktop:bootstrap", () => ({ interfaceLanguage: "ru", projects: [], conversations: [conversation], archivedConversations: [], activeConversationId: conversation.id, dataDir: temporary, sessionsDir: temporary }));
     ipcMain.handle("desktop:open-conversation", () => snapshot);
     ipcMain.handle("pi:set-editor-text", () => undefined);
+    ipcMain.handle("desktop:get-model-servers", () => []);
+    ipcMain.handle("desktop:get-notebook-limit", () => 12000);
+
     ipcMain.handle("desktop:browser", () => ({ tabs: [], visible: false }));
     ipcMain.handle("desktop:skills", (_event, id, command) => { assert.equal(id, conversation.id); return skills.command(command); });
     const errors = [];

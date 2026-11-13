@@ -2305,6 +2305,17 @@ button.secondary.large {
   border-radius: 16px;
   background: #fff;
 }
+.language-settings { padding: 16px; display: grid; grid-template-columns: 1fr auto; gap: 12px 24px; align-items: center; }
+.language-settings label { font-size: 13px; font-weight: 600; }
+.language-settings select { min-width: 160px; padding: 9px 12px; border: 1px solid #deded9; border-radius: 8px; background: #fafaf8; color: #292927; font: inherit; font-size: 13px; }
+.language-settings select:focus-visible { outline: 2px solid #777; outline-offset: 2px; }
+.language-settings p { grid-column: 1 / -1; margin: 0; color: #777; font-size: 12px; line-height: 1.5; }
+.language-settings p[role="alert"] { color: #b33232; }
+.notebook-settings { padding: 16px; display: grid; gap: 12px; }
+.notebook-settings label { display: flex; align-items: center; justify-content: space-between; gap: 24px; font-size: 13px; }
+.notebook-settings input { width: 150px; min-width: 80px; padding: 9px 12px; border: 1px solid #deded9; border-radius: 8px; background: #fafaf8; font: inherit; }
+.notebook-settings p { margin: 0; color: #777; font-size: 12px; line-height: 1.5; }
+.notebook-settings button { justify-self: start; padding: 7px 12px; border: 0; border-radius: 8px; background: #f1f1ee; font: inherit; font-size: 12px; }
 .comfy-workflow-row {
   display: grid;
   grid-template-columns: minmax(0, 1fr) max-content;

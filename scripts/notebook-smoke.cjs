@@ -17,9 +17,12 @@ app.whenReady().then(async () => {
       state: { isStreaming: false, isCompacting: false, thinkingLevel: "medium", steeringMessages: [], followUpMessages: [] }, models: [], thinkingLevels: ["medium"], commands: [], entries: [], compactions: [], queuedPrompts: [],
       extensionState: { extensionPaths: [], activeTools: [], tools: [], commandDiagnostics: [], shortcutDiagnostics: [], errors: [] },
       extensionUi: { statuses: {}, widgets: [], headerLines: [], footerLines: [], workingVisible: true, pendingDialogs: [] } };
-    ipcMain.handle("desktop:bootstrap", () => ({ projects: [], conversations: [conversation], archivedConversations: [], activeConversationId: conversation.id, dataDir: temporary, sessionsDir: temporary }));
+    ipcMain.handle("desktop:bootstrap", () => ({ interfaceLanguage: "ru", projects: [], conversations: [conversation], archivedConversations: [], activeConversationId: conversation.id, dataDir: temporary, sessionsDir: temporary }));
     ipcMain.handle("desktop:open-conversation", () => snapshot);
     ipcMain.handle("pi:set-editor-text", () => undefined);
+    ipcMain.handle("desktop:get-model-servers", () => []);
+    ipcMain.handle("desktop:get-notebook-limit", () => 12000);
+
     ipcMain.handle("desktop:browser", () => ({ tabs: [], visible: false }));
     const saves = [];
     ipcMain.handle("pi:save-notebook", (_event, id, content, revision) => {
@@ -36,9 +39,9 @@ app.whenReady().then(async () => {
     const wait = condition => js(`new Promise((resolve,reject)=>{const end=Date.now()+5000;function poll(){if(${condition})return resolve();if(Date.now()>end)return reject(Error('UI timeout: '+${JSON.stringify(condition)}));setTimeout(poll,25)}poll()})`);
     const input = content => js(`(()=>{const el=document.querySelector('.notebook-content textarea');Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype,'value').set.call(el,${JSON.stringify(content)});el.dispatchEvent(new Event('input',{bubbles:true}));})()`);
     await window.loadFile(path.join(root, "dist/index.html"));
-    await wait("document.querySelector('.notebook-toggle')");
+    await wait("document.querySelector('[aria-label=\"Блокнот\"]')");
     assert.equal(await js("!!document.querySelector('.notebook-panel')"), false);
-    await js("document.querySelector('.notebook-toggle').click()");
+    await js("document.querySelector('[aria-label=\"Блокнот\"]').click()");
     await wait("document.querySelector('.notebook-preview')");
     assert.equal(await js("!!document.querySelector('.plan-panel')"), false, "Notebook takes the right panel, not the plan state");
     assert.equal(await js("getComputedStyle(document.querySelector('.conversation-notebook')).position"), "absolute");
@@ -48,7 +51,7 @@ app.whenReady().then(async () => {
     await wait("document.querySelector('.notebook-content textarea')");
     await input("Папка: X:\\KDPI\nСайт: https://example.test/kdpi\nИсточник: пользователь");
     await wait("!document.querySelector('.notebook-save').disabled");
-    await js("document.querySelector('.notebook-toggle').click();document.querySelector('.notebook-toggle').click()");
+    await js("document.querySelector('[aria-label=\"Блокнот\"]').click();document.querySelector('[aria-label=\"Блокнот\"]').click()");
     await wait("document.querySelector('.notebook-content textarea')");
     assert.match(await js("document.querySelector('.notebook-content textarea').value"), /X:\\KDPI/);
     await js("document.querySelector('.notebook-save').click()");

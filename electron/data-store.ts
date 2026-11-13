@@ -1,5 +1,6 @@
 import { createHash, randomUUID } from "node:crypto";
 import { atomicStateWrite } from "./atomic-state.js";
+import { normalizeInterfaceLanguage, type InterfaceLanguage } from "../shared/interface-language.js";
 import { notebookLimit, validateNotebookLimit } from "../shared/notebook.js";
 import { migrateLegacyAdapterConfig, parseMcpConfiguration } from "../shared/mcp-config.js";
 import { existsSync } from "node:fs";
@@ -49,6 +50,7 @@ import { chatDirectory, migrateChatFiles } from "./chat-storage.js";
 
 interface DesktopState {
   version: 4;
+  interfaceLanguage?: InterfaceLanguage;
   notebookCharacterLimit?: number;
   projects: ProjectRecord[];
   conversations: ConversationRecord[];
@@ -998,6 +1000,23 @@ export class DataStore {
     await writeFile(configPath, `${JSON.stringify(config, null, 2)}\n`, "utf8");
   }
 
+  getInterfaceLanguage(): InterfaceLanguage {
+    return normalizeInterfaceLanguage(this.state.interfaceLanguage);
+  }
+
+  async setInterfaceLanguage(value: InterfaceLanguage): Promise<InterfaceLanguage> {
+    if (value !== "en" && value !== "ru") throw new Error("Unsupported interface language");
+    const previous = this.state.interfaceLanguage;
+    this.state.interfaceLanguage = value;
+    try {
+      await this.save();
+    } catch (error) {
+      this.state.interfaceLanguage = previous;
+      throw error;
+    }
+    return value;
+  }
+
   getNotebookCharacterLimit(): number {
     return validateNotebookLimit(this.state.notebookCharacterLimit ?? notebookLimit);
   }
@@ -1011,6 +1030,7 @@ export class DataStore {
   snapshot(): Omit<DesktopState, "queuedPrompts" | "compactions"> {
     return structuredClone({
       version: this.state.version,
+      interfaceLanguage: this.getInterfaceLanguage(),
       projects: this.state.projects,
       conversations: this.state.conversations.filter(
         (conversation) => !conversation.archived,
@@ -1326,6 +1346,7 @@ export class DataStore {
       id: randomUUID(),
       ...(projectId ? { projectId } : {}),
       title: "Новый чат",
+      titleIsPlaceholder: true,
       createdAt: now,
       updatedAt: now,
       status: "idle",
@@ -1345,6 +1366,7 @@ export class DataStore {
   ): Promise<ConversationRecord> {
     const conversation = this.getConversation(conversationId);
     Object.assign(conversation, changes, {
+      ...(changes.title !== undefined ? { titleIsPlaceholder: false } : {}),
       updatedAt: new Date().toISOString(),
     });
     await this.save();

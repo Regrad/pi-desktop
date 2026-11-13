@@ -1,3 +1,4 @@
+import { t, getLocale } from "./i18n";
 import { defaultShellTimeout } from "../resources/pi-rpc-bridge/shell-timeout-policy.js";
 
 export interface ShellTiming {
@@ -22,7 +23,7 @@ export function remainingShellSeconds(timing: ShellTiming, now: number): number 
 }
 
 export function formatShellSeconds(seconds: number): string {
-  if (seconds > 0 && seconds < 1) return `${seconds.toLocaleString("ru-RU")} с`;
+  if (seconds > 0 && seconds < 1) return t("{0} с", seconds.toLocaleString(getLocale()));
   const whole = Math.ceil(seconds);
   const hours = Math.floor(whole / 3600);
   const minutes = Math.floor(whole / 60) % 60;

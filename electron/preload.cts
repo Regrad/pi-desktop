@@ -14,6 +14,7 @@ const api: PiDesktopApi = {
   getWebAccessSettings: () => ipcRenderer.invoke("desktop:get-web-access-settings"),
   saveWebAccessSettings: (settings) => ipcRenderer.invoke("desktop:save-web-access-settings", settings),
   bootstrap: () => ipcRenderer.invoke("desktop:bootstrap"),
+  setInterfaceLanguage: (language) => ipcRenderer.invoke("desktop:set-interface-language", language),
   rendererReady: () => ipcRenderer.send("desktop:renderer-ready"),
   chooseProjectFolders: () => ipcRenderer.invoke("desktop:choose-project-folders"),
   createProject: (name, paths) => ipcRenderer.invoke("desktop:create-project", name, paths),

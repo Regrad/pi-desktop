@@ -1,3 +1,4 @@
+import { t, useLanguage } from "./i18n";
 import { createContext, useCallback, useContext, useEffect, useLayoutEffect, useRef, useState } from "react";
 import type { ImgHTMLAttributes, ReactNode } from "react";
 import { createPortal } from "react-dom";
@@ -11,10 +12,10 @@ const OpenImage = createContext<((image: ImageSource) => void) | null>(null);
 export function PreviewImage(props: ImgHTMLAttributes<HTMLImageElement>) {
   const open = useContext(OpenImage);
   if (!open || typeof props.src !== "string") return <img {...props} />;
-  const show = () => open({ src: props.src as string, alt: props.alt || "Изображение" });
+  const show = () => open({ src: props.src as string, alt: props.alt || t("Изображение") });
   return <img {...props} role="button" tabIndex={0}
     className={`${props.className || ""} image-preview-trigger`}
-    aria-label={`Открыть изображение: ${props.alt || "Изображение"}`}
+    aria-label={t("Открыть изображение: {0}", props.alt || t("Изображение"))}
     onClick={event => {
       props.onClick?.(event);
       if (event.defaultPrevented) return;
@@ -73,18 +74,18 @@ function ImageDialog({ image, onClose }: { image: ImageSource; onClose(): void }
     return () => element.removeEventListener("wheel", wheel);
   }, [zoom]);
 
-  return createPortal(<dialog ref={dialog} className="image-preview-dialog" aria-label="Просмотр изображения"
+  return createPortal(<dialog ref={dialog} className="image-preview-dialog" aria-label={t("Просмотр изображения")}
     onCancel={event => { event.preventDefault(); onClose(); }}
     onClick={event => { if (event.target === event.currentTarget) onClose(); }}>
     <div className="image-preview-toolbar">
-      <button type="button" aria-label="Уменьшить" title="Уменьшить" onClick={() => zoom(1 / 1.25)} disabled={view.zoom <= 0.25}><Minus size={18} /></button>
+      <button type="button" aria-label={t("Уменьшить")} title={t("Уменьшить")} onClick={() => zoom(1 / 1.25)} disabled={view.zoom <= 0.25}><Minus size={18} /></button>
       <span aria-live="polite">{Math.round(view.zoom * 100)}%</span>
-      <button type="button" aria-label="Увеличить" title="Увеличить" onClick={() => zoom(1.25)} disabled={view.zoom >= 8}><Plus size={18} /></button>
-      <button type="button" aria-label="Вписать изображение" title="Вписать изображение" onClick={() => setView(initialView)}><RotateCcw size={18} /></button>
-      <button className="image-preview-close" type="button" aria-label="Закрыть просмотр" title="Закрыть (Escape)" autoFocus onClick={onClose}><X size={22} /></button>
+      <button type="button" aria-label={t("Увеличить")} title={t("Увеличить")} onClick={() => zoom(1.25)} disabled={view.zoom >= 8}><Plus size={18} /></button>
+      <button type="button" aria-label={t("Вписать изображение")} title={t("Вписать изображение")} onClick={() => setView(initialView)}><RotateCcw size={18} /></button>
+      <button className="image-preview-close" type="button" aria-label={t("Закрыть просмотр")} title={t("Закрыть (Escape)")} autoFocus onClick={onClose}><X size={22} /></button>
     </div>
     <div ref={stage} className="image-preview-stage" onClick={event => { if (event.target === event.currentTarget) onClose(); }}>
-      {error ? <p className="image-preview-error" role="status">Не удалось загрузить изображение.</p> : <img
+      {error ? <p className="image-preview-error" role="status">{t("Не удалось загрузить изображение.")}</p> : <img
         className="image-preview-full" src={image.src} alt={image.alt} draggable={false}
         style={{ transform: `translate(${view.x}px, ${view.y}px) scale(${view.zoom})` }}
         onError={() => setError(true)}
@@ -106,11 +107,12 @@ function ImageDialog({ image, onClose }: { image: ImageSource; onClose(): void }
         onPointerCancel={() => { dragging.current = null; }}
         onLostPointerCapture={() => { dragging.current = null; }} />}
     </div>
-    <p className="image-preview-hint">Колесо — масштаб · Перетаскивание — перемещение · Escape — закрыть</p>
+    <p className="image-preview-hint">{t("Колесо — масштаб · Перетаскивание — перемещение · Escape — закрыть")}</p>
   </dialog>, document.body);
 }
 
 export function ImagePreviewProvider({ children }: { children: ReactNode }) {
+  useLanguage();
   // One viewer for the whole chat. It survives virtualized rows being unmounted
   // or generated media moving from a tool card into the completed answer.
   const [image, setImage] = useState<ImageSource | null>(null);

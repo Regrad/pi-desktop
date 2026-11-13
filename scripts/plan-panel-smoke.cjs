@@ -12,18 +12,22 @@ app.whenReady().then(async () => {
   let phase = "startup";
   try {
     const conversation = { id: "plan-smoke", title: "Рабочий план", status: "working", createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(),
-      plan: { revision: 1, updatedAt: new Date().toISOString(), explanation: "Проверка показала, что план нужно дополнить тестом восстановления состояния.", steps: [
+      plan: { execution: "active", revision: 1, updatedAt: new Date().toISOString(), explanation: "Проверка показала, что план нужно дополнить тестом восстановления состояния.", steps: [
         { step: "Изучить структуру проекта и существующие инструменты", status: "completed" },
         { step: "Добавить изменяемый чеклист и компактную панель", status: "in_progress" },
         { step: "Проверить сохранение после перезапуска и собрать релиз", status: "pending" },
       ] } };
     const state = { isStreaming: true, isCompacting: false, thinkingLevel: "medium", steeringMessages: [], followUpMessages: [] };
-    const snapshot = { conversation, messages: [{ role: "user", content: "Сделай изменяемый чеклист для сложных задач.", timestamp: 1 }, { role: "assistant", content: [{ type: "text", text: "Сначала изучил проект. Добавляю инструмент и панель рабочего плана." }], timestamp: 2 }], state, models: [], thinkingLevels: ["medium"], commands: [], entries: [], compactions: [], queuedPrompts: [],
+    const snapshot = { planWorkingRevision: 1, conversation, messages: [{ role: "user", content: "Сделай изменяемый чеклист для сложных задач.", timestamp: 1 }, { role: "assistant", content: [{ type: "text", text: "Сначала изучил проект. Добавляю инструмент и панель рабочего плана." }], timestamp: 2 }], state, models: [], thinkingLevels: ["medium"], commands: [], entries: [], compactions: [], queuedPrompts: [],
       extensionState: { extensionPaths: [], activeTools: [], tools: [], commandDiagnostics: [], shortcutDiagnostics: [], errors: [] },
       extensionUi: { statuses: {}, widgets: [], headerLines: [], footerLines: [], workingVisible: true, pendingDialogs: [] } };
-    ipcMain.handle("desktop:bootstrap", () => ({ projects: [], conversations: [conversation], archivedConversations: [], activeConversationId: conversation.id, dataDir: temporary, sessionsDir: temporary }));
+    ipcMain.handle("desktop:bootstrap", () => ({ interfaceLanguage: "ru", projects: [], conversations: [conversation], archivedConversations: [], activeConversationId: conversation.id, dataDir: temporary, sessionsDir: temporary }));
     ipcMain.handle("desktop:open-conversation", () => snapshot);
     ipcMain.handle("pi:set-editor-text", () => undefined);
+    ipcMain.handle("desktop:get-model-servers", () => []);
+    ipcMain.handle("desktop:get-notebook-limit", () => 12000);
+    ipcMain.handle("desktop:browser", () => ({ tabs: [], visible: false }));
+
     const queuedCalls = [];
     ipcMain.handle("desktop:queue-prompt", (_event, id, message, attachments, requestPlan) => {
       queuedCalls.push({ id, message, requestPlan });
@@ -101,18 +105,12 @@ app.whenReady().then(async () => {
     await window.webContents.executeJavaScript("document.querySelector('[aria-label=\"Убрать план\"]').click()");
     await waitFor("!document.querySelector('.plan-panel')");
     assert.equal(removed, true);
-    await window.webContents.executeJavaScript("document.querySelector('.composer-add-wrap button').click()");
-    await waitFor("document.querySelector('.composer-add-menu')");
-    await window.webContents.executeJavaScript("[...document.querySelectorAll('.composer-add-menu button')].find(button=>button.textContent.includes('Составить план')).click()");
-    await waitFor("[...document.querySelectorAll('.goal-mode-chip')].some(button=>button.textContent.includes('Составить план'))");
-    await new Promise(resolve => setTimeout(resolve, 150));
-    writeFileSync(path.join(temporary, "plan-request.png"), (await window.webContents.capturePage()).toPNG());
+    // A normal-mode checklist does not implicitly enter read-only planning mode.
     await window.webContents.executeJavaScript("(()=>{const input=document.querySelector('.composer textarea');Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype,'value').set.call(input,'Изучи систему и предложи изменения');input.dispatchEvent(new Event('input',{bubbles:true}));})()");
     await new Promise(resolve => setTimeout(resolve, 100));
     await window.webContents.executeJavaScript("document.querySelector('.composer textarea').dispatchEvent(new KeyboardEvent('keydown',{key:'Enter',bubbles:true,cancelable:true}))");
-    await waitFor("![...document.querySelectorAll('.goal-mode-chip')].some(button=>button.textContent.includes('Составить план'))");
     assert.equal(queuedCalls.length, 1);
-    assert.equal(queuedCalls[0].requestPlan, true);
+    assert.equal(queuedCalls[0].requestPlan, false);
     assert.equal(queuedCalls[0].message, "Изучи систему и предложи изменения");
     assert.deepEqual(errors, []);
     writeFileSync(path.join(temporary, "result.json"), JSON.stringify({ passed: true }));

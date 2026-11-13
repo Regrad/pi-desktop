@@ -1,3 +1,5 @@
+import { t, getLocale, getLanguage, conversationTitle, setLanguage, useLanguage } from "./i18n";
+import { LanguageSettings } from "./LanguageSettings";
 import {
   Archive,
   ArchiveRestore,
@@ -240,14 +242,14 @@ function textFromResult(result: unknown): string {
       .map((item) => {
         if (item?.type === "text") return String(item.text ?? "");
         if (item?.type === "image")
-          return `[Изображение: ${String(item.mimeType ?? "image")}]`;
+          return t("[Изображение: {0}]", String(item.mimeType ?? "image"));
         if (item?.type === "audio")
-          return `[Аудио: ${String(item.mimeType ?? "audio")}]`;
+          return t("[Аудио: {0}]", String(item.mimeType ?? "audio"));
         if (item?.type === "resource_link")
-          return `[Ресурс: ${String(item.title ?? item.name ?? item.uri ?? "ссылка")}]`;
+          return t("[Ресурс: {0}]", String(item.title ?? item.name ?? item.uri ?? t("ссылка")));
         if (item?.type === "resource")
-          return `[Встроенный ресурс: ${String(item.resource?.uri ?? "данные")}]`;
-        return `[${String(item?.type ?? "данные")}]`;
+          return t("[Встроенный ресурс: {0}]", String(item.resource?.uri ?? t("данные")));
+        return `[${String(item?.type ?? t("данные"))}]`;
       })
       .filter(Boolean)
       .join("\n");
@@ -277,12 +279,10 @@ function ContentParts({ content }: { content: JsonObject[] }) {
               className="content-image"
               key={index}
               src={src}
-              alt="Изображение"
+              alt={t("Изображение")}
             />
           ) : (
-            <div className="muted" key={index}>
-              Изображение недоступно
-            </div>
+            <div className="muted" key={index}>{t("Изображение недоступно")}</div>
           );
         }
         if (part.type === "audio") {
@@ -290,9 +290,7 @@ function ContentParts({ content }: { content: JsonObject[] }) {
           return src ? (
             <audio className="content-audio" key={index} src={src} controls />
           ) : (
-            <div className="muted" key={index}>
-              Аудио недоступно
-            </div>
+            <div className="muted" key={index}>{t("Аудио недоступно")}</div>
           );
         }
         if (part.type === "resource_link") {
@@ -313,7 +311,7 @@ function ContentParts({ content }: { content: JsonObject[] }) {
           const resource = part.resource as JsonObject | undefined;
           return (
             <pre className="embedded-resource" key={index}>
-              {String(resource?.text ?? `[${resource?.uri ?? "Ресурс"}]`)}
+              {String(resource?.text ?? `[${resource?.uri ?? t("Ресурс")}]`)}
             </pre>
           );
         }
@@ -1152,25 +1150,25 @@ function toolPresentation(
   const path = args.path ?? args.file ?? args.filePath;
   if (normalized.startsWith("comfyui_") || normalized === "desktop_show_image" || normalized === "desktop_get_image_path") {
     const labels: Record<string, string> = {
-      desktop_show_image: "Показать изображение",
-      desktop_get_image_path: "Путь к изображению из чата",
-      comfyui_list_attachments: "Изображения из чата",
-      comfyui_status: "Подключение ComfyUI",
-      comfyui_generate_image: "Генерация изображения",
-      comfyui_edit_image: "Редактирование изображения",
-      comfyui_remove_background: "Удаление фона",
-      comfyui_generate_music: "Генерация музыки YuE2",
-      comfyui_generate_instrumental_music: "Инструментальная музыка YuE2",
-      comfyui_cover_music: "Кавер YuE2",
-      comfyui_publish_music: "Выбрать треки для ответа",
-      comfyui_plan_music: "Нотный план YuE2",
-      comfyui_edit_vocals: "Убрать вокал из нот YuE2",
-      comfyui_generate_3d: "Генерация 3D-модели",
-      comfyui_compose_image: "Композиция из референсов",
-      comfyui_inpaint_image: "Редактирование по маске",
-      comfyui_create_mask: "Выделение объекта SAM 3.1",
-      comfyui_outpaint_image: "Расширение холста",
-      comfyui_extract_subject: "Извлечение объекта Qwen",
+      desktop_show_image: t("Показать изображение"),
+      desktop_get_image_path: t("Путь к изображению из чата"),
+      comfyui_list_attachments: t("Изображения из чата"),
+      comfyui_status: t("Подключение ComfyUI"),
+      comfyui_generate_image: t("Генерация изображения"),
+      comfyui_edit_image: t("Редактирование изображения"),
+      comfyui_remove_background: t("Удаление фона"),
+      comfyui_generate_music: t("Генерация музыки YuE2"),
+      comfyui_generate_instrumental_music: t("Инструментальная музыка YuE2"),
+      comfyui_cover_music: t("Кавер YuE2"),
+      comfyui_publish_music: t("Выбрать треки для ответа"),
+      comfyui_plan_music: t("Нотный план YuE2"),
+      comfyui_edit_vocals: t("Убрать вокал из нот YuE2"),
+      comfyui_generate_3d: t("Генерация 3D-модели"),
+      comfyui_compose_image: t("Композиция из референсов"),
+      comfyui_inpaint_image: t("Редактирование по маске"),
+      comfyui_create_mask: t("Выделение объекта SAM 3.1"),
+      comfyui_outpaint_image: t("Расширение холста"),
+      comfyui_extract_subject: t("Извлечение объекта Qwen"),
     };
     return { icon: "tool", label: labels[normalized] ?? "ComfyUI", summary: compactLine(args.prompt ?? ""), showRawArgs: true };
   }
@@ -1182,7 +1180,7 @@ function toolPresentation(
     const command = String(args.command ?? args.cmd ?? args.input ?? "");
     return {
       icon: "terminal",
-      label: "Команда",
+      label: t("Команда"),
       summary: compactLine(command),
       command,
     };
@@ -1196,34 +1194,34 @@ function toolPresentation(
         : "";
     return {
       icon: "file",
-      label: "Чтение",
-      summary: `${String(path ?? "файл")}${range}`,
+      label: t("Чтение"),
+      summary: `${String(path ?? t("файл"))}${range}`,
     };
   }
   if (normalized === "edit")
     return {
       icon: "file",
-      label: "Изменение",
-      summary: String(path ?? "файл"),
+      label: t("Изменение"),
+      summary: String(path ?? t("файл")),
     };
   if (normalized === "write")
-    return { icon: "file", label: "Запись", summary: String(path ?? "файл") };
+    return { icon: "file", label: t("Запись"), summary: String(path ?? t("файл")) };
   if (normalized === "grep")
     return {
       icon: "search",
-      label: "Поиск",
+      label: t("Поиск"),
       summary: `${compactLine(args.pattern ?? "")} · ${String(path ?? ".")}`,
     };
   if (normalized === "find")
     return {
       icon: "search",
-      label: "Поиск файлов",
+      label: t("Поиск файлов"),
       summary: `${compactLine(args.pattern ?? "")} · ${String(path ?? ".")}`,
     };
   if (normalized === "ls")
     return {
       icon: "folder",
-      label: "Список файлов",
+      label: t("Список файлов"),
       summary: String(path ?? "."),
     };
   if (normalized.startsWith("mcp__") || normalized.startsWith("mcp_")) {
@@ -1277,7 +1275,7 @@ function ToolDiffPreview({
         </span>
       ))}
       {!expanded && lines.length > visible.length && (
-        <em>… ещё {lines.length - visible.length} строк</em>
+        <em>{t("… ещё")}{" "}{lines.length - visible.length}{t(" строк")}</em>
       )}
     </pre>
   );
@@ -1296,7 +1294,7 @@ function ToolTextOutput({
     <pre className="tool-text-output">
       {visible.join("\n")}
       {!expanded && lines.length > visible.length
-        ? `\n… ещё ${lines.length - visible.length} строк`
+        ? t("\n… ещё {0} строк", lines.length - visible.length)
         : ""}
     </pre>
   );
@@ -1378,12 +1376,12 @@ function ToolCard({ tool, hideMedia = false }: { tool: ToolActivity; hideMedia?:
         {timing && <ShellTimeout timing={timing} running={tool.running && !tool.preparing} />}
         <span className="tool-state">
           {tool.preparing
-            ? "Формируется…"
+            ? t("Формируется…")
             : tool.running
-              ? "Выполняется…"
+              ? t("Выполняется…")
               : tool.error
-                ? "Ошибка"
-                : "Готово"}
+                ? t("Ошибка")
+                : t("Готово")}
         </span>
       </button>
       {expanded && hasDetails && (
@@ -1396,7 +1394,7 @@ function ToolCard({ tool, hideMedia = false }: { tool: ToolActivity; hideMedia?:
                   key={`${index}-${fragment.length}`}
                 >
                   {codeFragments.length > 1 && (
-                    <small>Фрагмент {index + 1}</small>
+                    <small>{t("Фрагмент")}{" "}{index + 1}</small>
                   )}
                   <pre>{fragment || " "}</pre>
                 </div>
@@ -1408,7 +1406,7 @@ function ToolCard({ tool, hideMedia = false }: { tool: ToolActivity; hideMedia?:
           )}
           {presentation.showRawArgs && Object.keys(args).length > 0 && (
             <details className="tool-arguments">
-              <summary>Параметры</summary>
+              <summary>{t("Параметры")}</summary>
               <pre>{JSON.stringify(args, null, 2)}</pre>
             </details>
           )}
@@ -1477,7 +1475,7 @@ function DiffPanel({ diff, onClose }: { diff: RunDiff; onClose: () => void }) {
   return (
     <aside className="diff-panel">
       <header className="diff-panel-title">
-        <strong>Изменения за прогон</strong>
+        <strong>{t("Изменения за прогон")}</strong>
         <button className="icon-button" onClick={onClose}>
           <X size={17} />
         </button>
@@ -1490,9 +1488,7 @@ function DiffPanel({ diff, onClose }: { diff: RunDiff; onClose: () => void }) {
         <span className="diff-remove">−{diff.deletions}</span>
       </div>
       {diff.incomplete && (
-        <div className="diff-warning">
-          Некоторые большие или двоичные файлы изменились и не показаны.
-        </div>
+        <div className="diff-warning">{t("Некоторые большие или двоичные файлы изменились и не показаны.")}</div>
       )}
       <div className="diff-files">
         {diff.files.map((file) => (
@@ -1512,7 +1508,7 @@ function DiffPanel({ diff, onClose }: { diff: RunDiff; onClose: () => void }) {
           </section>
         ))}
         {!diff.files.length && (
-          <div className="diff-empty">Текстовые файлы не изменялись.</div>
+          <div className="diff-empty">{t("Текстовые файлы не изменялись.")}</div>
         )}
       </div>
     </aside>
@@ -1553,7 +1549,7 @@ function ExtensionDialog({
     <div className="modal-backdrop">
       <div className="modal-card">
         <div className="modal-head">
-          <strong>{request.title ?? "Расширение Pi"}</strong>
+          <strong>{request.title ?? t("Расширение Pi")}</strong>
           <button
             className="icon-button"
             onClick={() => void respond({ cancelled: true })}
@@ -1598,25 +1594,19 @@ function ExtensionDialog({
           ))}
         <div className="modal-actions">
           <button onClick={() => void respond({ cancelled: true })}>
-            {request.method === "custom" ? "Закрыть" : "Отмена"}
+            {request.method === "custom" ? t("Закрыть") : t("Отмена")}
           </button>
           {request.method === "confirm" && (
-            <button onClick={() => void respond({ confirmed: false })}>
-              Нет
-            </button>
+            <button onClick={() => void respond({ confirmed: false })}>{t("Нет")}</button>
           )}
           {request.method === "confirm" && (
             <button
               className="primary"
               onClick={() => void respond({ confirmed: true })}
-            >
-              Да
-            </button>
+            >{t("Да")}</button>
           )}
           {(request.method === "input" || request.method === "editor") && (
-            <button className="primary" onClick={() => void respond({ value })}>
-              Готово
-            </button>
+            <button className="primary" onClick={() => void respond({ value })}>{t("Готово")}</button>
           )}
         </div>
       </div>
@@ -1693,32 +1683,32 @@ function ProjectDialog({
     <div className="modal-backdrop">
       <div className="modal-card project-dialog">
         <div className="modal-head">
-          <strong>Создать проект</strong>
+          <strong>{t("Создать проект")}</strong>
           <button className="icon-button" onClick={onClose}>
             <X size={17} />
           </button>
         </div>
         <label className="project-name-field">
-          <span>Название</span>
+          <span>{t("Название")}</span>
           <input
             value={name}
             onChange={(event) => setName(event.target.value)}
-            placeholder="Название проекта"
+            placeholder={t("Название проекта")}
             autoFocus
           />
         </label>
         <div className="project-folders-head">
-          <strong>Рабочие папки</strong>
-          <span>Первая папка будет основной</span>
+          <strong>{t("Рабочие папки")}</strong>
+          <span>{t("Первая папка будет основной")}</span>
         </div>
         <div className="project-folders">
           {folders.map((folder, index) => (
             <div className="project-folder-chip" key={folder}>
               <Folder size={15} />
               <span>{folder}</span>
-              {index === 0 && <small>Основная</small>}
+              {index === 0 && <small>{t("Основная")}</small>}
               <button
-                title="Убрать папку"
+                title={t("Убрать папку")}
                 onClick={() =>
                   setFolders((current) =>
                     current.filter((item) => item !== folder),
@@ -1733,17 +1723,16 @@ function ProjectDialog({
             className="add-folders-button"
             onClick={() => void addFolders()}
           >
-            <Plus size={16} /> Добавить папки
-          </button>
+            <Plus size={16} />{t(" Добавить папки")}</button>
         </div>
         <div className="modal-actions">
-          <button onClick={onClose}>Отмена</button>
+          <button onClick={onClose}>{t("Отмена")}</button>
           <button
             className="primary"
             disabled={!folders.length || saving}
             onClick={() => void create()}
           >
-            {saving ? "Создание…" : "Создать проект"}
+            {saving ? t("Создание…") : t("Создать проект")}
           </button>
         </div>
       </div>
@@ -1753,7 +1742,7 @@ function ProjectDialog({
 
 function RenameConversationDialog({
   title,
-  heading = "Переименовать чат",
+  heading = t("Переименовать чат"),
   onClose,
   onSave,
 }: {
@@ -1786,12 +1775,8 @@ function RenameConversationDialog({
           autoFocus
         />
         <div className="modal-actions">
-          <button type="button" onClick={onClose}>
-            Отмена
-          </button>
-          <button className="primary" type="submit" disabled={!value.trim()}>
-            Сохранить
-          </button>
+          <button type="button" onClick={onClose}>{t("Отмена")}</button>
+          <button className="primary" type="submit" disabled={!value.trim()}>{t("Сохранить")}</button>
         </div>
       </form>
     </div>
@@ -1847,7 +1832,7 @@ function ProjectInstructionsDialog({
       setValue(result.content);
       setSavedValue(result.content);
       setStatus(
-        "Сохранено. Чаты проекта применят инструкции перед следующим запросом.",
+        t("Сохранено. Чаты проекта применят инструкции перед следующим запросом."),
       );
     } catch (error) {
       setStatus(error instanceof Error ? error.message : String(error));
@@ -1860,14 +1845,12 @@ function ProjectInstructionsDialog({
     <div className="modal-backdrop">
       <div className="modal-card project-instructions-dialog">
         <div className="modal-head">
-          <strong>Инструкции проекта «{project.name}»</strong>
+          <strong>{t("Инструкции проекта «")}{project.name}»</strong>
           <button type="button" className="icon-button" onClick={onClose}>
             <X size={17} />
           </button>
         </div>
-        <p>
-          Pi автоматически добавляет этот файл к системному промпту для проекта.
-        </p>
+        <p>{t("Pi автоматически добавляет этот файл к системному промпту для проекта.")}</p>
         <textarea
           className="modal-editor"
           value={value}
@@ -1885,7 +1868,7 @@ function ProjectInstructionsDialog({
             }
           }}
           disabled={loading}
-          placeholder={loading ? "Загрузка…" : "Введите инструкции для модели…"}
+          placeholder={loading ? t("Загрузка…") : t("Введите инструкции для модели…")}
           spellCheck
           autoFocus
         />
@@ -1894,14 +1877,12 @@ function ProjectInstructionsDialog({
             {instructions?.filePath ?? `${project.path}\\AGENTS.md`} · UTF-8
           </span>
           {!loading && instructions && !instructions.exists && (
-            <small>Файл будет создан при сохранении.</small>
+            <small>{t("Файл будет создан при сохранении.")}</small>
           )}
           {status && <strong>{status}</strong>}
         </div>
         <div className="modal-actions">
-          <button type="button" onClick={onClose}>
-            Закрыть
-          </button>
+          <button type="button" onClick={onClose}>{t("Закрыть")}</button>
           <button
             type="button"
             className="primary"
@@ -1912,7 +1893,7 @@ function ProjectInstructionsDialog({
             }
             onClick={() => void save()}
           >
-            {saving ? "Сохранение…" : "Сохранить"}
+            {saving ? t("Сохранение…") : t("Сохранить")}
           </button>
         </div>
       </div>
@@ -1948,7 +1929,7 @@ function CommandPalette({
     <div className="modal-backdrop">
       <div className="modal-card command-palette">
         <div className="modal-head">
-          <strong>Команды Pi</strong>
+          <strong>{t("Команды Pi")}</strong>
           <button className="icon-button" onClick={onClose}>
             <X size={17} />
           </button>
@@ -1958,35 +1939,28 @@ function CommandPalette({
           <input
             value={query}
             onChange={(event) => setQuery(event.target.value)}
-            placeholder="Найти команду…"
+            placeholder={t("Найти команду…")}
             autoFocus
           />
         </div>
-        <div className="command-section-title">Действия приложения</div>
+        <div className="command-section-title">{t("Действия приложения")}</div>
         <div className="command-list">
           <button disabled={busy} onClick={onCompact}>
             <span>
-              <strong>Сжать контекст</strong>
-              <small>
-                Штатная команда Pi `/compact`; можно добавить инструкции для
-                сводки.
-              </small>
+              <strong>{t("Сжать контекст")}</strong>
+              <small>{t("Штатная команда Pi `/compact`; можно добавить инструкции для сводки.")}</small>
             </span>
             <code>/compact</code>
           </button>
           <button disabled={busy} onClick={onReload}>
             <span>
-              <strong>Перезагрузить ресурсы Pi</strong>
-              <small>
-                Расширения, навыки, промпты, настройки и файлы контекста.
-              </small>
+              <strong>{t("Перезагрузить ресурсы Pi")}</strong>
+              <small>{t("Расширения, навыки, промпты, настройки и файлы контекста.")}</small>
             </span>
             <code>/reload</code>
           </button>
         </div>
-        <div className="command-section-title">
-          Команды расширений, шаблоны и навыки
-        </div>
+        <div className="command-section-title">{t("Команды расширений, шаблоны и навыки")}</div>
         <div className="command-list command-dynamic-list">
           {textCommands.map((command) => (
             <button
@@ -1996,26 +1970,23 @@ function CommandPalette({
               <span>
                 <strong>/{command.name}</strong>
                 <small>
-                  {command.description || "Описание не предоставлено"}
+                  {command.description || t("Описание не предоставлено")}
                 </small>
               </span>
               <em>
                 {command.source === "extension"
-                  ? "Модуль"
+                  ? t("Модуль")
                   : command.source === "skill"
-                    ? "Навык"
-                    : "Шаблон"}
+                    ? t("Навык")
+                    : t("Шаблон")}
               </em>
             </button>
           ))}
           {!textCommands.length && (
-            <div className="command-empty">Подходящих команд нет.</div>
+            <div className="command-empty">{t("Подходящих команд нет.")}</div>
           )}
         </div>
-        <div className="command-palette-note">
-          Выбор команды расширения помещает её в поле ввода — аргументы можно
-          дописать перед отправкой.
-        </div>
+        <div className="command-palette-note">{t("Выбор команды расширения помещает её в поле ввода — аргументы можно дописать перед отправкой.")}</div>
       </div>
     </div>
   );
@@ -2033,32 +2004,27 @@ function CompactDialog({
     <div className="modal-backdrop">
       <div className="modal-card compact-dialog">
         <div className="modal-head">
-          <strong>Сжать контекст</strong>
+          <strong>{t("Сжать контекст")}</strong>
           <button className="icon-button" onClick={onClose}>
             <X size={17} />
           </button>
         </div>
-        <p>
-          Pi создаст сводку предыдущего контекста и сохранит последние сообщения
-          без изменений.
-        </p>
+        <p>{t("Pi создаст сводку предыдущего контекста и сохранит последние сообщения без изменений.")}</p>
         <label>
-          <span>Дополнительные инструкции для сводки</span>
+          <span>{t("Дополнительные инструкции для сводки")}</span>
           <textarea
             value={instructions}
             onChange={(event) => setInstructions(event.target.value)}
-            placeholder="Необязательно"
+            placeholder={t("Необязательно")}
             autoFocus
           />
         </label>
         <div className="modal-actions">
-          <button onClick={onClose}>Отмена</button>
+          <button onClick={onClose}>{t("Отмена")}</button>
           <button
             className="primary"
             onClick={() => onCompact(instructions.trim() || undefined)}
-          >
-            Сжать
-          </button>
+          >{t("Сжать")}</button>
         </div>
       </div>
     </div>
@@ -2102,13 +2068,13 @@ function ModelSettingsDialog({
     try {
       const parsed = samplingParams.trim() ? JSON.parse(samplingParams) : {};
       if (!parsed || typeof parsed !== "object" || Array.isArray(parsed))
-        throw new Error("Параметры семплирования должны быть объектом JSON");
+        throw new Error(t("Параметры семплирования должны быть объектом JSON"));
       const invalid = Object.entries(parsed).find(
         ([, value]) => !["number", "boolean", "string"].includes(typeof value),
       );
       if (invalid)
         throw new Error(
-          `Параметр «${invalid[0]}» должен быть числом, строкой или логическим значением`,
+          t("Параметр «{0}» должен быть числом, строкой или логическим значением", invalid[0]),
         );
       parsedSampling = parsed as Record<string, number | boolean | string>;
     } catch (parseError) {
@@ -2124,7 +2090,7 @@ function ModelSettingsDialog({
       if (!value.trim()) return undefined;
       const parsed = Number(value);
       if (!Number.isInteger(parsed) || parsed <= 0)
-        throw new Error(`${label} должен быть положительным целым числом`);
+        throw new Error(t("{0} должен быть положительным целым числом", label));
       return parsed;
     };
     try {
@@ -2134,8 +2100,8 @@ function ModelSettingsDialog({
         originalModelId: model.id,
         id: id.trim(),
         name: name.trim() || undefined,
-        contextWindow: parseOptionalInteger(contextWindow, "Контекст"),
-        maxTokens: parseOptionalInteger(maxTokens, "Лимит ответа"),
+        contextWindow: parseOptionalInteger(contextWindow, t("Контекст")),
+        maxTokens: parseOptionalInteger(maxTokens, t("Лимит ответа")),
         reasoning,
         input: vision ? ["text", "image"] : ["text"],
         thinkingLevels: reasoning ? levels : ["off"],
@@ -2154,7 +2120,7 @@ function ModelSettingsDialog({
     <div className="modal-backdrop">
       <div className="modal-card model-settings-dialog">
         <div className="modal-head">
-          <strong>Настройки модели</strong>
+          <strong>{t("Настройки модели")}</strong>
           <button className="icon-button" onClick={onClose}>
             <X size={17} />
           </button>
@@ -2162,36 +2128,36 @@ function ModelSettingsDialog({
         <div className="model-settings-scroll">
           <div className="model-field-grid">
             <label>
-              <span>ID модели</span>
+              <span>{t("ID модели")}</span>
               <input
                 value={id}
                 onChange={(event) => setId(event.target.value)}
               />
             </label>
             <label>
-              <span>Название в интерфейсе</span>
+              <span>{t("Название в интерфейсе")}</span>
               <input
                 value={name}
                 onChange={(event) => setName(event.target.value)}
-                placeholder="Необязательно"
+                placeholder={t("Необязательно")}
               />
             </label>
             <label>
-              <span>Размер контекста</span>
+              <span>{t("Размер контекста")}</span>
               <input
                 value={contextWindow}
                 onChange={(event) => setContextWindow(event.target.value)}
                 inputMode="numeric"
-                placeholder="Автоматически"
+                placeholder={t("Автоматически")}
               />
             </label>
             <label>
-              <span>Максимум токенов ответа</span>
+              <span>{t("Максимум токенов ответа")}</span>
               <input
                 value={maxTokens}
                 onChange={(event) => setMaxTokens(event.target.value)}
                 inputMode="numeric"
-                placeholder="Автоматически"
+                placeholder={t("Автоматически")}
               />
             </label>
           </div>
@@ -2201,22 +2167,18 @@ function ModelSettingsDialog({
                 type="checkbox"
                 checked={reasoning}
                 onChange={(event) => setReasoning(event.target.checked)}
-              />{" "}
-              Модель поддерживает рассуждения
-            </label>
+              />{" "}{t("Модель поддерживает рассуждения")}</label>
             <label>
               <input
                 type="checkbox"
                 checked={vision}
                 onChange={(event) => setVision(event.target.checked)}
-              />{" "}
-              Модель принимает изображения
-            </label>
+              />{" "}{t("Модель принимает изображения")}</label>
           </div>
           <div
             className={`thinking-level-editor ${reasoning ? "" : "disabled"}`}
           >
-            <strong>Доступные уровни рассуждений</strong>
+            <strong>{t("Доступные уровни рассуждений")}</strong>
             <div>
               {(Object.keys(THINKING_LABELS) as ThinkingLevel[]).map(
                 (level) => (
@@ -2227,14 +2189,14 @@ function ModelSettingsDialog({
                       checked={levels.includes(level)}
                       onChange={() => toggleLevel(level)}
                     />
-                    {THINKING_LABELS[level]}
+                    {t(THINKING_LABELS[level])}
                   </label>
                 ),
               )}
             </div>
           </div>
           <label className="sampling-editor">
-            <span>Параметры семплирования, JSON</span>
+            <span>{t("Параметры семплирования, JSON")}</span>
             <textarea
               value={samplingParams}
               onChange={(event) => setSamplingParams(event.target.value)}
@@ -2244,13 +2206,13 @@ function ModelSettingsDialog({
           {error && <div className="model-settings-error">{error}</div>}
         </div>
         <div className="modal-actions">
-          <button onClick={onClose}>Отмена</button>
+          <button onClick={onClose}>{t("Отмена")}</button>
           <button
             className="primary"
             disabled={saving || !id.trim()}
             onClick={() => void save()}
           >
-            {saving ? "Сохранение…" : "Сохранить"}
+            {saving ? t("Сохранение…") : t("Сохранить")}
           </button>
         </div>
       </div>
@@ -2347,16 +2309,16 @@ function SettingsPage({
     label: string;
     icon: typeof Settings;
   }> = [
-    { id: "general", label: "Общее", icon: Settings },
+    { id: "general", label: t("Общее"), icon: Settings },
     // Web access is paused: keep its implementation, but hide the settings entry.
-    { id: "models", label: "Модели", icon: Cpu },
+    { id: "models", label: t("Модели"), icon: Cpu },
     { id: "comfyui", label: "ComfyUI", icon: Boxes },
-    { id: "modules", label: "Модули", icon: Boxes },
-    { id: "customization", label: "Кастомизация", icon: Pencil },
-    { id: "configuration", label: "Конфигурация Pi", icon: FileText },
-    { id: "shortcuts", label: "Сочетания клавиш", icon: Keyboard },
-    { id: "archive", label: "Архивированные чаты", icon: Archive },
-    { id: "about", label: "О программе", icon: Bot },
+    { id: "modules", label: t("Модули"), icon: Boxes },
+    { id: "customization", label: t("Кастомизация"), icon: Pencil },
+    { id: "configuration", label: t("Конфигурация Pi"), icon: FileText },
+    { id: "shortcuts", label: t("Сочетания клавиш"), icon: Keyboard },
+    { id: "archive", label: t("Архивированные чаты"), icon: Archive },
+    { id: "about", label: t("О программе"), icon: Bot },
   ];
   const visibleSections = sections.filter((item) =>
     item.label.toLocaleLowerCase().includes(query.toLocaleLowerCase()),
@@ -2445,7 +2407,7 @@ function SettingsPage({
         await window.piDesktop.setBuiltinModuleEnabled(id, enabled),
       );
       setModuleSettingsMessage(
-        "Настройка сохранена. Открытые процессы Pi перезапущены; следующий запрос использует новый набор модулей.",
+        t("Настройка сохранена. Открытые процессы Pi перезапущены; следующий запрос использует новый набор модулей."),
       );
     } catch (error) {
       setModuleSettingsMessage(
@@ -2461,7 +2423,7 @@ function SettingsPage({
       if (next) {
         setModuleSettings(next);
         setModuleSettingsMessage(
-          "Пользовательское расширение добавлено. Оно загрузится при следующем запросе.",
+          t("Пользовательское расширение добавлено. Оно загрузится при следующем запросе."),
         );
       }
     } catch (error) {
@@ -2478,7 +2440,7 @@ function SettingsPage({
       if (next) {
         setModuleSettings(next);
         setModuleSettingsMessage(
-          "Пользовательское расширение удалено. Встроенные модули не затронуты.",
+          t("Пользовательское расширение удалено. Встроенные модули не затронуты."),
         );
       }
     } catch (error) {
@@ -2502,7 +2464,7 @@ function SettingsPage({
         setUpdateMessage(result.errors.join(" · "));
       } else if (result.updated.length) {
         setUpdateMessage(
-          `Обновлено: ${result.updated.join(", ")}. Новые процессы Pi используют новые версии.`,
+          t("Обновлено: {0}. Новые процессы Pi используют новые версии.", result.updated.join(", ")),
         );
       }
     } catch (error) {
@@ -2521,7 +2483,7 @@ function SettingsPage({
       setGlobalPrompt(saved);
       setSavedGlobalPrompt(saved);
       setGlobalPromptStatus(
-        "Сохранено. Все чаты применят правила перед следующим запросом.",
+        t("Сохранено. Все чаты применят правила перед следующим запросом."),
       );
     } catch (error) {
       setGlobalPromptStatus(
@@ -2590,13 +2552,13 @@ function SettingsPage({
         ...current.filter((server) => server.id !== result.server.id),
       ]);
       const changes = [
-        result.addedModels ? `добавлено моделей: ${result.addedModels}` : "",
-        result.updatedModels ? `обновлено: ${result.updatedModels}` : "",
+        result.addedModels ? t("добавлено моделей: {0}", result.addedModels) : "",
+        result.updatedModels ? t("обновлено: {0}", result.updatedModels) : "",
       ]
         .filter(Boolean)
         .join(", ");
       setServerDiscoveryStatus(
-        `${result.serverKind}${result.buildInfo ? ` ${result.buildInfo}` : ""}: ${changes || "конфигурация актуальна"}.`,
+        `${result.serverKind}${result.buildInfo ? ` ${result.buildInfo}` : ""}: ${changes || t("конфигурация актуальна")}.`,
       );
       setEditingServerId(result.server.id);
       setServerApiKey(result.server.apiKeyConfigured ? "********" : "");
@@ -2633,7 +2595,7 @@ function SettingsPage({
       setEditingServerId(server.id);
       setServerDiscoveryError(false);
       setServerDiscoveryStatus(
-        `Редактируется сервер «${server.id}». Укажите новый адрес и выполните автонастройку.`,
+        t("Редактируется сервер «{0}». Укажите новый адрес и выполните автонастройку.", server.id),
       );
       requestAnimationFrame(() =>
         document
@@ -2703,17 +2665,16 @@ function SettingsPage({
     <div className="settings-page">
       <aside className="settings-sidebar">
         <button className="settings-back" onClick={onBack}>
-          <ArrowLeft size={15} /> Вернуться в приложение
-        </button>
+          <ArrowLeft size={15} />{t(" Вернуться в приложение")}</button>
         <div className="settings-search">
           <Search size={14} />
           <input
             value={query}
             onChange={(event) => setQuery(event.target.value)}
-            placeholder="Поиск настроек…"
+            placeholder={t("Поиск настроек…")}
           />
         </div>
-        <div className="settings-group-title">Настройки Pi Desktop</div>
+        <div className="settings-group-title">{t("Настройки Pi Desktop")}</div>
         <nav className="settings-nav">
           {visibleSections.map((item) => {
             const Icon = item.icon;
@@ -2736,85 +2697,86 @@ function SettingsPage({
           {section === "web-access" && <WebAccessSettingsPanel />}
           {section === "general" && (
             <>
-              <h1>Общее</h1>
+              <h1>{t("Общее")}</h1>
+              <LanguageSettings />
               <NotebookSettings />
-              <h2>Портативность</h2>
+              <h2>{t("Портативность")}</h2>
               <div className="settings-card">
                 <SettingRow
-                  title="Папка данных приложения"
-                  description="Здесь находятся список проектов, настройки интерфейса и портативная конфигурация Pi."
+                  title={t("Папка данных приложения")}
+                  description={t("Здесь находятся список проектов, настройки интерфейса и портативная конфигурация Pi.")}
                   value={dataDir}
-                  action={{ label: "Показать", onClick: showDataFolder }}
+                  action={{ label: t("Показать"), onClick: showDataFolder }}
                 />
                 <SettingRow
-                  title="История сессий Pi"
-                  description="Общее штатное хранилище, используемое обычным Pi и Pi Desktop без копирования сессий."
+                  title={t("История сессий Pi")}
+                  description={t("Переносимое хранилище сессий в исходном формате Pi.")}
                   value={sessionsDir}
-                  action={{ label: "Показать", onClick: showSessionsFolder }}
+                  action={{ label: t("Показать"), onClick: showSessionsFolder }}
                 />
                 <SettingRow
-                  title="Обновления Pi и модулей"
-                  description="Обновления запускаются вручную во вкладке «Модули» и хранятся в переносимой папке data."
-                  value="Только вручную"
+                  title={t("Обновления Pi и модулей")}
+                  description={t("Pi обновляется вместе с приложением. Обновления дополнений доступны во вкладке «Модули».")}
+                  value={t("Только вручную")}
                 />
                 <SettingRow
-                  title="Таймаут запроса"
-                  description="Максимальное ожидание ответа модели и RPC-команд."
-                  value="24 часа"
+                  title={t("Таймаут запроса")}
+                  description={t("Максимальное ожидание ответа модели и RPC-команд.")}
+                  value={t("24 часа")}
                 />
               </div>
-              <h2>Доступ</h2>
+              <h2>{t("Доступ")}</h2>
               <div className="settings-card">
                 <SettingRow
-                  title="Режим Pi"
-                  description="Pi запущен с разрешением на штатные инструменты и подтверждённые расширения."
-                  value="Полный доступ"
+                  title={t("Режим Pi")}
+                  description={t("Pi запущен с разрешением на штатные инструменты и подтверждённые расширения.")}
+                  value={t("Полный доступ")}
                 />
                 <SettingRow
-                  title="Хранение"
-                  description="История хранится локально в исходном формате Pi и доступна обоим интерфейсам."
-                  value="Общее с Pi"
+                  title={t("Хранение")}
+                  description={t("История хранится локально в исходном формате сессий Pi.")}
+                  value={t("Локальные сессии")}
                 />
               </div>
             </>
           )}
           {section === "models" && (
             <>
-              <h1>Модели</h1>
-              <h2>Текущий чат</h2>
+              <h1>{t("Модели")}</h1>
+              <h2>{t("Текущий чат")}</h2>
               <div className="settings-card">
                 <SettingRow
-                  title="Активная модель"
-                  description="Модель меняется непосредственно в нижней панели чата."
+                  title={t("Активная модель")}
+                  description={t("Модель меняется непосредственно в нижней панели чата.")}
                   value={
-                    currentModel?.name ?? currentModel?.id ?? "Чат не открыт"
+                    currentModel?.name ?? currentModel?.id ?? t("Чат не открыт")
                   }
                 />
                 <SettingRow
-                  title="Доступные уровни рассуждений"
-                  description="Набор зависит от выбранной модели."
+                  title={t("Доступные уровни рассуждений")}
+                  description={t("Набор зависит от выбранной модели.")}
                   value={
                     thinkingLevels.length
                       ? thinkingLevels
-                          .map((level) => THINKING_LABELS[level])
+                          .map((level) => t(THINKING_LABELS[level]))
                           .join(", ")
-                      : "Чат не открыт"
+                      : t("Чат не открыт")
                   }
                 />
               </div>
-              <h2>Добавить сервер автоматически</h2>
+              <h2>{t("Добавить сервер автоматически")}</h2>
               <div className="settings-card server-discovery-card">
                 <div className="server-fields">
                   <label className="server-address-field">
-                    <span>Адрес сервера</span>
+                    <span>{t("Адрес сервера")}</span>
                     <input
                       value={serverAddress}
                       onChange={(event) => setServerAddress(event.target.value)}
-                      placeholder="192.168.31.194 или http://localhost"
+                      placeholder={t("192.168.31.194 или http://localhost")}
                     />
                   </label>
                   <label className="server-port-field">
-                    <span>Порт</span>
+                    <span>{t("Порт")}</span>
                     <input
                       value={serverPort}
                       onChange={(event) => setServerPort(event.target.value)}
@@ -2823,26 +2785,21 @@ function SettingsPage({
                     />
                   </label>
                   <label className="server-key-field">
-                    <span>API-ключ, если требуется</span>
+                    <span>{t("API-ключ, если требуется")}</span>
                     <input
                       type="password"
                       value={serverApiKey}
                       autoComplete="off"
                       onFocus={(event) => { if (!serverApiKeyChanged) event.currentTarget.select(); }}
                       onChange={(event) => { setServerApiKey(event.target.value); setServerApiKeyChanged(true); }}
-                      placeholder="Необязательно"
+                      placeholder={t("Необязательно")}
                     />
                   </label>
                 </div>
                 <div className="server-discovery-footer">
                   <div>
-                    <span>
-                      Проверяются только служебные endpoints `/v1/models`,
-                      `/props` и `/health`.
-                    </span>
-                    <small>
-                      Список моделей обновляется автоматически. Исчезнувшие с сервера модели удаляются из списка.
-                    </small>
+                    <span>{t("Проверяются только служебные endpoints `/v1/models`, `/props` и `/health`.")}</span>
+                    <small>{t("Список моделей обновляется автоматически. Исчезнувшие с сервера модели удаляются из списка.")}</small>
                     {serverDiscoveryStatus && (
                       <strong className={serverDiscoveryError ? "error" : ""}>
                         {serverDiscoveryStatus}
@@ -2851,7 +2808,7 @@ function SettingsPage({
                   </div>
                   <div className="server-discovery-actions">
                     {editingServerId && (
-                      <button onClick={cancelServerEdit}>Отмена</button>
+                      <button onClick={cancelServerEdit}>{t("Отмена")}</button>
                     )}
                     <button
                       className="primary"
@@ -2863,20 +2820,18 @@ function SettingsPage({
                       onClick={() => void discoverModelServer()}
                     >
                       {serverDiscovering
-                        ? "Подключение…"
+                        ? t("Подключение…")
                         : editingServerId
-                          ? "Обновить автоматически"
-                          : "Добавить автоматически"}
+                          ? t("Обновить автоматически")
+                          : t("Добавить автоматически")}
                     </button>
                   </div>
                 </div>
               </div>
-              <h2>Настроенные серверы</h2>
+              <h2>{t("Настроенные серверы")}</h2>
               <div className="configured-servers">
                 {modelServersLoading ? (
-                  <div className="settings-card settings-empty">
-                    Загрузка конфигурации…
-                  </div>
+                  <div className="settings-card settings-empty">{t("Загрузка конфигурации…")}</div>
                 ) : modelServers.length ? (
                   modelServers.map((server) => (
                     <div
@@ -2894,14 +2849,12 @@ function SettingsPage({
                         </div>
                         <div className="configured-server-actions">
                           <button onClick={() => editModelServer(server)}>
-                            <Pencil size={13} /> Изменить
-                          </button>
+                            <Pencil size={13} />{t(" Изменить")}</button>
                           <button
                             className="danger"
                             onClick={() => void deleteModelServer(server.id)}
                           >
-                            <Trash2 size={13} /> Удалить
-                          </button>
+                            <Trash2 size={13} />{t(" Удалить")}</button>
                         </div>
                       </div>
                       <div className="configured-model-list">
@@ -2913,16 +2866,16 @@ function SettingsPage({
                             </div>
                             <p>
                               {model.contextWindow
-                                ? `Контекст ${model.contextWindow.toLocaleString("ru-RU")}`
-                                : "Контекст не указан"}
+                                ? t("Контекст {0}", model.contextWindow.toLocaleString(getLocale()))
+                                : t("Контекст не указан")}
                               {model.maxTokens
-                                ? ` · ответ до ${model.maxTokens.toLocaleString("ru-RU")}`
+                                ? t(" · ответ до {0}", model.maxTokens.toLocaleString(getLocale()))
                                 : ""}
                               {model.reasoning
-                                ? ` · рассуждения: ${model.thinkingLevels.map((level) => THINKING_LABELS[level]).join(", ")}`
-                                : " · без рассуждений"}
+                                ? t(" · рассуждения: {0}", model.thinkingLevels.map((level) => t(THINKING_LABELS[level])).join(", "))
+                                : t(" · без рассуждений")}
                               {model.input.length > 1
-                                ? ` · вход: ${model.input.join(", ")}`
+                                ? t(" · вход: {0}", model.input.join(", "))
                                 : ""}
                             </p>
                             {model.samplingParams && (
@@ -2941,8 +2894,7 @@ function SettingsPage({
                                   })
                                 }
                               >
-                                <Pencil size={12} /> Изменить
-                              </button>
+                                <Pencil size={12} />{t(" Изменить")}</button>
                               <button
                                 className="danger"
                                 onClick={() =>
@@ -2952,8 +2904,7 @@ function SettingsPage({
                                   )
                                 }
                               >
-                                <Trash2 size={12} /> Удалить
-                              </button>
+                                <Trash2 size={12} />{t(" Удалить")}</button>
                             </div>
                           </div>
                         ))}
@@ -2961,38 +2912,31 @@ function SettingsPage({
                     </div>
                   ))
                 ) : (
-                  <div className="settings-card settings-empty">
-                    Настроенных локальных серверов пока нет.
-                  </div>
+                  <div className="settings-card settings-empty">{t("Настроенных локальных серверов пока нет.")}</div>
                 )}
               </div>
-              <h2>Доступные модели</h2>
+              <h2>{t("Доступные модели")}</h2>
               <div className="settings-card model-settings-list">
                 {models.length ? (
                   models.map((model) => (
                     <SettingRow
                       key={`${model.provider}/${model.id}`}
                       title={model.name ?? model.id}
-                      description={`${model.provider} · контекст ${model.contextWindow ? `${Math.round(model.contextWindow / 1000)}k` : "не указан"}`}
-                      value={model.reasoning ? "Рассуждения" : "Обычная"}
+                      description={t("{0} · контекст {1}", model.provider, model.contextWindow ? `${Math.round(model.contextWindow / 1000)}k` : t("не указан"))}
+                      value={model.reasoning ? t("Рассуждения") : t("Обычная")}
                     />
                   ))
                 ) : (
-                  <div className="settings-empty">
-                    Откройте чат, чтобы Pi загрузил список моделей.
-                  </div>
+                  <div className="settings-empty">{t("Откройте чат, чтобы Pi загрузил список моделей.")}</div>
                 )}
               </div>
             </>
           )}
           {section === "modules" && (
             <>
-              <h1>Модули</h1>
-              <p className="settings-lead">
-                Встроенные функции хранятся внутри Pi Desktop. Пользовательская
-                папка содержит только дополнения, которые добавил пользователь.
-              </p>
-              <h2>Встроенные модули</h2>
+              <h1>{t("Модули")}</h1>
+              <p className="settings-lead">{t("Встроенные функции хранятся внутри Pi Desktop. Пользовательская папка содержит только дополнения, которые добавил пользователь.")}</p>
+              <h2>{t("Встроенные модули")}</h2>
               <div className="settings-card builtin-module-list">
                 {moduleSettings?.builtins.length ? (
                   moduleSettings.builtins.map((module) => {
@@ -3012,9 +2956,9 @@ function SettingsPage({
                         <span>
                           <strong>{module.name}</strong>
                           <small>
-                            {module.description}
+                            {t(module.description)}
                             {dependency
-                              ? ` · зависит от ${dependency.name}`
+                              ? t(" · зависит от {0}", dependency.name)
                               : ""}
                           </small>
                         </span>
@@ -3035,17 +2979,17 @@ function SettingsPage({
                 ) : (
                   <div className="settings-empty">
                     {moduleSettingsLoading
-                      ? "Загрузка модулей…"
-                      : "Не удалось получить список модулей."}
+                      ? t("Загрузка модулей…")
+                      : t("Не удалось получить список модулей.")}
                   </div>
                 )}
               </div>
-              <h2>Пользовательские дополнения</h2>
+              <h2>{t("Пользовательские дополнения")}</h2>
               <div className="module-update-toolbar user-extension-toolbar">
                 <div>
-                  <strong>Папка расширений Pi</strong>
+                  <strong>{t("Папка расширений Pi")}</strong>
                   <span>
-                    {moduleSettings?.userExtensionsDir ?? "Загрузка…"}
+                    {moduleSettings?.userExtensionsDir ?? t("Загрузка…")}
                   </span>
                 </div>
                 {moduleSettings && (
@@ -3056,15 +3000,12 @@ function SettingsPage({
                       )
                     }
                   >
-                    <FolderOpen size={13} /> Открыть
-                  </button>
+                    <FolderOpen size={13} />{t(" Открыть")}</button>
                 )}
                 <button onClick={() => void addUserExtension("file")}>
-                  <Plus size={13} /> Добавить файл
-                </button>
+                  <Plus size={13} />{t(" Добавить файл")}</button>
                 <button onClick={() => void addUserExtension("directory")}>
-                  <Plus size={13} /> Добавить папку
-                </button>
+                  <Plus size={13} />{t(" Добавить папку")}</button>
               </div>
               <div className="settings-card user-extension-list">
                 {moduleSettings?.userExtensions.length ? (
@@ -3078,15 +3019,11 @@ function SettingsPage({
                         className="danger"
                         onClick={() => void removeUserExtension(extension.name)}
                       >
-                        <Trash2 size={13} /> Удалить
-                      </button>
+                        <Trash2 size={13} />{t(" Удалить")}</button>
                     </div>
                   ))
                 ) : (
-                  <div className="settings-empty">
-                    Пользовательских дополнений пока нет. Встроенные модули
-                    находятся отдельно.
-                  </div>
+                  <div className="settings-empty">{t("Пользовательских дополнений пока нет. Встроенные модули находятся отдельно.")}</div>
                 )}
               </div>
               {moduleSettingsMessage && (
@@ -3094,14 +3031,14 @@ function SettingsPage({
                   {moduleSettingsMessage}
                 </div>
               )}
-              <h2>Обновления встроенных компонентов</h2>
+              <h2>{t("Обновления встроенных компонентов")}</h2>
               <div className="module-update-toolbar">
                 <div>
-                  <strong>Pi и установленные дополнения</strong>
+                  <strong>{t("Pi и установленные дополнения")}</strong>
                   <span>
                     {updateStatus?.checkedAt
-                      ? `Проверено ${new Date(updateStatus.checkedAt).toLocaleString("ru-RU")}`
-                      : "Обновления ещё не проверялись"}
+                      ? t("Проверено {0}", new Date(updateStatus.checkedAt).toLocaleString(getLocale()))
+                      : t("Обновления ещё не проверялись")}
                   </span>
                 </div>
                 <button
@@ -3112,7 +3049,7 @@ function SettingsPage({
                     size={13}
                     className={updatesLoading ? "spinning" : ""}
                   />
-                  {updatesLoading ? "Проверка…" : "Проверить"}
+                  {updatesLoading ? t("Проверка…") : t("Проверить")}
                 </button>
                 <button
                   className="primary"
@@ -3125,7 +3062,7 @@ function SettingsPage({
                   }
                   onClick={() => void installUpdate()}
                 >
-                  {updatingComponent === "all" ? "Обновление…" : "Обновить всё"}
+                  {updatingComponent === "all" ? t("Обновление…") : t("Обновить всё")}
                 </button>
               </div>
               <div className="settings-card module-update-list">
@@ -3134,23 +3071,22 @@ function SettingsPage({
                     <div className="module-update-row" key={component.id}>
                       <div>
                         <strong>{component.name}</strong>
-                        <p>{component.description}</p>
+                        <p>{t(component.description)}</p>
                         {component.error && (
-                          <small className="error">
-                            Не удалось проверить: {component.error}
+                          <small className="error">{t("Не удалось проверить:")}{component.error}
                           </small>
                         )}
                       </div>
                       <div className="module-update-control">
                         <span>
                           {component.source === "local"
-                            ? "Локальный"
+                            ? t("Локальный")
                             : component.latestVersion &&
                                 component.currentVersion !==
                                   component.latestVersion
                               ? `${component.currentVersion ?? "?"} → ${component.latestVersion}`
                               : (component.currentVersion ??
-                                "Версия неизвестна")}
+                                t("Версия неизвестна"))}
                         </span>
                         {component.updateAvailable && component.updateable ? (
                           <button
@@ -3162,16 +3098,16 @@ function SettingsPage({
                             }
                           >
                             {updatingComponent === component.id
-                              ? "Обновление…"
-                              : "Обновить"}
+                              ? t("Обновление…")
+                              : t("Обновить")}
                           </button>
                         ) : (
                           <em>
                             {component.source === "local"
-                              ? "Защищён"
+                              ? t("Защищён")
                               : component.error
-                                ? "Нет данных"
-                                : "Актуально"}
+                                ? t("Нет данных")
+                                : t("Актуально")}
                           </em>
                         )}
                       </div>
@@ -3180,16 +3116,13 @@ function SettingsPage({
                 ) : (
                   <div className="settings-empty">
                     {updatesLoading
-                      ? "Проверка npm…"
-                      : "Нет данных об обновлениях."}
+                      ? t("Проверка npm…")
+                      : t("Нет данных об обновлениях.")}
                   </div>
                 )}
               </div>
               {!updateStatus?.npmAvailable && updateStatus && (
-                <div className="module-update-notice error">
-                  npm не найден. Проверка версий работает, но установка
-                  обновлений требует Node.js/npm в PATH.
-                </div>
+                <div className="module-update-notice error">{t("npm не найден. Проверка версий работает, но установка обновлений требует Node.js/npm в PATH.")}</div>
               )}
               {updateMessage && (
                 <div
@@ -3198,7 +3131,7 @@ function SettingsPage({
                   {updateMessage}
                 </div>
               )}
-              <h2>Состояние расширений текущего чата</h2>
+              <h2>{t("Состояние расширений текущего чата")}</h2>
               <div className="settings-card module-list">
                 {extensionState?.extensionPaths.length ? (
                   extensionState.extensionPaths.map((extensionPath) => {
@@ -3219,38 +3152,35 @@ function SettingsPage({
                       <SettingRow
                         key={extensionPath}
                         title={name}
-                        description={`${extensionPath}${tools.length ? ` · инструменты ${activeTools}/${tools.length}` : ""}${errors.length ? ` · ошибок ${errors.length}` : ""}`}
-                        value={errors.length ? "Есть ошибки" : "Загружен"}
+                        description={`${extensionPath}${tools.length ? t(" · инструменты {0}/{1}", activeTools, tools.length) : ""}${errors.length ? t(" · ошибок {0}", errors.length) : ""}`}
+                        value={errors.length ? t("Есть ошибки") : t("Загружен")}
                       />
                     );
                   })
                 ) : (
-                  <div className="settings-empty">
-                    Откройте чат, чтобы получить состояние расширений
-                    непосредственно из Pi.
-                  </div>
+                  <div className="settings-empty">{t("Откройте чат, чтобы получить состояние расширений непосредственно из Pi.")}</div>
                 )}
               </div>
               {extensionState && (
                 <>
-                  <h2>Инструменты</h2>
+                  <h2>{t("Инструменты")}</h2>
                   <div className="settings-card module-list">
                     <SettingRow
-                      title="Активные инструменты"
-                      description="Именно этот набор сейчас передаётся модели."
-                      value={`${extensionState.activeTools.length} из ${extensionState.tools.length}`}
+                      title={t("Активные инструменты")}
+                      description={t("Именно этот набор сейчас передаётся модели.")}
+                      value={t("{0} из {1}", extensionState.activeTools.length, extensionState.tools.length)}
                     />
                     {extensionState.errors.map((error, index) => (
                       <SettingRow
                         key={`${error.extensionPath}-${index}`}
-                        title="Ошибка расширения"
-                        description={`${error.extensionPath ?? "Неизвестный модуль"}: ${error.error}`}
+                        title={t("Ошибка расширения")}
+                        description={`${error.extensionPath ?? t("Неизвестный модуль")}: ${error.error}`}
                         value={error.event ?? "runtime"}
                       />
                     ))}
                   </div>
                   <details className="module-tools-details">
-                    <summary>Показать активные инструменты</summary>
+                    <summary>{t("Показать активные инструменты")}</summary>
                     <div>
                       {extensionState.activeTools.map((tool) => (
                         <code key={tool}>{tool}</code>
@@ -3263,12 +3193,9 @@ function SettingsPage({
           )}
           {section === "customization" && (
             <>
-              <h1>Кастомизация</h1>
-              <p className="settings-lead">
-                Глобальные пользовательские инструкции, которые Pi добавляет к
-                своему стандартному системному промпту во всех проектах.
-              </p>
-              <h2>Глобальный пользовательский промпт</h2>
+              <h1>{t("Кастомизация")}</h1>
+              <p className="settings-lead">{t("Глобальные пользовательские инструкции, которые Pi добавляет к своему стандартному системному промпту во всех проектах.")}</p>
+              <h2>{t("Глобальный пользовательский промпт")}</h2>
               <div className="settings-card prompt-editor-card">
                 <textarea
                   value={globalPrompt}
@@ -3288,8 +3215,8 @@ function SettingsPage({
                   disabled={globalPromptLoading}
                   placeholder={
                     globalPromptLoading
-                      ? "Загрузка…"
-                      : "Введите общие правила поведения для Pi…"
+                      ? t("Загрузка…")
+                      : t("Введите общие правила поведения для Pi…")
                   }
                   spellCheck
                 />
@@ -3298,17 +3225,14 @@ function SettingsPage({
                     <span title={globalPromptPath}>
                       {globalPromptPath} · UTF-8
                     </span>
-                    <small>
-                      Открытые чаты перечитают правила перед следующим запросом.
-                    </small>
+                    <small>{t("Открытые чаты перечитают правила перед следующим запросом.")}</small>
                     {globalPromptStatus && (
                       <strong>{globalPromptStatus}</strong>
                     )}
                   </div>
                   <div className="prompt-editor-buttons">
                     <button disabled={!dataDir} onClick={showGlobalPromptFile}>
-                      <FolderOpen size={13} /> Открыть файл
-                    </button>
+                      <FolderOpen size={13} />{t(" Открыть файл")}</button>
                     <button
                       className="primary"
                       disabled={
@@ -3318,7 +3242,7 @@ function SettingsPage({
                       }
                       onClick={() => void saveGlobalPrompt()}
                     >
-                      {globalPromptSaving ? "Сохранение…" : "Сохранить"}
+                      {globalPromptSaving ? t("Сохранение…") : t("Сохранить")}
                     </button>
                   </div>
                 </div>
@@ -3327,89 +3251,89 @@ function SettingsPage({
           )}
           {section === "configuration" && (
             <>
-              <h1>Конфигурация Pi</h1>
+              <h1>{t("Конфигурация Pi")}</h1>
               <div className="settings-card">
                 <SettingRow
-                  title="Модели"
-                  description="Конфигурация провайдеров и локальных моделей."
+                  title={t("Модели")}
+                  description={t("Конфигурация провайдеров и локальных моделей.")}
                   value="data\\agent\\models.json"
-                  action={{ label: "Показать", onClick: showDataFolder }}
+                  action={{ label: t("Показать"), onClick: showDataFolder }}
                 />
                 <SettingRow
                   title="MCP"
-                  description="Подключения Godot AI и управления компьютером."
+                  description={t("Подключения Godot AI и управления компьютером.")}
                   value="data\\agent\\mcp.json"
-                  action={{ label: "Показать", onClick: showDataFolder }}
+                  action={{ label: t("Показать"), onClick: showDataFolder }}
                 />
                 <SettingRow
-                  title="Глобальный промпт"
-                  description="Общие правила поведения моделей во всех проектах."
+                  title={t("Глобальный промпт")}
+                  description={t("Общие правила поведения моделей во всех проектах.")}
                   value={globalPromptPath}
-                  action={{ label: "Показать", onClick: showGlobalPromptFile }}
+                  action={{ label: t("Показать"), onClick: showGlobalPromptFile }}
                 />
                 <SettingRow
-                  title="Настройки ядра"
-                  description="Параметры Pi, модулей, таймаутов и инструментов."
+                  title={t("Настройки ядра")}
+                  description={t("Параметры Pi, модулей, таймаутов и инструментов.")}
                   value="data\\agent\\settings.json"
-                  action={{ label: "Показать", onClick: showDataFolder }}
+                  action={{ label: t("Показать"), onClick: showDataFolder }}
                 />
               </div>
             </>
           )}
           {section === "about" && (
             <>
-              <h1>О программе</h1>
+              <h1>{t("О программе")}</h1>
               <div className="settings-card">
                 <SettingRow
                   title="Pi Desktop"
-                  description="Портативный настольный интерфейс для Pi."
+                  description={t("Портативный настольный интерфейс для Pi.")}
                   value="0.1.0"
                 />
                 <SettingRow
                   title="Pi Engine"
-                  description="Встроенное ядро. Обновляется вместе с приложением."
+                  description={t("Встроенное ядро. Обновляется вместе с приложением.")}
                   value={import.meta.env.VITE_PI_ENGINE_VERSION}
                 />
                 <SettingRow
-                  title="Интерфейс расширений"
-                  description="Инструменты, статусы, уведомления и диалоги работают через RPC."
-                  value="Активен"
+                  title={t("Интерфейс расширений")}
+                  description={t("Инструменты, статусы, уведомления и диалоги работают через RPC.")}
+                  value={t("Активен")}
                 />
               </div>
             </>
           )}
           {section === "shortcuts" && (
             <>
-              <h1>Сочетания клавиш</h1>
+              <h1>{t("Сочетания клавиш")}</h1>
               <div className="settings-card">
                 <SettingRow
-                  title="Новый самостоятельный чат"
-                  description="Создать чат без привязки к проекту."
+                  title={t("Новый самостоятельный чат")}
+                  description={t("Создать чат без привязки к проекту.")}
                   value="Ctrl+N"
                 />
                 <SettingRow
-                  title="Настройки"
-                  description="Открыть настройки Pi Desktop."
+                  title={t("Настройки")}
+                  description={t("Открыть настройки Pi Desktop.")}
                   value="Ctrl+,"
                 />
                 <SettingRow
-                  title="Команды Pi"
-                  description="Открыть палитру встроенных действий и команд расширений."
+                  title={t("Команды Pi")}
+                  description={t("Открыть палитру встроенных действий и команд расширений.")}
                   value="Ctrl+Shift+P"
                 />
                 <SettingRow
-                  title="Боковая панель"
-                  description="Показать или скрыть проекты и чаты."
+                  title={t("Боковая панель")}
+                  description={t("Показать или скрыть проекты и чаты.")}
                   value="Ctrl+B"
                 />
                 <SettingRow
-                  title="Отправить сообщение"
-                  description="Обычная отправка; во время работы сообщение встанет в очередь."
+                  title={t("Отправить сообщение")}
+                  description={t("Обычная отправка; во время работы сообщение встанет в очередь.")}
                   value="Enter"
                 />
                 <SettingRow
-                  title="Отправить в текущую работу"
-                  description="Во время работы немедленно передать корректировку модели."
+                  title={t("Отправить в текущую работу")}
+                  description={t("Во время работы немедленно передать корректировку модели.")}
                   value="Ctrl+Enter"
                 />
               </div>
@@ -3417,41 +3341,37 @@ function SettingsPage({
           )}
           {section === "archive" && (
             <>
-              <h1>Архивированные чаты</h1>
-              <p className="settings-lead">
-                Архив скрывает чат, но сохраняет исходную сессию Pi.
-              </p>
+              <h1>{t("Архивированные чаты")}</h1>
+              <p className="settings-lead">{t("Архив скрывает чат, но сохраняет исходную сессию Pi.")}</p>
               <div className="settings-card archived-chat-list">
                 {archivedConversations.map((conversation) => (
                   <div className="archived-chat-row" key={conversation.id}>
                     <div>
-                      <strong>{conversation.title}</strong>
+                      <strong>{conversationTitle(conversation)}</strong>
                       <p>
                         {conversation.projectId
                           ? (projects.find(
                               (project) =>
                                 project.id === conversation.projectId,
-                            )?.name ?? "Проект")
-                          : "Самостоятельный чат"}
+                            )?.name ?? t("Проект"))
+                          : t("Самостоятельный чат")}
                       </p>
                     </div>
                     <div className="archived-chat-actions">
                       <button
                         onClick={() => onRestoreConversation(conversation.id)}
                       >
-                        <ArchiveRestore size={14} /> Восстановить
-                      </button>
+                        <ArchiveRestore size={14} />{t(" Восстановить")}</button>
                       <button
                         className="danger"
                         onClick={() => onDeleteConversation(conversation.id)}
                       >
-                        <Trash2 size={14} /> Удалить
-                      </button>
+                        <Trash2 size={14} />{t(" Удалить")}</button>
                     </div>
                   </div>
                 ))}
                 {!archivedConversations.length && (
-                  <div className="settings-empty">Архив пуст.</div>
+                  <div className="settings-empty">{t("Архив пуст.")}</div>
                 )}
               </div>
             </>
@@ -3471,6 +3391,7 @@ function SettingsPage({
 }
 
 export default function App() {
+  useLanguage();
   const [bootstrap, setBootstrap] = useState<BootstrapPayload | null>(null);
   const [projects, setProjects] = useState<ProjectRecord[]>([]);
   const [notebookOpen, setNotebookOpen] = useState(false);
@@ -3645,6 +3566,7 @@ export default function App() {
       .bootstrap()
       .then((payload) => {
         if (disposed) return;
+        setLanguage(payload.interfaceLanguage);
         setBootstrap(payload);
         setProjects(payload.projects);
         setConversations(payload.conversations);
@@ -3716,8 +3638,8 @@ export default function App() {
             const title =
               conversationsRef.current.find(
                 (item) => item.id === conversationId,
-              )?.title ?? "Фоновый чат";
-            addNotice(`Задача завершена: ${title}`);
+              )?.title ?? t("Фоновый чат");
+            addNotice(t("Задача завершена: {0}", title));
           }
           return;
         }
@@ -3731,7 +3653,7 @@ export default function App() {
       window.piDesktop.onExtensionUi(({ conversationId, request }) => {
         if (request.method === "notify") {
           addNotice(
-            request.message ?? "Уведомление расширения",
+            request.message ?? t("Уведомление расширения"),
             request.notifyType ?? "info",
           );
           return;
@@ -3745,9 +3667,9 @@ export default function App() {
             const title =
               conversationsRef.current.find(
                 (item) => item.id === conversationId,
-              )?.title ?? "Фоновый чат";
+              )?.title ?? t("Фоновый чат");
             addNotice(
-              `Расширение ожидает действие в чате «${title}»`,
+              t("Расширение ожидает действие в чате «{0}»", title),
               "warning",
             );
           }
@@ -4034,7 +3956,7 @@ export default function App() {
         setDiffOpen(false);
       }
     } else if (event.type === "desktop_chat_naming") {
-      setWorkingMessage(event.active ? "Модель выбирает название чата…" : "");
+      setWorkingMessage(event.active ? t("Модель выбирает название чата…") : "");
     } else if (event.type === "desktop_plan_activity") {
       setSnapshot(current => current ? { ...current, planWorkingRevision: event.revision } : current);
     } else if (event.type === "desktop_history_rewound" && event.snapshot) {
@@ -4227,7 +4149,7 @@ export default function App() {
           ? { ...current, state: { ...current.state, isCompacting: true } }
           : current,
       );
-      setWorkingMessage("Сжатие контекста…");
+      setWorkingMessage(t("Сжатие контекста…"));
     } else if (event.type === "compaction_end") {
       setSnapshot((current) =>
         current
@@ -4246,11 +4168,11 @@ export default function App() {
       setWorking(Boolean(event.state?.isStreaming));
       setWorkingMessage("");
       if (event.errorMessage)
-        addNotice(`Сжатие контекста: ${String(event.errorMessage)}`, "warning");
+        addNotice(t("Сжатие контекста: {0}", String(event.errorMessage)), "warning");
     } else if (event.type === "auto_retry_start") {
       setWorking(true);
       setWorkingMessage(
-        `Повтор запроса ${Number(event.attempt ?? 0)}/${Number(event.maxAttempts ?? 0)}…`,
+        t("Повтор запроса {0}/{1}…", Number(event.attempt ?? 0), Number(event.maxAttempts ?? 0)),
       );
     } else if (event.type === "auto_retry_end") {
       setWorkingMessage("");
@@ -4258,19 +4180,19 @@ export default function App() {
         addNotice(String(event.finalError), "error");
     } else if (event.type === "summarization_retry_scheduled") {
       setWorkingMessage(
-        `Повтор сжатия ${Number(event.attempt ?? 0)}/${Number(event.maxAttempts ?? 0)}…`,
+        t("Повтор сжатия {0}/{1}…", Number(event.attempt ?? 0), Number(event.maxAttempts ?? 0)),
       );
     } else if (event.type === "summarization_retry_finished") {
       setWorkingMessage("");
     } else if (event.type === "desktop_persistence_error") {
-      addNotice(String(event.error ?? "Не удалось сохранить состояние чата"), "error");
+      addNotice(String(event.error ?? t("Не удалось сохранить состояние чата")), "error");
       // Persistence errors do not terminate the live model process.
     } else if (event.type === "extension_error") {
       // An extension failure is not a run-settled event. The agent may recover
       // or continue with other tools; keep Stop and the live indicator available.
-      addNotice(String(event.error ?? "Ошибка расширения Pi"), "error");
+      addNotice(String(event.error ?? t("Ошибка расширения Pi")), "error");
     } else if (event.type === "runtime_error") {
-      addNotice(String(event.error ?? "Ошибка Pi"), "error");
+      addNotice(String(event.error ?? t("Ошибка Pi")), "error");
       setWorking(false);
       setWorkingMessage("");
       if (typeof event.run?.durationMs === "number")
@@ -4286,12 +4208,12 @@ export default function App() {
         setWorkingMessage(preparingMessage);
       } else {
         setWorkingMessage((current) =>
-          current.startsWith("Подготавливаю отслеживание") ? "" : current,
+          current.startsWith(t("Подготавливаю отслеживание")) ? "" : current,
         );
       }
     } else if (event.type === "desktop_diff_error") {
       addNotice(
-        `Не удалось построить diff: ${String(event.error ?? "неизвестная ошибка")}`,
+        t("Не удалось построить diff: {0}", String(event.error ?? t("неизвестная ошибка"))),
         "warning",
       );
     } else if (event.type === "desktop_queue_update") {
@@ -4300,7 +4222,7 @@ export default function App() {
       );
     } else if (event.type === "desktop_queue_error") {
       addNotice(
-        `Не удалось автоматически отправить сообщение из очереди: ${String(event.error ?? "неизвестная ошибка")}`,
+        t("Не удалось автоматически отправить сообщение из очереди: {0}", String(event.error ?? t("неизвестная ошибка"))),
         "error",
       );
     }
@@ -4674,7 +4596,7 @@ export default function App() {
   const changePlanning = async (action: "start" | "revise" | "approve" | "cancel", revision: number) => {
     if (!activeConversationId) return;
     const id = activeConversationId;
-    if (!beginRequest(id)) throw new Error("Дождитесь завершения предыдущего действия.");
+    if (!beginRequest(id)) throw new Error(t("Дождитесь завершения предыдущего действия."));
     try {
       await window.piDesktop.controlPlanning(id, action, revision);
       if (activeIdRef.current === id) {
@@ -4691,8 +4613,8 @@ export default function App() {
     const quick = explainQuote !== undefined;
     const submittedQuotes = quick ? [explainQuote] : historyQuotes;
     const originalInput = input;
-    const message = quick ? "Объясни подробнее выделенный фрагмент." :
-      input.trim() || (attachments.length ? "Посмотри вложения." : historyQuotes.length ? "Посмотри выделенные фрагменты." : "");
+    const message = quick ? t("Объясни подробнее выделенный фрагмент.") :
+      input.trim() || (attachments.length ? t("Посмотри вложения.") : historyQuotes.length ? t("Посмотри выделенные фрагменты.") : "");
     const text = message ? quotedHistoryPrompt(message, submittedQuotes) : "";
     if (!text && !quick && primaryAction === "resume") { await resumeExecution(); return; }
     if (!text || !activeConversationId || (!working && pendingRequestIdsRef.current.has(activeConversationId))) return;
@@ -4918,7 +4840,7 @@ export default function App() {
   const dropAttachments = async (files: File[]) => {
     const conversationId = activeConversationId;
     if (!conversationId) {
-      addNotice("Сначала откройте или создайте чат.", "error");
+      addNotice(t("Сначала откройте или создайте чат."), "error");
       return;
     }
     try {
@@ -5042,7 +4964,7 @@ export default function App() {
     setCommandPaletteOpen(false);
     setCompactDialogOpen(false);
     setWorking(true);
-    setWorkingMessage("Сжатие контекста…");
+    setWorkingMessage(t("Сжатие контекста…"));
     setStartedAt(started);
     startedAtRef.current = started;
     setElapsed(0);
@@ -5053,7 +4975,7 @@ export default function App() {
         instructions,
       );
       applyRuntimeSnapshot(next);
-      addNotice("Контекст сжат штатным механизмом Pi.", "info");
+      addNotice(t("Контекст сжат штатным механизмом Pi."), "info");
     } catch (error) {
       addNotice(
         error instanceof Error ? error.message : String(error),
@@ -5074,17 +4996,17 @@ export default function App() {
     if (!activeConversationId || working) return;
     if (
       !window.confirm(
-        "Перезагрузить расширения, навыки, промпты и настройки Pi? Текущий процесс перечитает конфигурацию, поэтому KV-кэш может быть пересчитан.",
+        t("Перезагрузить расширения, навыки, промпты и настройки Pi? Текущий процесс перечитает конфигурацию, поэтому KV-кэш может быть пересчитан."),
       )
     )
       return;
     setCommandPaletteOpen(false);
     setWorking(true);
-    setWorkingMessage("Перезагрузка ресурсов Pi…");
+    setWorkingMessage(t("Перезагрузка ресурсов Pi…"));
     try {
       const next = await window.piDesktop.reloadRuntime(activeConversationId);
       applyRuntimeSnapshot(next);
-      addNotice("Ресурсы Pi перезагружены.", "info");
+      addNotice(t("Ресурсы Pi перезагружены."), "info");
     } catch (error) {
       addNotice(
         error instanceof Error ? error.message : String(error),
@@ -5294,9 +5216,9 @@ export default function App() {
     return {
       id,
       name: String(
-        call.name && call.name !== "Инструмент"
+        call.name && call.name !== t("Инструмент")
           ? call.name
-          : (live?.name ?? persisted?.toolName ?? "Инструмент"),
+          : (live?.name ?? persisted?.toolName ?? t("Инструмент")),
       ),
       args: call.arguments ?? call.args ?? live?.args,
       partialArguments:
@@ -5331,14 +5253,14 @@ export default function App() {
       String(part.thinking ?? part.text ?? "").trim(),
   );
   const activityLabel = runningTool
-    ? `Выполняется: ${toolPresentation(runningTool.name, parsedToolArguments(runningTool.args)).label}`
+    ? t("Выполняется: {0}", toolPresentation(runningTool.name, parsedToolArguments(runningTool.args)).label)
     : workingMessage
       ? workingMessage
       : hasStreamingAnswer
-        ? "Модель формирует ответ…"
+        ? t("Модель формирует ответ…")
         : hasStreamingThinking
-          ? hiddenThinkingLabel || "Модель размышляет…"
-          : "Модель работает…";
+          ? hiddenThinkingLabel || t("Модель размышляет…")
+          : t("Модель работает…");
   const transcriptItemKey = (
     item: TranscriptTimelineItem,
     index: number,
@@ -5356,11 +5278,10 @@ export default function App() {
       return (
         <div className="compaction-entry">
           <Check size={14} />
-          <span>
-            Контекст сжат: <strong>{formatCompactTokens(tokensBefore)}</strong>{" "}
+          <span>{t("Контекст сжат:")}<strong>{formatCompactTokens(tokensBefore)}</strong>{" "}
             → <strong>{formatCompactTokens(tokensAfter)}</strong>
             {item.record?.durationMs !== undefined
-              ? ` за ${formatElapsed(item.record.durationMs)}`
+              ? t(" за {0}", formatElapsed(item.record.durationMs))
               : ""}
           </span>
         </div>
@@ -5386,7 +5307,7 @@ export default function App() {
           hideMedia={published?.has(id ?? messageKey(message, index))}
           tool={{
             id: id ?? messageKey(message, index),
-            name: String(message.toolName ?? message.name ?? "Инструмент"),
+            name: String(message.toolName ?? message.name ?? t("Инструмент")),
             result: resultMessagePayload(message),
             running: false,
             error: Boolean(message.isError),
@@ -5422,14 +5343,12 @@ export default function App() {
             )}
             {historyTarget && activeConversationId && (historyTarget.editable || canRewind) && (
               <div className="message-history-actions">
-                {historyTarget.editable && <button title="Редактировать последнее сообщение" disabled={working || historyBusy}
+                {historyTarget.editable && <button title={t("Редактировать последнее сообщение")} disabled={working || historyBusy}
                   onClick={() => setHistoryAction({ conversationId: activeConversationId, entryId: historyTarget.entryId, mode: "edit", text: messageText(originalMessage) })}>
-                  <Pencil size={13} />Изменить
-                </button>}
-                {canRewind && <button title="Откатить сессию до этого сообщения включительно" disabled={working || historyBusy}
+                  <Pencil size={13} />{t("Изменить")}</button>}
+                {canRewind && <button title={t("Откатить сессию до этого сообщения включительно")} disabled={working || historyBusy}
                   onClick={() => setHistoryAction({ conversationId: activeConversationId, entryId: historyTarget.entryId, mode: "rewind", text: messageText(originalMessage) })}>
-                  <RotateCcw size={13} />Откатить сюда
-                </button>}
+                  <RotateCcw size={13} />{t("Откатить сюда")}</button>}
               </div>
             )}
           </article>
@@ -5543,15 +5462,15 @@ export default function App() {
     const { calls, errors, thinking } = foldStats(display.process);
     const label =
       thinking && calls
-        ? "Размышления и инструменты"
+        ? t("Размышления и инструменты")
         : thinking
-          ? "Размышления"
+          ? t("Размышления")
           : calls
-            ? "Инструменты"
-            : "Ход работы";
+            ? t("Инструменты")
+            : t("Ход работы");
     const summary = [label];
-    if (calls) summary.push(`вызовов: ${calls}`);
-    if (errors) summary.push(`с ошибками: ${errors}`);
+    if (calls) summary.push(t("вызовов: {0}", calls));
+    if (errors) summary.push(t("с ошибками: {0}", errors));
     return (
       <div className="process-fold">
         <button
@@ -5589,8 +5508,8 @@ export default function App() {
               className="title-icon"
               title={
                 sidebarOpen
-                  ? "Скрыть боковую панель"
-                  : "Показать боковую панель"
+                  ? t("Скрыть боковую панель")
+                  : t("Показать боковую панель")
               }
               onClick={() => setSidebarOpen((value) => !value)}
             >
@@ -5633,14 +5552,14 @@ export default function App() {
                   <input
                     value={search}
                     onChange={(event) => setSearch(event.target.value)}
-                    placeholder="Поиск по чатам"
+                    placeholder={t("Поиск по чатам")}
                   />
                 </div>
                 <div className="project-list">
                   <div className="sidebar-section-title">
-                    <span>Проекты</span>
+                    <span>{t("Проекты")}</span>
                     <button
-                      title="Создать проект"
+                      title={t("Создать проект")}
                       onClick={() => setProjectDialogOpen(true)}
                     >
                       <Plus size={15} />
@@ -5664,14 +5583,14 @@ export default function App() {
                         </button>
                         <button
                           className="project-new-chat"
-                          title={`Новый чат в проекте «${project.name}»`}
+                          title={t("Новый чат в проекте «{0}»", project.name)}
                           onClick={() => void newChat(project.id)}
                         >
                           <Plus size={14} />
                         </button>
                         <button
                           className="project-more"
-                          title="Действия с проектом"
+                          title={t("Действия с проектом")}
                           onClick={(event) =>
                             showProjectMenu(event, project.id)
                           }
@@ -5694,11 +5613,11 @@ export default function App() {
                               onClick={() => void openConversation(chat.id)}
                             >
                               <span className={`status-dot ${chat.status}`} />
-                              <span>{chat.title}</span>
+                              <span>{conversationTitle(chat)}</span>
                             </button>
                             <button
                               className="chat-more"
-                              title="Действия с чатом"
+                              title={t("Действия с чатом")}
                               onClick={(event) =>
                                 showConversationMenu(event, chat.id)
                               }
@@ -5714,10 +5633,9 @@ export default function App() {
                     className="new-chat-button standalone-new-chat"
                     onClick={() => void newChat()}
                   >
-                    <MessageSquarePlus size={17} /> Новый чат
-                  </button>
+                    <MessageSquarePlus size={17} />{t(" Новый чат")}</button>
                   <div className="sidebar-section-title chats-title">
-                    <span>Чаты</span>
+                    <span>{t("Чаты")}</span>
                   </div>
                   <div className="standalone-chat-list">
                     {standaloneChats.map((chat) => (
@@ -5734,11 +5652,11 @@ export default function App() {
                           onClick={() => void openConversation(chat.id)}
                         >
                           <span className={`status-dot ${chat.status}`} />
-                          <span>{chat.title}</span>
+                          <span>{conversationTitle(chat)}</span>
                         </button>
                         <button
                           className="chat-more"
-                          title="Действия с чатом"
+                          title={t("Действия с чатом")}
                           onClick={(event) =>
                             showConversationMenu(event, chat.id)
                           }
@@ -5748,9 +5666,7 @@ export default function App() {
                       </div>
                     ))}
                     {!standaloneChats.length && (
-                      <div className="sidebar-empty">
-                        Самостоятельных чатов пока нет
-                      </div>
+                      <div className="sidebar-empty">{t("Самостоятельных чатов пока нет")}</div>
                     )}
                   </div>
                 </div>
@@ -5759,7 +5675,7 @@ export default function App() {
                   onClick={() => setSettingsOpen(true)}
                 >
                   <Settings size={16} />
-                  <span>Настройки</span>
+                  <span>{t("Настройки")}</span>
                 </button>
               </aside>
             )}
@@ -5788,7 +5704,7 @@ export default function App() {
                 void dropAttachments(Array.from(event.dataTransfer.files));
               }}
             >
-              {draggingFiles && <div className="chat-drop-overlay"><div>Отпустите, чтобы прикрепить к сообщению</div></div>}
+              {draggingFiles && <div className="chat-drop-overlay"><div>{t("Отпустите, чтобы прикрепить к сообщению")}</div></div>}
               <header className="chat-header">
                 <button
                   className="icon-button"
@@ -5798,22 +5714,22 @@ export default function App() {
                 </button>
                 {activeProject ? <FolderOpen size={17} /> : <Bot size={17} />}
                 <strong>
-                  {activeConversation?.title ??
+                  {(activeConversation ? conversationTitle(activeConversation) : undefined) ??
                     activeProject?.name ??
                     "Pi Desktop"}
                 </strong>
                 <div className="header-spacer" />
-                {activeConversationId && window.piDesktop.webMode !== "remote" && <button className={`notebook-toggle${skillsOpen ? " is-active" : ""}`} title="Навыки — переиспользуемые инструкции"
-                  aria-label="Навыки" aria-expanded={skillsOpen} onClick={() => { setSkillsOpen(value => !value); setPlanningOpen(false); setNotebookOpen(false); }}><Wrench size={17} /><span>Навыки</span></button>}
-                {activeConversationId && planning && <button className={`notebook-toggle${planningOpen ? " is-active" : ""}`} title={planning.phase === "completed" ? "План реализации выполнен" : "Документ плана реализации"}
-                  aria-label="План реализации" aria-expanded={planningOpen} onClick={() => { setPlanningOpen(value => !value); setNotebookOpen(false); setSkillsOpen(false); }}>{planning.phase === "completed" ? <Check size={17} /> : <ListChecks size={17} />}<span>{planning.phase === "completed" ? "План выполнен" : "План"}</span></button>}
-                {activeConversationId && <button className={`notebook-toggle${notebookOpen ? " is-active" : ""}`} title="Блокнот — память текущего чата"
-                  aria-label="Блокнот" aria-expanded={notebookOpen} onClick={() => { setNotebookOpen(value => !value); setPlanningOpen(false); }}><BookOpen size={17} /><span>Блокнот</span></button>}
+                {activeConversationId && window.piDesktop.webMode !== "remote" && <button className={`notebook-toggle${skillsOpen ? " is-active" : ""}`} title={t("Навыки — переиспользуемые инструкции")}
+                  aria-label={t("Навыки")} aria-expanded={skillsOpen} onClick={() => { setSkillsOpen(value => !value); setPlanningOpen(false); setNotebookOpen(false); }}><Wrench size={17} /><span>{t("Навыки")}</span></button>}
+                {activeConversationId && planning && <button className={`notebook-toggle${planningOpen ? " is-active" : ""}`} title={planning.phase === "completed" ? t("План реализации выполнен") : t("Документ плана реализации")}
+                  aria-label={t("План реализации")} aria-expanded={planningOpen} onClick={() => { setPlanningOpen(value => !value); setNotebookOpen(false); setSkillsOpen(false); }}>{planning.phase === "completed" ? <Check size={17} /> : <ListChecks size={17} />}<span>{planning.phase === "completed" ? t("План выполнен") : t("План")}</span></button>}
+                {activeConversationId && <button className={`notebook-toggle${notebookOpen ? " is-active" : ""}`} title={t("Блокнот — память текущего чата")}
+                  aria-label={t("Блокнот")} aria-expanded={notebookOpen} onClick={() => { setNotebookOpen(value => !value); setPlanningOpen(false); }}><BookOpen size={17} /><span>{t("Блокнот")}</span></button>}
                 <BrowserPanel conversationId={activeConversationId ?? undefined} />
                 {activeProject && (
                   <button
                     className="path-button"
-                    title={`Показать в проводнике: ${activeProject.path}`}
+                    title={t("Показать в проводнике: {0}", activeProject.path)}
                     onClick={() =>
                       void window.piDesktop.showItemInFolder(activeProject.path)
                     }
@@ -5845,32 +5761,27 @@ export default function App() {
                 {loading ? (
                   <div className="chat-loading" role="status" aria-live="polite">
                     <span className="spinner" />
-                    <strong>{bootstrap ? "Загрузка чата…" : "Запуск приложения…"}</strong>
-                    <span>Можно переключиться на другой чат</span>
+                    <strong>{bootstrap ? t("Загрузка чата…") : t("Запуск приложения…")}</strong>
+                    <span>{t("Можно переключиться на другой чат")}</span>
                   </div>
                 ) : !activeConversationId ? (
                   <div className="welcome">
                     <div className="welcome-logo">
                       <Bot size={34} />
                     </div>
-                    <h1>С чего начнём?</h1>
-                    <p>
-                      Начните самостоятельный чат или создайте проект с одной
-                      или несколькими рабочими папками.
-                    </p>
+                    <h1>{t("С чего начнём?")}</h1>
+                    <p>{t("Начните самостоятельный чат или создайте проект с одной или несколькими рабочими папками.")}</p>
                     <div className="welcome-actions">
                       <button
                         className="primary large"
                         onClick={() => void newChat()}
                       >
-                        <MessageSquarePlus size={18} /> Новый чат
-                      </button>
+                        <MessageSquarePlus size={18} />{t(" Новый чат")}</button>
                       <button
                         className="secondary large"
                         onClick={() => setProjectDialogOpen(true)}
                       >
-                        <FolderOpen size={18} /> Создать проект
-                      </button>
+                        <FolderOpen size={18} />{t(" Создать проект")}</button>
                     </div>
                   </div>
                 ) : (
@@ -5912,7 +5823,7 @@ export default function App() {
                           </span>
                         </div>
                         <div className="run-activity-total">
-                          <Clock3 size={13} /> Работаю…{" "}
+                          <Clock3 size={13} />{t(" Работаю…")}{" "}
                           <strong>{formatElapsed(elapsed)}</strong>
                         </div>
                       </div>
@@ -5921,20 +5832,20 @@ export default function App() {
                       <div className="run-activity" role="status" aria-live="polite">
                         <div className="run-activity-phase">
                           <WorkingIndicator />
-                          <span className="working-message">Подготовка запроса…</span>
+                          <span className="working-message">{t("Подготовка запроса…")}</span>
                         </div>
                       </div>
                     )}
                     {!working && !requestPending && snapshot?.run?.error && (
                       <div className="run-error" role="alert">
-                        <strong>Работа прервана из-за ошибки</strong>
+                        <strong>{t("Работа прервана из-за ошибки")}</strong>
                         <div>{snapshot.run.error}</div>
                       </div>
                     )}
                     {!working && !requestPending && lastDuration !== undefined && (
                       <div className="run-complete">
                         <span>
-                          <Clock3 size={13} /> Запрос занял{" "}
+                          <Clock3 size={13} />{t(" Запрос занял")}{" "}
                           {formatElapsed(lastDuration)}
                         </span>
                         {runDiff && runDiff.files.length > 0 && (
@@ -5946,8 +5857,8 @@ export default function App() {
                                 <span className="run-diff-card-summary">
                                   <strong>
                                     {runDiff.files.length === 1
-                                      ? "Изменён"
-                                      : "Изменены"}{" "}
+                                      ? t("Изменён")
+                                      : t("Изменены")}{" "}
                                     {runDiff.files.length}{" "}
                                     {pluralFiles(runDiff.files.length)}
                                   </strong>
@@ -5963,9 +5874,7 @@ export default function App() {
                                 <button
                                   className="run-diff-review"
                                   onClick={() => setDiffOpen(true)}
-                                >
-                                  Проверить
-                                </button>
+                                >{t("Проверить")}</button>
                               </div>
                               <div className="run-diff-file-list">
                                 {runDiff.files.map((file) => (
@@ -5986,10 +5895,7 @@ export default function App() {
                                   </div>
                                 ))}
                                 {runDiff.incomplete && (
-                                  <div className="run-diff-incomplete">
-                                    Некоторые большие или двоичные файлы не
-                                    показаны.
-                                  </div>
+                                  <div className="run-diff-incomplete">{t("Некоторые большие или двоичные файлы не показаны.")}</div>
                                 )}
                               </div>
                             </section>
@@ -6000,15 +5906,15 @@ export default function App() {
                 )}
               </div>
 
-              {activeConversationId && planning && planningOpen && <aside className="conversation-plan conversation-notebook" aria-label="План реализации текущего чата">
+              {activeConversationId && planning && planningOpen && <aside className="conversation-plan conversation-notebook" aria-label={t("План реализации текущего чата")}>
                 <PlanningPanel key={`planning-${activeConversationId}`} planning={planning} working={working || requestPending} onAction={changePlanning} onClose={() => setPlanningOpen(false)} />
               </aside>}
-              {activeConversationId && snapshot && notebookOpen && !planningOpen && <aside className="conversation-plan conversation-notebook" aria-label="Блокнот текущего чата">
+              {activeConversationId && snapshot && notebookOpen && !planningOpen && <aside className="conversation-plan conversation-notebook" aria-label={t("Блокнот текущего чата")}>
                 <NotebookPanel key={`notebook-${activeConversationId}`} conversationId={activeConversationId} notebook={snapshot.conversation.notebook} open={notebookOpen} onClose={() => setNotebookOpen(false)} />
               </aside>}
               {activeConversationId && skillsOpen && <SkillsPanel key={`skills-${activeConversationId}`} conversationId={activeConversationId} onClose={() => setSkillsOpen(false)} />}
               {activeConversationId && !planMode && !notebookOpen && !planningOpen && snapshot?.conversation.plan?.steps.length ? (
-                <aside className="conversation-plan" aria-label="План текущего чата">
+                <aside className="conversation-plan" aria-label={t("План текущего чата")}>
                   <PlanPanel key={`plan-${snapshot.conversation.id}`} conversationId={snapshot.conversation.id} plan={snapshot.conversation.plan} working={planIsWorking(snapshot.conversation.plan, working, snapshot.planWorkingRevision)} />
                 </aside>
               ) : null}
@@ -6020,8 +5926,8 @@ export default function App() {
                     <button
                       className="scroll-to-bottom"
                       type="button"
-                      title="К концу чата"
-                      aria-label="Прокрутить чат до конца"
+                      title={t("К концу чата")}
+                      aria-label={t("Прокрутить чат до конца")}
                       onClick={() => scrollConversationToBottomSmooth()}
                     >
                       <ArrowDown size={17} />
@@ -6039,8 +5945,7 @@ export default function App() {
                         <button
                           className="diff-summary-chip"
                           onClick={() => setDiffOpen(true)}
-                        >
-                          Изменено {runDiff.files.length}{" "}
+                        >{t("Изменено")}{runDiff.files.length}{" "}
                           {pluralFiles(runDiff.files.length)}{" "}
                           <span className="diff-add">+{runDiff.additions}</span>{" "}
                           <span className="diff-remove">
@@ -6059,7 +5964,7 @@ export default function App() {
                           <span>
                             <strong>/{command.name}</strong>
                             <small>
-                              {command.description ?? command.source}
+                              {command.source === "builtin" ? t(command.description ?? command.source) : command.description ?? command.source}
                             </small>
                           </span>
                           <em>{command.source}</em>
@@ -6070,34 +5975,34 @@ export default function App() {
                   {queuedPrompts.length > 0 && (
                     <div className="queued-messages desktop-queue">
                       <div className="queued-head">
-                        <span>Ожидают отправки: {queuedPrompts.length}</span>
+                        <span>{t("Ожидают отправки:")}{" "}{queuedPrompts.length}</span>
                       </div>
                       {queuedPrompts.map((prompt) => (
                         <div className="queued-message" key={prompt.id}>
                           <Clock3 size={13} />
                           <span title={prompt.message}>{prompt.message}</span>
                           {prompt.attachments.length > 0 && (
-                            <small>{prompt.attachments.length} влож.</small>
+                            <small>{prompt.attachments.length}{t(" влож.")}</small>
                           )}
                           <div className="queued-actions">
                             <button
                               className="queued-send"
-                              title="Передать сообщение модели"
+                              title={t("Передать сообщение модели")}
                               disabled={Boolean(queuedActionId)}
                               onClick={() => void sendQueuedPrompt(prompt)}
                             >
                               <Zap size={13} />
-                              <span>Скорректировать</span>
+                              <span>{t("Скорректировать")}</span>
                             </button>
                             <button
-                              title="Вернуть в поле ввода"
+                              title={t("Вернуть в поле ввода")}
                               disabled={Boolean(queuedActionId)}
                               onClick={() => void editQueuedPrompt(prompt)}
                             >
                               <Pencil size={13} />
                             </button>
                             <button
-                              title="Удалить из очереди"
+                              title={t("Удалить из очереди")}
                               disabled={Boolean(queuedActionId)}
                               onClick={() => void deleteQueuedPrompt(prompt.id)}
                             >
@@ -6112,13 +6017,10 @@ export default function App() {
                     followUpMessages.length > 0) && (
                     <div className="queued-messages">
                       <div className="queued-head">
-                        <span>
-                          Очередь Pi:{" "}
+                        <span>{t("Очередь Pi:")}{" "}
                           {steeringMessages.length + followUpMessages.length}
                         </span>
-                        <button onClick={() => void restoreQueuedMessages()}>
-                          Вернуть в редактор
-                        </button>
+                        <button onClick={() => void restoreQueuedMessages()}>{t("Вернуть в редактор")}</button>
                       </div>
                       {steeringMessages.map((message, index) => (
                         <div
@@ -6127,14 +6029,14 @@ export default function App() {
                         >
                           <Zap size={13} />
                           <span>{message}</span>
-                          <small>в текущую работу</small>
+                          <small>{t("в текущую работу")}</small>
                         </div>
                       ))}
                       {followUpMessages.map((message, index) => (
                         <div className="queued-message" key={`follow-${index}`}>
                           <Clock3 size={13} />
                           <span>{message}</span>
-                          <small>следом</small>
+                          <small>{t("следом")}</small>
                         </div>
                       ))}
                     </div>
@@ -6150,11 +6052,11 @@ export default function App() {
                     ))}
                   <div className="composer">
                     {historyQuotes.length > 0 && (
-                      <div className="history-quote-list" aria-label="Цитаты из переписки">
+                      <div className="history-quote-list" aria-label={t("Цитаты из переписки")}>
                         {historyQuotes.map((quote, index) => (
                           <div className="history-quote" key={index}>
                             <blockquote title={quote}>{quote}</blockquote>
-                            <button type="button" title="Убрать цитату" aria-label="Убрать цитату"
+                            <button type="button" title={t("Убрать цитату")} aria-label={t("Убрать цитату")}
                               onClick={() => setHistoryQuotes(current => current.filter((_, i) => i !== index))}>
                               <X size={14} />
                             </button>
@@ -6185,12 +6087,12 @@ export default function App() {
                                   src={`data:${attachment.mimeType};base64,${attachment.data}`}
                                   alt={attachment.name}
                                 />
-                                {!attachment.maskFor && <button className="attachment-mask-button" type="button" title="Нарисовать маску" onClick={() => setMaskTarget(attachment)}>Маска</button>}
-                                {attachment.maskFor && <span className="attachment-mask-label">Маска</span>}
+                                {!attachment.maskFor && <button className="attachment-mask-button" type="button" title={t("Нарисовать маску")} onClick={() => setMaskTarget(attachment)}>{t("Маска")}</button>}
+                                {attachment.maskFor && <span className="attachment-mask-label">{t("Маска")}</span>}
                                 <button
                                   type="button"
-                                  title="Удалить изображение"
-                                  aria-label={`Удалить ${attachment.name}`}
+                                  title={t("Удалить изображение")}
+                                  aria-label={t("Удалить {0}", attachment.name)}
                                   onClick={remove}
                                 >
                                   <X size={13} />
@@ -6208,8 +6110,8 @@ export default function App() {
                               <span>{attachment.name}</span>
                               <button
                                 type="button"
-                                title="Удалить вложение"
-                                aria-label={`Удалить ${attachment.name}`}
+                                title={t("Удалить вложение")}
+                                aria-label={t("Удалить {0}", attachment.name)}
                                 onClick={remove}
                               >
                                 <X size={13} />
@@ -6250,10 +6152,10 @@ export default function App() {
                       }}
                       placeholder={
                         working
-                          ? "Сообщение будет добавлено в очередь…"
+                          ? t("Сообщение будет добавлено в очередь…")
                           : goalMode
-                            ? "Опишите цель"
-                            : "Спросите что-нибудь или опишите задачу"
+                            ? t("Опишите цель")
+                            : t("Спросите что-нибудь или опишите задачу")
                       }
                       rows={2}
                     />
@@ -6261,7 +6163,7 @@ export default function App() {
                       <div className="composer-add-wrap">
                         <button
                           className="icon-button"
-                          title="Добавить"
+                          title={t("Добавить")}
                           onClick={() => {
                             setModelMenuOpen(false);
                             setThinkingMenuOpen(false);
@@ -6280,8 +6182,8 @@ export default function App() {
                             >
                               <Paperclip size={16} />
                               <span>
-                                <strong>Файлы и папки</strong>
-                                <small>Добавить вложения</small>
+                                <strong>{t("Файлы и папки")}</strong>
+                                <small>{t("Добавить вложения")}</small>
                               </span>
                             </button>
                             <button
@@ -6295,15 +6197,13 @@ export default function App() {
                             >
                               <Target size={16} />
                               <span>
-                                <strong>Цель</strong>
-                                <small>
-                                  Поставьте цель, к которой будете двигаться
-                                </small>
+                                <strong>{t("Цель")}</strong>
+                                <small>{t("Поставьте цель, к которой будете двигаться")}</small>
                               </span>
                             </button>
                             <button aria-pressed={planMode} disabled={working || requestPending} onClick={() => { setAddMenuOpen(false); void changePlanning(planMode ? "cancel" : "start", planning?.revision ?? 0).catch(error => addNotice(String(error), "error")); }}>
                               <ListChecks size={16} />
-                              <span><strong>План</strong><small>Изучить задачу и согласовать план · только чтение</small></span>
+                              <span><strong>{t("План")}</strong><small>{t("Изучить задачу и согласовать план · только чтение")}</small></span>
                               {planMode && <Check size={14} />}
                             </button>
                           </div>
@@ -6311,25 +6211,25 @@ export default function App() {
                       </div>
                       <button
                         className="icon-button"
-                        title="Команды Pi (Ctrl+Shift+P)"
+                        title={t("Команды Pi (Ctrl+Shift+P)")}
                         onClick={() => setCommandPaletteOpen(true)}
                       >
                         <SquareTerminal size={17} />
                       </button>
                       <span className="access-chip">
-                        <Check size={13} /> {planMode ? "План · только чтение" : "Полный доступ"}
+                        <Check size={13} /> {planMode ? t("План · только чтение") : t("Полный доступ")}
                       </span>
                       {goalMode && (
                         <button
                           className="goal-mode-chip"
-                          title="Отключить режим цели"
+                          title={t("Отключить режим цели")}
                           onClick={() => setGoalMode(false)}
                         >
-                          <Target size={14} /> Цель <X size={12} />
+                          <Target size={14} />{t(" Цель")}{" "}<X size={12} />
                         </button>
                       )}
-                      {planMode && <button className="goal-mode-chip" title="Открыть план для согласования"
-                        onClick={() => { setPlanningOpen(true); setNotebookOpen(false); setSkillsOpen(false); }}><ListChecks size={14} />{planning?.phase === "review" ? "Согласование плана" : "Планирование"}</button>}
+                      {planMode && <button className="goal-mode-chip" title={t("Открыть план для согласования")}
+                        onClick={() => { setPlanningOpen(true); setNotebookOpen(false); setSkillsOpen(false); }}><ListChecks size={14} />{planning?.phase === "review" ? t("Согласование плана") : t("Планирование")}</button>}
                       <div className="composer-spacer" />
                       <div className="dropdown-wrap model-dropdown-wrap">
                         <button
@@ -6337,7 +6237,7 @@ export default function App() {
                           title={
                             snapshot?.state.model?.name ??
                             snapshot?.state.model?.id ??
-                            "Модель"
+                            t("Модель")
                           }
                           onClick={() => {
                             setThinkingMenuOpen(false);
@@ -6348,7 +6248,7 @@ export default function App() {
                           <span className="selector-label">
                             {snapshot?.state.model?.name ??
                               snapshot?.state.model?.id ??
-                              "Модель"}
+                              t("Модель")}
                           </span>
                           <ChevronDown size={13} />
                         </button>
@@ -6377,7 +6277,7 @@ export default function App() {
                       <div className="dropdown-wrap thinking-dropdown-wrap">
                         <button
                           className="selector-button thinking-selector-button"
-                          title="Уровень рассуждений"
+                          title={t("Уровень рассуждений")}
                           onClick={() => {
                             setModelMenuOpen(false);
                             setThinkingMenuOpen((value) => !value);
@@ -6385,9 +6285,9 @@ export default function App() {
                         >
                           <span className="selector-label">
                             {
-                              THINKING_LABELS[
+                              t(THINKING_LABELS[
                                 snapshot?.state.thinkingLevel ?? "off"
-                              ]
+                              ])
                             }
                           </span>
                           <ChevronDown size={13} />
@@ -6400,7 +6300,7 @@ export default function App() {
                                 className="dropdown-item"
                                 onClick={() => void changeThinking(level)}
                               >
-                                <span>{THINKING_LABELS[level]}</span>
+                                <span>{t(THINKING_LABELS[level])}</span>
                                 {snapshot.state.thinkingLevel === level && (
                                   <Check size={15} />
                                 )}
@@ -6413,7 +6313,7 @@ export default function App() {
                         <>
                           <button
                             className="send-button"
-                            title="Поставить в очередь"
+                            title={t("Поставить в очередь")}
                             disabled={!input.trim() && !attachments.length && !historyQuotes.length}
                             onClick={() => void submit()}
                           >
@@ -6421,7 +6321,7 @@ export default function App() {
                           </button>
                           <button
                             className="send-button stop"
-                            title="Остановить"
+                            title={t("Остановить")}
                             onClick={() =>
                               void window.piDesktop.abort(activeConversationId).catch(error => addNotice(String(error), "error"))
                             }
@@ -6432,13 +6332,13 @@ export default function App() {
                       ) : (
                         <button
                           className={`send-button${primaryAction === "resume" ? " resume" : ""}`}
-                          title={primaryAction === "resume" ? "Продолжить прерванную работу" : "Отправить"}
-                          aria-label={primaryAction === "resume" ? "Продолжить" : "Отправить"}
+                          title={primaryAction === "resume" ? t("Продолжить прерванную работу") : t("Отправить")}
+                          aria-label={primaryAction === "resume" ? t("Продолжить") : t("Отправить")}
                           aria-busy={requestPending}
                           disabled={requestPending || (primaryAction !== "resume" && !input.trim() && !attachments.length && !historyQuotes.length)}
                           onClick={() => void submit()}
                         >
-                          {primaryAction === "resume" ? <><Play size={17} /><span>Продолжить</span></> : <Send size={17} />}
+                          {primaryAction === "resume" ? <><Play size={17} /><span>{t("Продолжить")}</span></> : <Send size={17} />}
                         </button>
                       )}
                     </div>
@@ -6455,7 +6355,7 @@ export default function App() {
                   <div className="status-line">
                     {snapshot?.state.contextUsage && (
                       <span className="status-item status-context">
-                        <Gauge size={14} /> Контекст:{" "}
+                        <Gauge size={14} />{t(" Контекст:")}{" "}
                         {snapshot.state.contextUsage.tokens === null
                           ? "—"
                           : formatTokens(
@@ -6488,8 +6388,7 @@ export default function App() {
                       ))}
                     {snapshot?.state.isCompacting && (
                       <span className="status-item compacting">
-                        <span className="spinner" /> Сжатие контекста
-                      </span>
+                        <span className="spinner" />{t(" Сжатие контекста")}</span>
                     )}
                   </div>
                 </div>
@@ -6528,22 +6427,22 @@ export default function App() {
         }}>
           <div className="modal-card history-action-dialog" role="dialog" aria-modal="true" aria-labelledby="history-action-title">
             <div className="modal-head">
-              <strong id="history-action-title">{historyAction.mode === "edit" ? "Изменить последнее сообщение" : "Откатить сессию?"}</strong>
-              <button className="icon-button" aria-label="Закрыть" disabled={historyBusy} onClick={() => setHistoryAction(undefined)}><X size={17} /></button>
+              <strong id="history-action-title">{historyAction.mode === "edit" ? t("Изменить последнее сообщение") : t("Откатить сессию?")}</strong>
+              <button className="icon-button" aria-label={t("Закрыть")} disabled={historyBusy} onClick={() => setHistoryAction(undefined)}><X size={17} /></button>
             </div>
             {historyAction.mode === "edit" ? (
-              <textarea className="modal-editor" aria-label="Текст сообщения" autoFocus disabled={historyBusy}
+              <textarea className="modal-editor" aria-label={t("Текст сообщения")} autoFocus disabled={historyBusy}
                 value={historyAction.text} onChange={event => setHistoryAction({ ...historyAction, text: event.target.value })} />
-            ) : <blockquote className="history-rewind-preview">{historyAction.text.slice(0, 500) || "Сообщение с вложением"}</blockquote>}
+            ) : <blockquote className="history-rewind-preview">{historyAction.text.slice(0, 500) || t("Сообщение с вложением")}</blockquote>}
             <p>{historyAction.mode === "edit"
-              ? "Этот запрос и последующие ответы будут заменены в текущей ветке. Изображения сохранятся. После отправки модель ответит заново."
-              : "Выбранное сообщение останется, последующие сообщения исчезнут из текущего контекста."}</p>
-            <p>Предыдущая ветка сохранится в файле сессии. Цель и очередь сообщений будут сброшены. Выполненные команды, изменения файлов и созданные медиа не отменяются.</p>
+              ? t("Этот запрос и последующие ответы будут заменены в текущей ветке. Изображения сохранятся. После отправки модель ответит заново.")
+              : t("Выбранное сообщение останется, последующие сообщения исчезнут из текущего контекста.")}</p>
+            <p>{t("Предыдущая ветка сохранится в файле сессии. Цель и очередь сообщений будут сброшены. Выполненные команды, изменения файлов и созданные медиа не отменяются.")}</p>
             <div className="modal-actions">
-              <button disabled={historyBusy} onClick={() => setHistoryAction(undefined)}>Отмена</button>
+              <button disabled={historyBusy} onClick={() => setHistoryAction(undefined)}>{t("Отмена")}</button>
               <button className="primary" disabled={working || historyBusy || (historyAction.mode === "edit" && !historyAction.text.trim())}
                 onClick={() => void confirmHistoryAction()}>
-                {historyBusy ? "Применяю…" : historyAction.mode === "edit" ? "Отправить исправленный запрос" : "Откатить"}
+                {historyBusy ? t("Применяю…") : historyAction.mode === "edit" ? t("Отправить исправленный запрос") : t("Откатить")}
               </button>
             </div>
           </div>
@@ -6552,24 +6451,24 @@ export default function App() {
       {historyMenu && (
         <div className="context-menu-layer" onPointerDown={() => setHistoryMenu(undefined)}
           onContextMenu={(event) => { event.preventDefault(); setHistoryMenu(undefined); }}>
-          <div className="conversation-menu history-context-menu" role="menu" aria-label="Выделенный текст"
+          <div className="conversation-menu history-context-menu" role="menu" aria-label={t("Выделенный текст")}
             style={{ left: historyMenu.x, top: historyMenu.y }}
             onPointerDown={(event) => { event.stopPropagation(); event.preventDefault(); }}>
             <button role="menuitem" onClick={() => {
               const text = historyMenu.text;
               setHistoryMenu(undefined);
               void navigator.clipboard.writeText(text).catch(error => addNotice(String(error), "error"));
-            }}>Копировать</button>
+            }}>{t("Копировать")}</button>
             <button role="menuitem" onClick={() => {
               setHistoryQuotes(current => [...current, historyMenu.text]);
               setHistoryMenu(undefined);
               composerInputRef.current?.focus();
-            }}>Добавить в чат</button>
+            }}>{t("Добавить в чат")}</button>
             <button role="menuitem" onClick={() => {
               const text = historyMenu.text;
               setHistoryMenu(undefined);
               void submit(text);
-            }}>Подробнее</button>
+            }}>{t("Подробнее")}</button>
           </div>
         </div>
       )}
@@ -6595,39 +6494,34 @@ export default function App() {
                     setProjectMenu(undefined);
                   }}
                 >
-                  <Pencil size={15} /> Переименовать
-                </button>
+                  <Pencil size={15} />{t(" Переименовать")}</button>
                 <button
                   onClick={() => {
                     setInstructionsProject(project);
                     setProjectMenu(undefined);
                   }}
                 >
-                  <FileText size={15} /> Редактировать инструкции проекта
-                </button>
+                  <FileText size={15} />{t(" Редактировать инструкции проекта")}</button>
                 <button
                   onClick={() => {
                     void window.piDesktop.showItemInFolder(project.path);
                     setProjectMenu(undefined);
                   }}
                 >
-                  <FolderOpen size={15} /> Показать папку
-                </button>
+                  <FolderOpen size={15} />{t(" Показать папку")}</button>
                 <button
                   onClick={() => {
                     void newChat(project.id);
                     setProjectMenu(undefined);
                   }}
                 >
-                  <MessageSquarePlus size={15} /> Новый чат
-                </button>
+                  <MessageSquarePlus size={15} />{t(" Новый чат")}</button>
                 <div className="conversation-menu-separator" />
                 <button
                   className="danger"
                   onClick={() => void removeProject(project.id)}
                 >
-                  <Trash2 size={15} /> Убрать проект
-                </button>
+                  <Trash2 size={15} />{t(" Убрать проект")}</button>
               </div>
             </div>
           );
@@ -6654,18 +6548,15 @@ export default function App() {
                     setConversationMenu(undefined);
                   }}
                 >
-                  <Pencil size={15} /> Переименовать
-                </button>
+                  <Pencil size={15} />{t(" Переименовать")}</button>
                 <button onClick={() => void archiveChat(conversation.id)}>
-                  <Archive size={15} /> Архивировать
-                </button>
+                  <Archive size={15} />{t(" Архивировать")}</button>
                 <div className="conversation-menu-separator" />
                 <button
                   className="danger"
                   onClick={() => void deleteChat(conversation.id)}
                 >
-                  <Trash2 size={15} /> Удалить
-                </button>
+                  <Trash2 size={15} />{t(" Удалить")}</button>
               </div>
             </div>
           );
@@ -6679,7 +6570,7 @@ export default function App() {
       )}
       {renameProject && (
         <RenameConversationDialog
-          heading="Переименовать проект"
+          heading={t("Переименовать проект")}
           title={renameProject.name}
           onClose={() => setRenameProject(undefined)}
           onSave={(title) => void saveProjectTitle(title)}
@@ -6750,21 +6641,23 @@ function stripTerminalCodes(value: unknown): string {
 }
 
 function pluralFiles(count: number): string {
+  if (getLanguage() === "en") return count === 1 ? "file" : "files";
   const lastTwo = count % 100;
   const last = count % 10;
-  if (lastTwo >= 11 && lastTwo <= 14) return "файлов";
-  if (last === 1) return "файл";
-  if (last >= 2 && last <= 4) return "файла";
-  return "файлов";
+  if (lastTwo >= 11 && lastTwo <= 14) return t("файлов");
+  if (last === 1) return t("файл");
+  if (last >= 2 && last <= 4) return t("файла");
+  return t("файлов");
 }
 
 function pluralModels(count: number): string {
+  if (getLanguage() === "en") return count === 1 ? "model" : "models";
   const lastTwo = count % 100;
   const last = count % 10;
-  if (lastTwo >= 11 && lastTwo <= 14) return "моделей";
-  if (last === 1) return "модель";
-  if (last >= 2 && last <= 4) return "модели";
-  return "моделей";
+  if (lastTwo >= 11 && lastTwo <= 14) return t("моделей");
+  if (last === 1) return t("модель");
+  if (last >= 2 && last <= 4) return t("модели");
+  return t("моделей");
 }
 
 function extensionName(extensionPath: string): string {
@@ -6782,7 +6675,7 @@ async function pastedImageAttachment(file: File): Promise<Attachment> {
   canvas.height = bitmap.height;
   const context = canvas.getContext("2d");
   if (!context)
-    throw new Error("Не удалось подготовить изображение из буфера обмена");
+    throw new Error(t("Не удалось подготовить изображение из буфера обмена"));
   context.drawImage(bitmap, 0, 0);
   bitmap.close();
   const png = await new Promise<Blob>((resolve, reject) => {
@@ -6790,7 +6683,7 @@ async function pastedImageAttachment(file: File): Promise<Attachment> {
       (blob) =>
         blob
           ? resolve(blob)
-          : reject(new Error("Не удалось преобразовать изображение в PNG")),
+          : reject(new Error(t("Не удалось преобразовать изображение в PNG"))),
       "image/png",
     );
   });
@@ -6799,14 +6692,14 @@ async function pastedImageAttachment(file: File): Promise<Attachment> {
     reader.onerror = () =>
       reject(
         reader.error ??
-          new Error("Не удалось прочитать изображение из буфера обмена"),
+          new Error(t("Не удалось прочитать изображение из буфера обмена")),
       );
     reader.onload = () => resolve(String(reader.result ?? ""));
     reader.readAsDataURL(png);
   });
   const separator = dataUrl.indexOf(",");
   if (separator < 0)
-    throw new Error("Некорректное изображение в буфере обмена");
+    throw new Error(t("Некорректное изображение в буфере обмена"));
   const sourceName =
     file.name?.replace(/\.[^.]+$/, "") || `clipboard-${Date.now()}`;
   const name = `${sourceName}.png`;

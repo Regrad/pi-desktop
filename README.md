@@ -1,130 +1,157 @@
 # Pi Desktop
 
-Портативное настольное приложение со встроенным движком Pi, собираемым из исходников. Движок создаёт сессии через SDK; отдельная установка или запуск Pi не нужны. Интерфейс и организация работы приближены к Codex Desktop: проекты создаются из приложения, у каждого проекта свой список чатов, а самостоятельные чаты работают без пользовательской папки. Модель и глубина рассуждений переключаются в нижней панели.
+A portable Windows desktop app for the [Pi coding agent](https://github.com/earendil-works/pi), with projects, persistent chats, tools, plans, and local media generation.
 
-## Запуск
+Pi is built from the bundled source and integrated through its SDK. You do not need to install or launch a separate Pi application.
 
-Портативная версия разделена на `app` (программа) и `data` (ваши данные). Запуск — `app\\Pi Desktop.exe`. Для обновления закройте приложение и замените только `app` целиком. Папку `data` не удаляйте и не заменяйте: сборка её не копирует и не включает в обновление программы.
+![Pi Desktop showing a project chat and completed work plan](docs/assets/pi-desktop.png)
 
-У каждого чата, в том числе быстрого и проектного, своя папка `data\\chats\\<id>`: `sessions` — история, `workspace` — рабочие файлы быстрого чата, `chat-attachments` — буфер/загруженные вложения, `image-generation`, `music-generation`, `3d-generation`, `video-generation`, `comfy-results` — результаты, `downloads` — загрузки браузера, `comfy-jobs` — задания генераций. Внешние проекты и прикреплённые файлы остаются ссылками, не копируются и не удаляются вместе с чатом. Архивирование сохраняет все данные; удаление переносит собственную папку чата в корзину. Файлы на сервере ComfyUI не удаляются.
+*The screenshot uses a separate demo profile with fictional projects and conversation content. No personal chats or user data are included.*
 
-При первом запуске старые локальные сессии и результаты с доказанным владельцем перемещаются в папки чатов без дубликатов и без переписывания текста истории. Старые результаты без однозначной привязки сохраняются на месте; прежние ссылки на перенесённые результаты продолжают открываться.
+## Features
 
-### ComfyUI
+- **Projects and chats:** multiple working folders, standalone chats, history search, archive, rename, and restore.
+- **English and Russian UI:** English by default; switch instantly in **Settings → General → Interface language**. The choice persists across launches. Conversation content and the model's response language stay unchanged.
+- **Local and remote models:** configure Pi providers or discover compatible local servers. Select the model and reasoning level in the chat toolbar.
+- **Tools and progress:** live tool output, file diffs, elapsed time, and command timeout countdowns. Commands default to five minutes unless an explicit timeout overrides it.
+- **Plans and goals:** editable work checklists, an optional read-only planning mode with implementation approval, and goals that continue across turns.
+- **Notebook and skills:** keep useful facts per chat and manage reusable instructions for all projects or one project.
+- **Built-in browser:** share tabs with the model, inspect pages, and download files into the chat's folder.
+- **ComfyUI integration:** images, masks, music, voice, and 3D workflows, with image previews, audio playback, and an interactive GLB viewer.
+- **Portable storage:** application files and user data are separate. Chats keep their original Pi session format.
 
-Запустите ComfyUI и сохраните адрес в настройках Pi Desktop → ComfyUI. Модель работает с отдельными инструментами: изображения Qwen, музыка YuE2, речь OmniVoice, 3D Pixal3D/Trellis2 и Idol, текстурирование UltraTex и обработка готовых моделей. Схема параметров и реализация находятся в аддоне `resources/pi-comfyui/tools/<имя>/`; в ядре приложения остаются настройки, установка аддона и отображение результатов.
+## Getting started
 
-Инструменты доступны по необходимости через codemode. Каталога произвольных графов, подготовки карточек и дополнительных запросов к модели нет. Изменения воркфлоу оформляются в соответствующем модуле аддона. Для совместимых инструментов можно импортировать доверенный API workflow с явно заданными placeholders. Произвольным custom nodes нужно доверять: они исполняются на сервере ComfyUI.
+The portable layout is:
 
-Результаты сохраняются в папке своего чата и отображаются как изображения, аудиоплееры или интерактивные GLB. Отмена запроса не должна прерывать чужие задания ComfyUI.
+```text
+Pi Desktop/
+  app/
+    Pi Desktop.exe
+  data/
+```
 
-Откройте `release\Pi Desktop\app\Pi Desktop.exe`.
+Launch `app\Pi Desktop.exe`. To move the installation, copy the whole `Pi Desktop` folder. To update an existing installation, close the app and replace only `app`; keep the existing `data` folder.
 
-Для первого переноса копируйте `release\Pi Desktop` целиком. Для обновления существующей установки заменяйте только `app`; папка `data` находится рядом с ней, не внутри EXE-каталога.
+Open **Settings → Models** to add a compatible local model server. Provider configuration is stored in `data\agent\models.json`. You can change the model and reasoning level before sending a message; selecting them does not send a request to the model.
 
-- `data\desktop-state.json` — подключённые проекты и список чатов;
-- `data\agent\models.json` — модели;
-- `data\agent\mcp-adapter.json` — MCP-серверы и настройки адаптера Pi Desktop;
-- `data\agent\mcp.json` — штатные подключения Pi; старые настройки адаптера автоматически переносятся с резервной копией;
-- `data\agent\settings.json` — настройки Pi;
-- `data\agent\APPEND_SYSTEM.md` — глобальные правила.
-- `data\chats\<id>\workspace` — внутренняя рабочая папка самостоятельного чата.
-- `data\runtime` — вручную обновлённые версии Pi и npm-модулей.
+Switching chats loads their visible history without starting a model request. Active chats can continue working in the background. Messages sent during a run are queued; the steering action sends a correction into the current run instead.
 
-История сохраняется в JSONL Pi внутри `data\chats\<id>\sessions`. Индекс содержит относительные пути, поэтому перенос `data` сохраняет чаты. Глобальная папка терминального Pi не является основным хранилищем Pi Desktop.
+## Data and privacy
 
-Переключение между чатами только меняет отображаемую историю и не запускает новый процесс Pi. Работающие чаты продолжают выполнение в фоне. Сессия выбранного чата загружается в Pi только при отправке сообщения; ввод текста, выбор модели и уровня рассуждений до отправки сохраняют настройки без обращения к модели.
+Everything below belongs to the portable installation:
 
-Правый клик по чату открывает переименование, архивирование и удаление. Архив скрывает чат без удаления данных; восстановление доступно в разделе «Архивированные чаты». Удаление после подтверждения переносит в корзину историю и собственные файлы чата, не затрагивая внешнюю папку проекта.
+| Path | Contents |
+| --- | --- |
+| `data/desktop-state.json` | Projects, chat index, and interface preferences |
+| `data/agent/models.json` | Model and provider configuration |
+| `data/agent/settings.json` | Pi settings |
+| `data/agent/mcp-adapter.json` | Desktop MCP adapter configuration |
+| `data/agent/mcp.json` | Native Pi MCP connections |
+| `data/agent/APPEND_SYSTEM.md` | Global user instructions |
+| `data/chats/<id>/sessions` | Original Pi JSONL history |
+| `data/chats/<id>/workspace` | Standalone chat working files |
+| `data/chats/<id>/chat-attachments` | Clipboard and uploaded attachments |
+| `data/chats/<id>/downloads` | Browser downloads |
+| `data/chats/<id>/*-generation` | Generated images, music, 3D, and video |
+| `data/runtime` | Manually updated third-party npm add-ons |
 
-Поиск в боковой панели проверяет не только названия, но и содержимое штатных JSONL-сессий. Правый клик по проекту позволяет переименовать его, открыть основную папку, создать чат или убрать проект из Desktop без удаления папки и сессий.
+External project folders and attached files remain references. Archiving keeps chat data; confirmed deletion moves the chat's own folder to the Windows Recycle Bin. It does not delete external project folders or files on the ComfyUI server.
 
-Проект может включать несколько папок. Первая становится рабочей директорией Pi и сохраняется в заголовке JSONL как `cwd`; история при этом принадлежит чату и хранится в его папке внутри `data`. Остальные пути передаются модели как дополнительный контекст и доступны по абсолютным путям.
+Notebook entries are available to the model and are stored as plain text. The data folder can contain credentials and private conversation history; it is excluded from this source repository and should not be published.
 
-Во время выполнения запроса под сообщением пользователя показывается живой таймер. После завершения время переносится в конец ответа. Pi Desktop показывает в панели diff только те файлы, которые модель изменила своими инструментами записи (`write`/`edit`): путь берётся из аргументов самого вызова, поэтому изменения сторонних процессов — пишущиеся логи, работающее в папке приложение, фоновые сборщики — в статистику и панель не попадают. Побочные эффекты команд, запущенных моделью через bash, намеренно не атрибутируются (так же ведут себя checkpoints в Cursor и Cline). Тяжёлые каталоги сборки, зависимости, двоичные файлы и отдельные файлы больше 4 МБ не копируются в снимок; если такой файл изменился, интерфейс предупреждает о неполном diff.
+## Plans, goals, and tools
 
-## Модули
+A model can maintain a working checklist in normal chat mode. The separate **Plan** mode restricts work to exploration and preparing an implementation plan; implementation begins after approval.
 
-В сборку входят `pi-web-access`, `pi-tool-repair`, `pi-llama-cpp-stats`, `pi-mcp-adapter`, `pi-lens` и локальные `pi-loop-police`, `pi-single-slot-guard` и `pi-llama-generation-speed`. Копия `pi-loop-police` закреплена как локальный приватный модуль и не участвует в npm-обновлениях. Дополнительные инструменты обнаруживаются через штатный `codemode`; принудительный активатор `pi-lens-all-tools` удалён, его старые подключения очищаются при запуске. `pi-single-slot-guard` запрещает скрытые обращения `pi-web-access` к текущей модели: `fetch_content` в режиме `answer` выполняется как `readable`, а `web_search` всегда запускается с `workflow: "none"`. Это сохраняет KV-кэш основного чата на серверах с одним слотом.
+Goals track progress across turns. Pausing a goal stops future automatic continuation while allowing the current response to finish. **Stop** interrupts the current response. Token limits can be set for a goal.
 
-При каждом запуске пути к ним вычисляются относительно текущей папки приложения. Поэтому папку можно переносить, а модули остаются подключёнными. Автообновление и уведомления об обновлениях отключены. Во вкладке «Модули» можно вручную проверить и установить обновления сторонних npm-дополнений. Встроенный Pi обновляется вместе с приложением; прежние копии Pi в `data\runtime` его не подменяют. Они устанавливаются в `data\runtime`, проверяются пробным запуском встроенного движка и не меняют файлы встроенной версии. При неудачной проверке выполняется откат. Локальные модули помечены как защищённые и кнопки обновления не имеют. Для установки обновлений требуется доступный в `PATH` npm.
+File diffs track edits attributed to the model's `write` and `edit` tools. Large files, binaries, and excluded build/dependency directories may not appear. Command side effects are not automatically attributed to the diff.
 
-Стандартные инструменты, slash-команды, статусы, уведомления, виджеты, header/footer, редактор и интерактивные `ctx.ui.custom` расширений передаются через совместимый RPC-мост. Сохранённые custom entries и message renderers отображаются в читаемом текстовом представлении. В настройках показывается фактический список загруженных расширений, активных инструментов и ошибок из процесса Pi, а не статический перечень.
+Images can be attached from files or the clipboard, opened in a zoomable preview, and copied with the image's right-click menu. Image input requires a model that supports it.
 
-Кнопка команд в редакторе или `Ctrl+Shift+P` открывает палитру Pi. Штатные действия `/compact` и `/reload` выполняются интерфейсом напрямую; для сжатия можно указать дополнительные инструкции. Во время сжатия показывается живой индикатор, а в истории остаётся одна строка с размером контекста до/после и длительностью операции. Команды расширений, шаблоны и навыки загружаются из текущего процесса Pi, ищутся в той же палитре и вставляются в поле ввода для добавления аргументов.
+## ComfyUI
 
-## Цель
+Start your ComfyUI server, then configure its address in **Settings → ComfyUI**. Install the models and custom nodes required by the workflows you use.
 
-Пункт `+` → «Цель» включает режим цели в редакторе. Следующее отправленное сообщение целиком становится формулировкой цели; вложения передаются вместе с ним. Критерии готовности отдельно вводить не нужно: модель выводит их из сообщения либо просит уточнение, если без него нельзя безопасно продолжать. После завершения ответа оболочка продолжает активную цель; сообщения пользователя в очереди имеют приоритет. Модель сообщает прогресс через встроенный `desktop_goal_report`. Для завершения требуется непустое описание проверок; это отчёт модели, не независимое доказательство корректности.
+The bundled add-on provides dedicated tools for Qwen image generation and editing, SAM masks, YuE2 music, voice workflows, image-to-3D generation, texturing, and mesh processing. Its implementation lives under `resources/pi-comfyui/tools/`; the desktop app handles configuration and displays the results.
 
-Пауза/остановка, ошибка ответа, внутренний предохранитель по числу этапов или три этапа без нового прогресса прекращают автоматическое продолжение. При необходимости решения пользователя модель отмечает цель как заблокированную. После ответа пользователя нажмите «Продолжить». Технические лимиты в пользовательском интерфейсе не задаются.
+Results are stored in the corresponding chat folder. The interface supports image previews, audio playback, and textured, clay, or wireframe views of GLB models. Canceling a request removes its queued job; an already running generation may still finish in ComfyUI.
 
-Цель сохраняется вместе с чатом в `data/desktop-state.json`; после перезапуска остаётся на паузе. Файлы проекта и пользовательские аддоны не используются для хранения цели. Инструмент загружается оболочкой через публичный API расширений Pi, ядро Pi не меняется. Контекст и его сжатие остаются под управлением Pi.
+Custom workflows must be exported in ComfyUI's **API format**. Import only workflows and custom nodes you trust. Built-in workflows run locally; cloud API nodes are blocked by the add-on.
 
-Проверка логики без сборки: `node --test scripts/goal.test.mjs` (Node 24).
+## Extensions and MCP
 
-RPC-мост Pi Desktop дополнительно поддерживает `ctx.ui.setWorkingMessage()`. Расширения прогресса, включая `pi-llama-cpp-stats`, могут показывать ход prefilling рядом с живым таймером без отдельных изменений под настольный интерфейс.
+The app includes `pi-web-access`, `pi-tool-repair`, `pi-llama-cpp-stats`, `pi-mcp-adapter`, and `pi-lens`, plus local modules for loop protection, single-slot KV cache protection, and generation speed reporting.
 
-Сообщение, отправленное во время работы, штатно попадает в очередь Pi. Обычная отправка выполняется после текущего ответа, кнопка с молнией передаёт сообщение в текущую работу. Очередь видна над редактором и может быть целиком возвращена в поле ввода без потери текста.
+Use **Settings → Modules** to manage built-in modules, add custom extensions, and check supported third-party updates. Pi itself is bundled and updated together with the application.
 
-`computer-use-mcp` встроен в зависимости приложения и запускается собственным Electron runtime в Node-режиме. Сеть, глобальный Node и `npx` для него не нужны. При переносе папки Desktop обновляет только свою управляемую запись `computer-use`; пользовательские MCP-серверы не переписываются. Серверы с `directTools` загружаются до окончания старта сессии, поэтому список инструментов не меняется посреди запроса и не сбрасывает KV-кэш.
+The computer-use MCP server is included and runs using the application's runtime. It does not require a separate global Node.js installation or `npx`. User-defined MCP connections remain configurable.
 
-## Веб-доступ (исходники, требуется новая сборка)
+## Build from source
 
-В настройках «Веб-доступ» есть независимые переключатели локального режима (компьютер Pi Desktop и его существующие чаты) и удалённого режима (компьютер браузера). По умолчанию оба выключены. На сайте выбирается режим; переключение не смешивает их истории. Если клиентский помощник отключён, команды отклоняются, а не подменяются работой на сервере.
+Development targets Windows x64. Use Node.js 24 and npm. Full portable packaging also builds the client helper and requires .NET SDK 10 plus Visual C++ build tools and the Windows SDK.
 
-Для локального режима задайте домен или IP, порт (по умолчанию 1369), логин и пароль от 12 символов. HTTPS обслуживает само приложение; самоподписанный сертификат и настройки сохраняются в переносимой папке `data/web-access`. Сертификат не требует отдельного ПО или внешней выдачи. Браузер не доверяет ему автоматически: до ввода пароля сверяйте SHA-256 отпечаток с настройками приложения и подтверждайте исключение. Политики корпоративного браузера могут запрещать исключения. Если домен использует HSTS, настройте адрес по выделенному IP вместо домена. При смене адреса или явном обновлении сертификата требуется повторная проверка отпечатка. Закрытый ключ не передавайте посторонним; копия переносимой папки содержит его.
+```powershell
+git clone https://github.com/Regrad/pi-desktop.git
+cd pi-desktop
+npm ci
+npm run dev
+```
 
-На роутере пробрасывается выбранный TCP-порт на компьютер Pi Desktop; правила брандмауэра настраиваются отдельно. Существующий HTTPS-сайт и его сертификат не используются. API управления Codex, модель и ComfyUI не публикуются. Пароль хранится как scrypt-хеш; cookie сессии имеет Secure/HttpOnly/SameSite=Strict, изменяющие запросы защищены проверкой Origin и CSRF. Изменение настроек отзывает веб-сессии. 2FA пока нет.
+| Command | Purpose |
+| --- | --- |
+| `npm run build` | Type-check and build the renderer, Electron host, and embedded Pi |
+| `npm run dev` | Start the development app |
+| `npm run release:update` | Update changed modules in `release/Pi Desktop`; fall back to full packaging when needed |
+| `npm run pack` | Build a complete portable application while preserving its existing data folder |
+| `npm run engine:verify` | Verify the original upstream source and bundled assets |
+| `npm run engine:sync -- --ref vX.Y.Z` | Import a reviewed upstream Pi release |
 
-Браузер использует интерфейс чата приложения: текст и инструменты передаются через SSE. Изображения показываются сразу; аудио загружается по Play, 3D-просмотр и GLB — по кнопке «Открыть 3D». Файлы можно скачать либо сохранить и показать в проводнике клиентского ПК. При восстановлении потока интерфейс перечитывает состояние, но не повторяет отправку сообщений/команд. Веб-вложения локального режима сохраняются в `data/chats/<id>/chat-attachments`; удалённого — в папке своего устройства.
+The packaged executable is `release\Pi Desktop\app\Pi Desktop.exe`. Build scripts check that source inputs have not changed during compilation. Release activation uses staging and rollback; app data stays separate.
 
-Для удалённого режима один раз скачайте помощник Windows x64 с сайта и запустите его. Он устанавливается в `%LOCALAPPDATA%/Pi Desktop Agent` и регистрирует протокол `pi-desktop-agent` только для текущей учётной записи, без автозапуска. Затем кнопка «Подключить управление этого ПК» запускает его. При первой привязке сверяется отпечаток сертификата. Во время подключения есть значок в области уведомлений; правый клик позволяет отключиться. Помощник не требует Electron, Chromium, Node или установленного .NET. Корпоративные политики могут запрещать запуск exe/пользовательские протоколы; обхода таких ограничений нет.
+### Embedded Pi architecture
 
-Помощник сам подключается к Pi Desktop по HTTPS с закреплённым сертификатом: браузер не получает доступ к localhost. Одноразовое приглашение действительно 2 минуты. ID и секрет устройства сохраняются на клиенте с Windows DPAPI, на сервере хранится хеш секрета. Чаты, сессии и diff разделены по устройствам: `data/remote-chats/<ID>`. Разные ПК не определяются по имени/IP. Привязки находятся в `data/web-access/devices.json`; этот файл нужно сохранять вместе с данными при переносе сервера. Выход с сайта/отключение режима отзывает подключение и останавливает удалённые процессы Pi. Если вкладка закрыта, управление отключается после пропажи браузерного соединения. После обрыва связи записи и команды не переисполняются автоматически; частично сделанные изменения не откатываются.
+- `vendor/pi/` contains the original upstream source; desktop-specific changes stay outside it.
+- `vendor/pi.upstream.json` records the upstream version, commit, and integrity hashes.
+- `vendor/pi-assets/` contains pinned release assets absent from the upstream Git tree.
+- `resources/pi-engine/` owns SDK startup and the desktop protocol adapter.
+- Desktop extensions own goals, plans, notebooks, skills, browser integration, and media tools.
 
-Файловые, командные и экранные инструменты удалённого чата работают на клиентском ПК. Команды — PowerShell. Для конкретной повышенной команды помощник показывает её пользователю, затем запрашивает обычный Windows UAC; отказ/политики не обходятся. Постоянная повышенная служба не устанавливается. Модель, глобальные инструкции и ComfyUI берутся с сервера; `AGENTS.md` проекта читается с клиента. Произвольные серверные расширения/MCP не подключаются к удалённому чату: разрешены только целевой мост, инструмент цели и аддон ComfyUI. Нужный клиентский исходник для ComfyUI копируется на сервер опционально при вызове инструмента, в `data/remote-inputs/<ID>`. Выбранное изображение для клиентского скрипта материализуется только по явному `desktop_get_image_path`.
+A private worker process keeps engine work isolated from the interface. It is managed by Pi Desktop and does not launch the Pi CLI. Compatibility transforms apply to generated JavaScript and reject unsupported upstream layouts.
 
-Упаковка автоматически публикует `client-agent/PiDesktopAgent.csproj` в NativeAOT и добавляет самостоятельный exe в `resources/client-agent`. Для сборки помощника на машине разработчика нужны .NET SDK 10 и инструменты Visual C++/Windows SDK; клиенту они не нужны. Исходники требуют новой сборки: без неё не подтверждены работа exe и отсутствие его внешних runtime-зависимостей.
+See [the embedded engine integration plan](docs/PI_EMBEDDED_ENGINE_PLAN.md) for update boundaries and acceptance checks.
 
-Проверки без сборки: `node --test scripts/web-access.test.mjs scripts/web-remote.test.mjs scripts/device-broker.test.mjs scripts/remote-execution.test.mjs`.
+### Validation and screenshots
 
-## Вложения
+```powershell
+npm run build
+node --test scripts/interface-language.test.mjs scripts/source-integrity.test.mjs
+npx electron scripts/interface-language-smoke.cjs
+```
 
-Изображения декодируются приложением и передаются Pi в PNG, что устраняет прежнюю ошибку llama.cpp с WebP. Для остальных файлов модели передаётся точный локальный путь. Доступность изображений зависит от выбранной модели.
+The UI smoke test verifies English defaults, both language switches, persisted preferences, and draft preservation using an isolated fixture profile. On Windows, its temporary profile is under `C:\AI_Temp`. To refresh the README image, run:
 
-## Разработка
+```powershell
+npx electron scripts/interface-language-smoke.cjs --capture-readme
+```
 
-### Локальное управление Pi Desktop
+This renders the real app with fictional demo data. It never loads the installed application's `data` folder or calls a model.
 
-Для подключения с другого компьютера без заранее настроенного MCP прочитайте `CONNECT_CODEX.md` рядом с exe. Скрипт `Invoke-PiDesktop.ps1` сам находит текущий адрес API и ключ в этой установке. Оба файла автоматически добавляются упаковщиком рядом с `Pi Desktop.exe` при каждой сборке.
+Other regression suites live in `scripts/*.test.mjs`. Live model or ComfyUI checks may require separately configured services.
 
-Приложение запускает HTTP API на случайном порту **только 127.0.0.1**. Текущий адрес и ключ сохраняются в `data/control-api/connection.json`; при выходе файл удаляется. Ключ меняется при каждом запуске. Не публикуйте и не передавайте этот файл: ключ разрешает запуск заданий с правами приложения. На Windows доступ к файлу определяется правами папки `data`; не используйте общую папку с недоверенными пользователями. Запросы из браузера запрещены.
+## Local automation API
 
-MCP-мост: `resources/control-api/mcp.mjs`. Он перечитывает файл подключения перед каждым запросом, поэтому переживает перезапуск приложения. Для разработки запускайте `node resources/control-api/mcp.mjs <абсолютный путь к connection.json>`. В портативной сборке отдельный Node не нужен: используйте `Pi Desktop.exe`, переменную окружения `ELECTRON_RUN_AS_NODE=1` и аргументы `<папка сборки>/resources/app/resources/control-api/mcp.mjs`, `<папка сборки>/data/control-api/connection.json`. Пути в конфигурации MCP-клиента должны быть абсолютными.
+Pi Desktop exposes an authenticated control API on a random **127.0.0.1-only** port. The address and per-launch token are written to `data/control-api/connection.json` and removed on exit. Keep this file private: its token authorizes work with the app's permissions.
 
-Инструменты: `pi_desktop_projects`, `pi_desktop_chats`, `pi_desktop_select`, `pi_desktop_start`, `pi_desktop_status`, `pi_desktop_reply`, `pi_desktop_abort`. Задания открывают нужный чат в интерфейсе, ждут подтверждения переключения и используют обычную отправку Pi: сообщения, инструменты, вопросы и результаты видны пользователю. Можно продолжать существующий чат через `conversationId` или создать новый через `projectId`. Вложения задаются абсолютными путями в `paths`.
+The bundled `Invoke-PiDesktop.ps1` discovers the connection for the current installation. The MCP bridge is `resources/control-api/mcp.mjs`; its tools can list projects and chats, select a chat, start work, inspect status, reply, and abort. Work appears in the normal interface, and polling does not resend tasks.
 
-HTTP-маршруты: `GET /projects`, `GET /chats`, `POST /select`, `POST /tasks`, `GET /tasks/:id`, `POST /tasks/:id/reply`, `POST /tasks/:id/abort`. Все требуют `Authorization: Bearer <token>`. Создание задания возвращает `id` и `conversationId`, а не ждёт модель. Статус возвращает краткий итог (до 8000 символов), вопросы и список изменённых файлов; полный diff запрашивается явно параметром `?diff=true` (до 64000 символов). Полная переписка и рассуждения не выгружаются. Задания и их API-id действуют до закрытия приложения; сами чаты остаются в обычной истории Pi. API не отправляет задания повторно при опросе и не принимает вторую задачу в занятый чат.
+## Web access status
 
-Проверка без сборки и без запроса к модели: `node --test scripts/control-api.test.mjs`.
+Optional HTTPS and remote-helper implementations are included in the source. The Web Access settings entry is currently hidden while the feature is paused. The default workflow is the local desktop app; building the project does not enable public web access.
 
-- `npm run dev` — режим разработки;
-- `npm run build` — проверка типов и сборка;
-- `npm run release:update` (или `build.bat`) — обновление только изменившихся модулей прямо в `release\Pi Desktop`; первая сборка и изменения зависимостей автоматически переключаются на полную упаковку;
-- `npm run pack` — полная переносимая сборка `release\Pi Desktop` с сохранением папки `data`;
-- `node scripts\smoke-rpc.mjs` — RPC-проверка без запроса к модели.
-- `node scripts\smoke-computer-use-mcp.mjs` — запуск встроенного MCP и проверка каталога инструментов без управления компьютером.
+## License
 
-Оба режима упаковки фиксируют исходники до компиляции и отменяют обновление, если они изменились во время сборки. Модульное обновление заменяет файлы и манифест одной транзакцией: при ошибке восстанавливается вся предыдущая версия. Временные файлы размещаются на диске релиза и удаляются после успешного обновления. Рабочий ComfyUI-аддон обновляется в обоих режимах; локальные правки и удаления сохраняются и перечисляются в выводе сборки. Для старого формата манифеста устаревшие штатные файлы дополнительно распознаются по истории Git; неизвестные версии сохраняются как локальные изменения.
+Pi Desktop's own code is available under the [MIT License](LICENSE).
 
-## Исходники встроенного Pi
-
-Оригинальный Pi хранится в `vendor/pi`, наша интеграция — в `resources/pi-engine` и существующих расширениях. Обновление исходников: `npm run engine:sync -- --ref vX.Y.Z`; проверка целостности: `npm run engine:verify`. Сборка: `npm ci --ignore-scripts`, затем `npm run build`. Установка Pi из npm отдельно не требуется.
-
-Порядок обновления, границы кода и проверки: [PI_EMBEDDED_ENGINE_PLAN.md](docs/PI_EMBEDDED_ENGINE_PLAN.md). Лицензия MIT и сведения об исходном коммите включены в portable-сборку.
-
-## Лицензия
-
-Собственный код Pi Desktop распространяется под [лицензией MIT](LICENSE).
-Встроенный Pi и сторонние компоненты сохраняют свои лицензии и уведомления об авторских правах: [Pi](vendor/pi/LICENSE), [PixelArtistry](resources/pi-comfyui/tools/comfyui_generate_3d/PIXELARTISTRY-LICENSE).
+Embedded Pi and third-party components retain their licenses and copyright notices, including [Pi](vendor/pi/LICENSE) and [PixelArtistry](resources/pi-comfyui/tools/comfyui_generate_3d/PIXELARTISTRY-LICENSE).

@@ -1,3 +1,4 @@
+import { t } from "./i18n";
 import { useEffect, useState } from "react";
 import { Clock3 } from "lucide-react";
 import { formatShellSeconds, remainingShellSeconds, type ShellTiming } from "./shell-timeout";
@@ -14,11 +15,11 @@ export function ShellTimeout({ timing, running }: { timing: ShellTiming; running
   const remaining = remainingShellSeconds(timing, now);
   const limit = formatShellSeconds(timing.timeoutSeconds);
   const label = counting
-    ? remaining > 0 ? `Осталось ${formatShellSeconds(remaining)}` : "Завершается…"
-    : `Лимит ${limit}`;
+    ? remaining > 0 ? t("Осталось {0}", formatShellSeconds(remaining)) : t("Завершается…")
+    : t("Лимит {0}", limit);
   return (
     <span className={`shell-timeout${counting ? " ticking" : ""}${counting && remaining <= 30 ? " urgent" : ""}`}
-      title={`Таймаут команды: ${limit}`} aria-label={`${label}. Таймаут команды: ${limit}`}>
+      title={t("Таймаут команды: {0}", limit)} aria-label={t("{0}. Таймаут команды: {1}", label, limit)}>
       <span className="shell-timeout-label"><Clock3 size={12} /><span>{label}</span>
         {counting && <span className="shell-timeout-limit">/ {limit}</span>}
       </span>
