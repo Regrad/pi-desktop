@@ -123,5 +123,6 @@
     "pi-lens": {
       "@earendil-works/pi-tui": "1.5.2"
     }
-  }
+  },
+  "license": "MIT"
 }

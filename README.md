@@ -123,3 +123,8 @@ HTTP-маршруты: `GET /projects`, `GET /chats`, `POST /select`, `POST /tas
 Оригинальный Pi хранится в `vendor/pi`, наша интеграция — в `resources/pi-engine` и существующих расширениях. Обновление исходников: `npm run engine:sync -- --ref vX.Y.Z`; проверка целостности: `npm run engine:verify`. Сборка: `npm ci --ignore-scripts`, затем `npm run build`. Установка Pi из npm отдельно не требуется.
 
 Порядок обновления, границы кода и проверки: [PI_EMBEDDED_ENGINE_PLAN.md](docs/PI_EMBEDDED_ENGINE_PLAN.md). Лицензия MIT и сведения об исходном коммите включены в portable-сборку.
+
+## Лицензия
+
+Собственный код Pi Desktop распространяется под [лицензией MIT](LICENSE).
+Встроенный Pi и сторонние компоненты сохраняют свои лицензии и уведомления об авторских правах: [Pi](vendor/pi/LICENSE), [PixelArtistry](resources/pi-comfyui/tools/comfyui_generate_3d/PIXELARTISTRY-LICENSE).
