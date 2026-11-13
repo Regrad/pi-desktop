@@ -17,7 +17,7 @@ test("composer offers Continue only for interrupted idle work with no new draft"
   assert.equal(canResumeRun(JSON.parse(JSON.stringify(failed))), true);
 });
 
-const bridge = readFileSync(new URL("../resources/pi-rpc-bridge/rpc-mode.js", import.meta.url), "utf8");
+const bridge = readFileSync(new URL("../resources/pi-engine/protocol.js", import.meta.url), "utf8");
 const anchor = '            case "desktop_run_resume": {';
 const begin = bridge.indexOf(anchor) + anchor.length;
 const end = bridge.indexOf('\n            }', begin);
@@ -85,7 +85,7 @@ test("Enter with an empty composer uses the same continuation action as the butt
   assert.ok(begin >= anchor.length && end > begin);
   let resumes = 0;
   const body = stripTypeScriptTypes(`async function submit(explainQuote) {${app.slice(begin, end)}\n}`);
-  const bindings = { input: "", historyQuotes: [], attachments: [], primaryAction: "resume", quotedHistoryPrompt: text => text,
+  const bindings = { loading: false, input: "", historyQuotes: [], attachments: [], primaryAction: "resume", quotedHistoryPrompt: text => text,
     resumeExecution: async () => { resumes++; } };
   const submit = new Function(...Object.keys(bindings), `${body}; return submit;`)(...Object.values(bindings));
   await submit();

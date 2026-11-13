@@ -170,14 +170,13 @@ async function findPackage(root, packageName) {
 }
 
 async function prepareBridgeOutputs() {
-  await run(process.execPath, [path.join(projectRoot, "scripts", "apply-rpc-bridge.mjs")]);
+  await run(process.execPath, [path.join(projectRoot, "scripts", "build-pi-engine.mjs")]);
 }
 
 async function syncBridgeOutputs() {
   const sourceCore = path.join(projectRoot, "node_modules", "@earendil-works", "pi-coding-agent");
   const targetCore = await findPackage(appDir, "@earendil-works/pi-coding-agent");
   const coreFiles = [
-    "dist/modes/rpc/rpc-mode.js",
     "dist/core/desktop-service-context.js",
     "dist/core/messages.js",
     "dist/core/compaction/compaction.js",
@@ -193,7 +192,7 @@ async function syncBridgeOutputs() {
 
   const sourceProvider = await findPackage(projectRoot, "@earendil-works/pi-ai");
   const targetProvider = await findPackage(appDir, "@earendil-works/pi-ai");
-  await syncChangedFiles(["dist/api/openai-completions.js", "dist/utils/overflow.js", "dist/utils/retry.js"], sourceProvider, targetProvider);
+  await syncChangedFiles(["dist/api/openai-completions.js", "dist/api/desktop-request-diagnostics.js", "dist/utils/overflow.js", "dist/utils/retry.js"], sourceProvider, targetProvider);
 
   for (const [name, files] of [
     ["pi-mcp-adapter", ["index.ts", "proxy-modes.ts", "init.ts", "server-manager.ts", "desktop-config.js"]],

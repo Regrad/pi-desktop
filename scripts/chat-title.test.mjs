@@ -5,7 +5,7 @@ import { stripTypeScriptTypes } from "node:module";
 import path from "node:path";
 import http from "node:http";
 
-const bridge = readFileSync("resources/pi-rpc-bridge/rpc-mode.js", "utf8");
+const bridge = readFileSync("resources/pi-engine/protocol.js", "utf8");
 const titleStart = bridge.indexOf("export async function generateChatTitle");
 const titleEnd = bridge.indexOf("\n}\n", titleStart) + 2;
 const generateChatTitle = new Function(`${bridge.slice(titleStart, titleEnd).replace("export ", "")};return generateChatTitle;`)();
@@ -115,7 +115,7 @@ test("actual Pi names before answering with no naming history/events; abort canc
     models: [{ id: "test", name: "test", reasoning: false, input: ["text"], cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, contextWindow: 32768, maxTokens: 1024 }] } } }));
   const app = process.env.PI_TEST_APP_ROOT || process.cwd();
   let settled; const done = new Promise(resolve => { settled = resolve; });
-  const rpc = new PiRpcProcess({ executablePath: process.env.PI_TEST_EXECUTABLE || process.execPath, cliPath: path.join(app, "node_modules/@earendil-works/pi-coding-agent/dist/cli.js"),
+  const rpc = new PiRpcProcess({ executablePath: process.env.PI_TEST_EXECUTABLE || process.execPath, enginePath: path.join(app, "resources/pi-engine/worker.mjs"),
     cwd: folder, agentDir, sessionsDir: path.join(folder, "sessions"), sessionId: "title-test", provider: "title-test", model: "test", isolatedExtensions: [],
     mcpEntryPath: "unused", mcpDirectTools: [], onEvent(event) { events.push(event); if (event.type === "agent_settled") settled(); }, onExtensionUi() {}, onExit() {} });
   try {
@@ -134,6 +134,15 @@ test("actual Pi names before answering with no naming history/events; abort canc
     const cancelled = assert.rejects(rpc.request("desktop_generate_chat_title", { message: "hold" }, 5000), /отменена/);
     await blocked; await rpc.request("abort"); await cancelled;
     assert.deepEqual((await rpc.request("get_messages")).messages, history);
+    const original = await rpc.request('get_state');
+    await rpc.stop();
+    await rpc.start();
+    assert.equal((await rpc.request('get_state', {}, 30000)).sessionName, title);
+    assert.deepEqual((await rpc.request('get_messages')).messages, history);
+    await rpc.request('new_session');
+    assert.equal((await rpc.request('get_messages')).messages.length, 0);
+    await rpc.request('switch_session', {sessionPath: original.sessionFile});
+    assert.deepEqual((await rpc.request('get_messages')).messages, history);
   } finally {
     await rpc.stop(); server.closeAllConnections(); await new Promise(resolve => server.close(resolve));
     assert.ok(path.resolve(folder).startsWith(path.resolve("C:/AI_Temp") + path.sep)); rmSync(folder, { recursive: true, force: true });

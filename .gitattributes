@@ -1,0 +1,3 @@
+# Release assets must retain their exact npm bytes on every checkout.
+vendor/pi-assets/** -text
+vendor/*.json text eol=lf

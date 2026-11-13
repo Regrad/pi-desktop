@@ -3366,9 +3366,9 @@ function SettingsPage({
                   value="0.1.0"
                 />
                 <SettingRow
-                  title="Pi Core"
-                  description="Встроенное ядро агента."
-                  value="0.84.2"
+                  title="Pi Engine"
+                  description="Встроенное ядро. Обновляется вместе с приложением."
+                  value={import.meta.env.VITE_PI_ENGINE_VERSION}
                 />
                 <SettingRow
                   title="Интерфейс расширений"

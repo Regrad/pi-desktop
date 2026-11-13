@@ -57,10 +57,7 @@ test("relative source imports resolve before packaging", async () => {
       // Smoke tests deliberately target the installed/compiled distribution.
       if (resolved.includes(`${path.sep}dist-electron${path.sep}`)) continue;
       const candidates = [resolved, `${resolved}.ts`, `${resolved}.tsx`, resolved.replace(/\.js$/, ".ts"), resolved.replace(/\.js$/, ".tsx"), resolved.replace(/\.cjs$/, ".cts")];
-      if (filename === path.join(root, "resources", "pi-rpc-bridge", "rpc-mode.js")) {
-        // This file is installed into Pi's RPC directory by apply-rpc-bridge.
-        candidates.push(path.resolve(root, "node_modules", "@earendil-works", "pi-coding-agent", "dist", "modes", "rpc", match[1]));
-      }
+
       if (!(await Promise.all(candidates.map(candidate => access(candidate).then(() => true, () => false)))).some(Boolean)) failures.push(`${path.relative(root, filename)}: ${match[1]}`);
     }
   }

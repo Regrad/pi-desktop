@@ -19,13 +19,13 @@ for (const appRoot of ["F:\\Pi_Desktop\\resources\\app.asar", "F:\\Pi Desktop\\r
     let cleaned = false;
     const store = {
       dataDir: "F:\\Pi Desktop\\data", agentDir: "F:\\Pi Desktop\\data\\agent",
-      getPiCliPath: () => "F:\\Pi Desktop\\data\\runtime\\node_modules\\pi\\cli.js",
+      getEngineEntryPath: () => "F:\\Pi Desktop\\data\\runtime\\node_modules\\pi\\cli.js",
       getMcpDirectToolSelectors: async () => [],
     };
     class Rpc {
       constructor(options) {
         assert.equal(options.appRoot, appRoot);
-        assert.equal(options.cliPath, store.getPiCliPath());
+        assert.equal(options.enginePath, store.getEngineEntryPath());
         assert.equal(options.agentDir, store.agentDir);
       }
       async start() {}

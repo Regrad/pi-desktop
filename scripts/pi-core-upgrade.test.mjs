@@ -20,7 +20,7 @@ test("statistics cancellation patch is idempotent and fails closed on unknown so
   assert.throws(() => patchLlamaStatsCancellation("unknown source"), /no longer matches/);
 });
 
-test("Pi 1.5.0 desktop bridge loads add-ons, preserves user input, runs tools and aborts", { timeout: 60000 }, async t => {
+test("Pi 1.5.2 embedded SDK engine loads add-ons, preserves user input, runs tools and aborts", { timeout: 60000 }, async t => {
   const directory = await mkdtemp(path.join(tmpdir(), "pi-core-upgrade-smoke-"));
   const agent = path.join(directory, "agent");
   await mkdir(agent);
@@ -110,10 +110,12 @@ test("Pi 1.5.0 desktop bridge loads add-ons, preserves user input, runs tools an
   const packages=["pi-web-access","pi-tool-repair","pi-mcp-adapter","pi-lens","pi-llama-cpp-stats"].map(name=>path.join(root,"node_modules",name));
   await writeFile(path.join(agent, "settings.json"), JSON.stringify({ packages, extensions,
     defaultProvider: "upgrade-test", defaultModel: "upgrade", defaultThinkingLevel: "off" }), "utf8");
-  const child = spawn(process.execPath, [path.join(root, "node_modules/@earendil-works/pi-coding-agent/dist/cli.js"),
-    "--mode", "rpc", "--approve", "--no-mcp", "--mcp-config",mcpConfigPath, "--extension", "builtin:codemode", "--session-dir", path.join(directory, "sessions"),
-    "--provider", "upgrade-test", "--model", "upgrade"], {
+  const child = spawn(process.env.PI_TEST_EXECUTABLE || process.execPath, [path.join(root, 'resources/pi-engine/worker.mjs')], {
     cwd: directory, windowsHide: true, stdio: ["pipe", "pipe", "pipe", "ipc"], env: { ...process.env,
+      ELECTRON_RUN_AS_NODE: '1',
+      ...(process.env.PI_TEST_FORBID_PI_CLI ? {NODE_OPTIONS: [process.env.NODE_OPTIONS, '--import=' + new URL('./fixtures/no-pi-cli.mjs', import.meta.url).href].filter(Boolean).join(' ')} : {}),
+      PI_DESKTOP_ENGINE_OPTIONS: JSON.stringify({ agentDir: agent, sessionsDir: path.join(directory, 'sessions'),
+        provider: 'upgrade-test', model: 'upgrade', extensions: ['builtin:codemode'], extensionFlags: {'mcp-config': mcpConfigPath} }),
       PI_CODING_AGENT_DIR: agent, PI_DESKTOP_APP_ROOT: root, PI_DESKTOP_DATA_DIR: directory,
       PI_DESKTOP_CONVERSATION_ID: "upgrade-smoke", PI_DESKTOP_GOAL_STATE_FILE: path.join(directory, "desktop-state.json"),
       PI_DESKTOP_TOOL_ROUTING: "1", PI_OFFLINE: "1", NO_UPDATE_NOTIFIER: "1" },
@@ -256,13 +258,19 @@ test("Pi 1.5.0 desktop bridge loads add-ons, preserves user input, runs tools an
   assert.equal(existsSync(usedMarker), true, "The requested MCP server must really start");
   // A completed run clears its temporary prompt options asynchronously. An
   // immediate continuation hides the bug; exercise the real idle boundary.
+  // Lens deliberately consumes its one-shot turn-end advisory on the next
+  // run (runtime-context.consumeTurnEndFindings). It is not persisted history;
+  // assert the full stable system/user/tool prefix independently of its timing.
+  const stableMessages = messages => messages.filter(message => !(message.role === 'user' &&
+    typeof message.content === 'string' && message.content.startsWith('[pi-lens automated check — not a user request] ')));
   for (const type of ["desktop_plan_continue", "desktop_goal_continue"]) {
     const previous = captured.at(-1);
     await new Promise(resolve => setTimeout(resolve, 1500));
     await request(type, { message: `<pi_desktop_service_context source="${type === "desktop_plan_continue" ? "plan" : "goal"}">Continue authorized work.</pi_desktop_service_context>` });
     const next = captured.at(-1);
     assert.deepEqual(next.tools, previous.tools, `${type} changed tool schemas`);
-    assert.deepEqual(next.messages.slice(0, previous.messages.length), previous.messages, `${type} changed the cached request prefix`);
+    const prefix = stableMessages(previous.messages);
+    assert.deepEqual(stableMessages(next.messages).slice(0, prefix.length), prefix, `${type} changed the stable request prefix`);
     assert.ok(messageText(next.messages[0]).includes("Goals are thread-scoped state"));
     assert.ok(messageText(next.messages[0]).includes("For simple tasks, work without a checklist"));
   }
@@ -306,5 +314,6 @@ test("Pi 1.5.0 desktop bridge loads add-ons, preserves user input, runs tools an
   assert.doesNotMatch(stderr, /Failed to load extension|TypeError|SyntaxError/);
   const launcher = await readFile(path.join(root, process.env.PI_TEST_APP_ROOT
     ? "dist-electron/electron/pi-rpc-process.js" : "electron/pi-rpc-process.ts"), "utf8");
-  assert.match(launcher, /"--no-mcp"/);
+  assert.doesNotMatch(launcher, /--mode|--approve|cli\.js/);
+  assert.match(await readFile(path.join(root, 'resources/pi-engine/worker.mjs'), 'utf8'), /disabledBuiltinExtensions: \["mcp"\]/);
 });

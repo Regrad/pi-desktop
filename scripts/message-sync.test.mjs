@@ -5,7 +5,7 @@ import { randomUUID } from "node:crypto";
 import { stripTypeScriptTypes } from "node:module";
 import { applyMessagePatch } from "../shared/message-sync.ts";
 
-const bridge = readFileSync(new URL("../resources/pi-rpc-bridge/rpc-mode.js", import.meta.url), "utf8");
+const bridge = readFileSync(new URL("../resources/pi-engine/protocol.js", import.meta.url), "utf8");
 const factorySource = bridge.slice(bridge.indexOf("export function createMessageSync()"), bridge.indexOf("function resolveModelFilePath"));
 const createMessageSync = new Function("crypto", `${factorySource.replace("export ", "")}; return createMessageSync;`)({ randomUUID });
 

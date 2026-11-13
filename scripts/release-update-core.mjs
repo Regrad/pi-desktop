@@ -15,13 +15,20 @@ const ROOT_FILES = [
   "README.md",
   "CONNECT_CODEX.md",
 ];
-const SOURCE_DIRECTORIES = ["src", "shared", "electron", "resources", "client-agent"];
+const SOURCE_DIRECTORIES = ["src", "shared", "electron", "resources", "client-agent", "vendor"];
 const BRIDGE_SCRIPTS = new Set([
   "scripts/update-portable-fast.mjs",
   "scripts/release-update-core.mjs",
   "scripts/portable-layout.mjs",
   "scripts/package-portable.mjs",
+  "scripts/verify-packaged-engine.mjs",
+  "scripts/pi-core-upgrade.test.mjs",
+  "scripts/chat-title.test.mjs",
+  "scripts/fixtures/no-pi-cli.mjs",
   "scripts/apply-rpc-bridge.mjs",
+  "scripts/build-pi-engine.mjs",
+  "scripts/pi-upstream-state.mjs",
+  "scripts/pi-upstream.mjs",
   "scripts/llama-stats-patch.mjs",
   "scripts/mcp-config-patch.mjs",
   "scripts/service-context-patch.mjs",
@@ -41,7 +48,7 @@ function normalized(relativePath) {
 
 function ignored(relativePath) {
   const value = normalized(relativePath);
-  return value.startsWith("client-agent/bin/") ||
+  return (value.startsWith('vendor/pi/') && (/(^|\/)(node_modules|dist)(\/|$)/.test(value) || value.startsWith('vendor/pi/packages/ai/src/providers/data') || value.startsWith('vendor/pi/packages/tui/native/win32/prebuilds'))) || value.startsWith("client-agent/bin/") ||
     value.startsWith("client-agent/obj/") ||
     value === "resources/client-agent/Pi Desktop Agent.exe";
 }
@@ -109,7 +116,8 @@ export function classifyReleaseChanges(changedPaths) {
       || name.split("/").some(part => !part || part === "." || part === "..")) {
       throw new Error(`Invalid release input path: ${name}`);
     }
-    if (name === "package-lock.json") result.fullRequired = true;
+    if (name.startsWith("vendor/") || name === "scripts/build-pi-engine.mjs" || name === "scripts/pi-upstream-state.mjs") result.fullRequired = true;
+    else if (name === "package-lock.json") result.fullRequired = true;
     else if (name === "package.json") result.packageMetadata = true;
     else if (name === "index.html" || name === "vite.config.ts" || name === "tsconfig.json" || name.startsWith("src/")) result.renderer = true;
     else if (name === "tsconfig.electron.json" || name.startsWith("electron/")) result.electron = true;

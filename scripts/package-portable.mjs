@@ -10,6 +10,7 @@ import { activatePortableBuild } from "./portable-swap.mjs";
 import { createFastReleaseManifest, assertReleaseInputsUnchanged, writeFastReleaseManifest } from "./release-update-core.mjs";
 import { createReleaseTransaction } from "./release-transaction.mjs";
 import { planComfyAddonUpdate, stageComfyAddonUpdate, assertComfyAddonState } from "./release-addon.mjs";
+import { verifyPackagedEngine } from "./verify-packaged-engine.mjs";
 import { portableBinaryDirectory } from "./portable-layout.mjs";
 
 const projectRoot = path.resolve(
@@ -236,6 +237,7 @@ try {
       "electron-builder did not create win-unpacked/Pi Desktop.exe",
     );
   }
+  await verifyPackagedEngine(builtDir);
   await assertReleaseInputsUnchanged(projectRoot, snapshot);
 
   await mkdir(releaseRoot, { recursive: true });

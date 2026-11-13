@@ -13,36 +13,21 @@ const smokeRoot = await mkdtemp(path.join(os.tmpdir(), "pi-desktop-rpc-smoke-"))
 const agentDir = path.join(smokeRoot, "agent");
 const sessionsDir = path.join(agentDir, "sessions");
 const projectDir = path.join(smokeRoot, "project");
-const cliPath = path.join(
-  root,
-  ...(process.env.PI_DESKTOP_SMOKE_ROOT ? ["resources", "app"] : []),
-  "node_modules",
-  "@earendil-works",
-  "pi-coding-agent",
-  "dist",
-  "cli.js",
-);
+const enginePath = path.join(root, ...(process.env.PI_DESKTOP_SMOKE_ROOT ? ['resources', 'app'] : []), 'resources', 'pi-engine', 'worker.mjs');
 
 await mkdir(sessionsDir, { recursive: true });
 await mkdir(projectDir, { recursive: true });
 
 const child = spawn(
   process.env.PI_DESKTOP_SMOKE_EXECUTABLE ?? process.execPath,
-  [
-    cliPath,
-    "--mode",
-    "rpc",
-    "--approve",
-    "--session-dir",
-    sessionsDir,
-    "--session-id",
-    `desktop-smoke-${Date.now()}`,
-  ],
+  [enginePath],
   {
     cwd: projectDir,
     env: {
       ...process.env,
       ...(process.env.PI_DESKTOP_SMOKE_EXECUTABLE ? { ELECTRON_RUN_AS_NODE: "1" } : {}),
+      PI_DESKTOP_ENGINE_OPTIONS: JSON.stringify({ agentDir, sessionsDir, sessionId: 'desktop-smoke-' + Date.now() }),
+      PI_OFFLINE: '1',
       PI_CODING_AGENT_DIR: agentDir,
       PI_DESKTOP_EXECUTABLE: process.env.PI_DESKTOP_SMOKE_EXECUTABLE ?? process.execPath,
       PI_DESKTOP_MCP_ENTRY: path.join(root, ...(process.env.PI_DESKTOP_SMOKE_ROOT ? ["resources", "app"] : []), "node_modules", "@zavora-ai", "computer-use-mcp", "dist", "server.js"),

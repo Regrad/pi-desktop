@@ -294,6 +294,8 @@ export class DataStore {
   }
 
   getEffectivePackagePath(packageName: string): string {
+    // First-party Pi packages are a single embedded, tested source revision.
+    if (packageName.startsWith('@earendil-works/pi-')) return path.join(this.appRoot, 'node_modules', packageName);
     const portablePath = path.join(
       this.runtimePackagesDir,
       "node_modules",
@@ -304,12 +306,8 @@ export class DataStore {
       : path.join(this.appRoot, "node_modules", packageName);
   }
 
-  getPiCliPath(): string {
-    return path.join(
-      this.getEffectivePackagePath("@earendil-works/pi-coding-agent"),
-      "dist",
-      "cli.js",
-    );
+  getEngineEntryPath(): string {
+    return path.join(this.appRoot, 'resources', 'pi-engine', 'worker.mjs');
   }
 
   async refreshManagedPackageConfiguration(): Promise<void> {

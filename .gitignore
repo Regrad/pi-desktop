@@ -8,3 +8,7 @@ data/
 client-agent/bin/
 client-agent/obj/
 resources/client-agent/*.exe
+vendor/pi/**/dist/
+vendor/pi/packages/ai/src/providers/data/
+vendor/pi/packages/tui/native/*/prebuilds/
+.pi-engine-build.json

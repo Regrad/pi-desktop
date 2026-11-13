@@ -7,16 +7,19 @@
   "main": "dist-electron/electron/main.js",
   "scripts": {
     "dev": "concurrently -k -n renderer,electron -c cyan,magenta \"vite\" \"wait-on http://127.0.0.1:5173 && cross-env VITE_DEV_SERVER_URL=http://127.0.0.1:5173 npm run electron:build && electron .\"",
-    "bridge:apply": "node scripts/apply-rpc-bridge.mjs",
-    "electron:build": "npm run bridge:apply && tsc -p tsconfig.electron.json",
+    "bridge:apply": "npm run engine:build",
+    "electron:build": "npm run engine:build && tsc -p tsconfig.electron.json",
     "build": "tsc -p tsconfig.json --noEmit && vite build && npm run electron:build",
     "release:update": "node scripts/update-portable-fast.mjs",
-    "start": "npm run bridge:apply && electron .",
+    "start": "npm run engine:build && electron .",
     "pack": "node scripts/package-portable.mjs",
-    "portable": "npm run pack"
+    "portable": "npm run pack",
+    "engine:build": "node scripts/build-pi-engine.mjs",
+    "engine:verify": "node scripts/pi-upstream.mjs --check",
+    "engine:sync": "node scripts/pi-upstream.mjs"
   },
   "dependencies": {
-    "@earendil-works/pi-coding-agent": "1.5.0",
+    "@earendil-works/pi-coding-agent": "file:vendor/pi/packages/coding-agent",
     "@modelcontextprotocol/sdk": "1.27.1",
     "@zavora-ai/computer-use-mcp": "7.1.0",
     "ajv": "8.20.0",
@@ -94,6 +97,31 @@
           ]
         }
       ]
+    },
+    "extraResources": [
+      {
+        "from": "vendor/pi/LICENSE",
+        "to": "app/resources/pi-engine/LICENSE"
+      },
+      {
+        "from": "vendor/pi.upstream.json",
+        "to": "app/resources/pi-engine/upstream.json"
+      }
+    ]
+  },
+  "workspaces": [
+    "vendor/pi/packages/telemetry",
+    "vendor/pi/packages/schema",
+    "vendor/pi/packages/tui",
+    "vendor/pi/packages/codemode",
+    "vendor/pi/packages/mcp",
+    "vendor/pi/packages/ai",
+    "vendor/pi/packages/agent",
+    "vendor/pi/packages/coding-agent"
+  ],
+  "overrides": {
+    "pi-lens": {
+      "@earendil-works/pi-tui": "1.5.2"
     }
   }
 }

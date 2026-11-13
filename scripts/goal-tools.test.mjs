@@ -68,7 +68,7 @@ test("goal extension IPC returns actual host state without stdout protocol chang
 });
 
 test("RPC continuation invokes the public custom-message API, never a user prompt", async () => {
-  const bridge = readFileSync(new URL("../resources/pi-rpc-bridge/rpc-mode.js", import.meta.url), "utf8");
+  const bridge = readFileSync(new URL("../resources/pi-engine/protocol.js", import.meta.url), "utf8");
   const goalCase = bridge.indexOf('case "desktop_goal_continue":');
   assert.ok(goalCase >= 0);
   const start = bridge.indexOf('{', goalCase) + 1;

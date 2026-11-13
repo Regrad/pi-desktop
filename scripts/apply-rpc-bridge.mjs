@@ -1,4 +1,4 @@
-import { copyFile, mkdir, readFile, writeFile } from "node:fs/promises";
+import { copyFile, readFile, writeFile } from "node:fs/promises";
 import { findPackageJSON } from "node:module";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -8,6 +8,7 @@ import { patchLlamaStatsCancellation } from "./llama-stats-patch.mjs";
 import { patchToolRouting } from "./tool-routing-patch.mjs";
 import { applyContextCompatibility, applyRequestDiagnosticsCompatibility } from "../resources/pi-rpc-bridge/compatibility.js";
 import { applyPiLensGrammarCache } from "../resources/pi-lens/grammar-cache-patch.mjs";
+import { SUPPORTED_PI_VERSION } from "../resources/pi-engine/version.js";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const corePackagePath = path.join(
@@ -19,28 +20,15 @@ const corePackagePath = path.join(
 );
 const corePackage = JSON.parse(await readFile(corePackagePath, "utf8"));
 
-if (corePackage.version !== "1.5.0") {
+if (corePackage.version !== SUPPORTED_PI_VERSION) {
   throw new Error(
-    `Pi RPC bridge targets pi-coding-agent 1.5.0, found ${corePackage.version}. ` +
+    `Pi SDK adapter targets pi-coding-agent ${SUPPORTED_PI_VERSION}, found ${corePackage.version}. ` +
     "Review the bridge before changing the pinned core version.",
   );
 }
 
-const source = path.join(root, "resources", "pi-rpc-bridge", "rpc-mode.js");
-const destination = path.join(
-  root,
-  "node_modules",
-  "@earendil-works",
-  "pi-coding-agent",
-  "dist",
-  "modes",
-  "rpc",
-  "rpc-mode.js",
-);
-
-await mkdir(path.dirname(destination), { recursive: true });
-await copyFile(source, destination);
-process.stdout.write("Pi Desktop RPC compatibility bridge applied.\n");
+// Desktop owns its SDK bootstrap and protocol adapter. The upstream CLI/RPC
+// entry is never replaced. Remaining transforms affect build output only.
 
 await applyContextCompatibility(path.dirname(corePackagePath));
 await applyRequestDiagnosticsCompatibility(path.dirname(corePackagePath));
@@ -58,8 +46,8 @@ process.stdout.write("Pi Desktop native tool-exposure policy applied.\n");
 // electron-builder hoists the same provider into the portable runtime.
 const providerRoot = path.dirname(findPackageJSON("@earendil-works/pi-ai", pathToFileURL(corePackagePath).href));
 const providerPackage = JSON.parse(await readFile(path.join(providerRoot, "package.json"), "utf8"));
-if (providerPackage.version !== "1.5.0") {
-  throw new Error(`Tool image bridge targets pi-ai 1.5.0, found ${providerPackage.version}.`);
+if (providerPackage.version !== SUPPORTED_PI_VERSION) {
+  throw new Error(`Tool image bridge targets pi-ai ${SUPPORTED_PI_VERSION}, found ${providerPackage.version}.`);
 }
 const providerPath = path.join(providerRoot, "dist", "api", "openai-completions.js");
 const providerBytes = await readFile(providerPath);

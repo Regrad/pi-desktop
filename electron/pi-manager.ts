@@ -1501,13 +1501,13 @@ export class PiManager {
     await this.updateConversation(conversation.id, { status: "starting" });
     assertCurrentStartup();
 
-    const cliPath = this.store.getPiCliPath();
+    const enginePath = this.store.getEngineEntryPath();
     const remote = await this.remoteRuntime?.(conversation);
     assertCurrentStartup();
     let record!: RuntimeRecord;
     const rpc = new PiRpcProcess({
       executablePath: process.execPath,
-      cliPath,
+      enginePath,
       cwd,
       agentDir: this.store.agentDir,
       sessionsDir: this.store.getSessionDir(cwd, conversation.id),

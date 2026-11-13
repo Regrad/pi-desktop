@@ -13,7 +13,7 @@ interface PendingRequest {
 
 export interface PiRpcProcessOptions {
   executablePath: string;
-  cliPath: string;
+  enginePath: string;
   cwd: string;
   agentDir: string;
   sessionsDir: string;
@@ -53,43 +53,24 @@ export class PiRpcProcess {
   async start(): Promise<void> {
     if (this.process) return;
     this.stderr = "";
-    const args = [
-      this.options.cliPath,
-      "--mode",
-      "rpc",
-      "--approve",
-      // Keep the existing desktop MCP adapter authoritative during the core upgrade.
-      "--no-mcp",
-      "--session-dir",
-      this.options.sessionsDir,
-    ];
-    if (this.options.sessionFile) {
-      args.push("--session", this.options.sessionFile);
-    } else {
-      args.push("--session-id", this.options.sessionId);
-    }
-    if (this.options.provider) args.push("--provider", this.options.provider);
-    if (this.options.planningExtensionPath) args.push("--extension", this.options.planningExtensionPath);
-    // Skills must remove the dynamic catalog before forced desktop prompt handlers.
-    if (this.options.skillsExtensionPath) args.push("--extension", this.options.skillsExtensionPath);
-    if (this.options.appRoot) {
-      args.push("--extension", "builtin:codemode", "--extension", path.join(this.options.appRoot, "resources", "tool-routing", "index.js"));
-    }
-    if (this.options.goalExtensionPath) {
-      args.push("--extension", this.options.goalExtensionPath);
-    }
-    if (this.options.planExtensionPath) args.push("--extension", this.options.planExtensionPath);
-    if (this.options.notebookExtensionPath) args.push("--extension", this.options.notebookExtensionPath);
-    if (this.options.browserExtensionPath) args.push("--extension", this.options.browserExtensionPath);
-    if (this.options.isolatedExtensions) {
-      args.push("--no-builtin-tools", "--no-extensions", "--no-skills", "--no-prompt-templates", "--no-themes", "--no-context-files");
-      for (const extension of this.options.isolatedExtensions) args.push("--extension", extension);
-    }
-    if (this.options.model) args.push("--model", this.options.model);
-    if (this.options.thinkingLevel) args.push("--thinking", this.options.thinkingLevel);
-    if (this.options.appendSystemPrompt) {
-      args.push("--append-system-prompt", this.options.appendSystemPrompt);
-    }
+    const extensions = [
+      this.options.planningExtensionPath,
+      // Keep skills before desktop prompt handlers.
+      this.options.skillsExtensionPath,
+      ...(this.options.appRoot ? ['builtin:codemode', path.join(this.options.appRoot, 'resources', 'tool-routing', 'index.js')] : []),
+      this.options.goalExtensionPath, this.options.planExtensionPath,
+      this.options.notebookExtensionPath, this.options.browserExtensionPath,
+      ...(this.options.isolatedExtensions ?? []),
+    ].filter((entry): entry is string => Boolean(entry));
+    const engineOptions = {
+      cwd: this.options.cwd, agentDir: this.options.agentDir,
+      sessionsDir: this.options.sessionsDir, sessionId: this.options.sessionId,
+      sessionFile: this.options.sessionFile, provider: this.options.provider,
+      model: this.options.model, thinkingLevel: this.options.thinkingLevel,
+      appendSystemPrompt: this.options.appendSystemPrompt,
+      extensions, isolated: Boolean(this.options.isolatedExtensions),
+    };
+    const args = [this.options.enginePath];
 
     const child = spawn(this.options.executablePath, args, {
       cwd: this.options.cwd,
@@ -104,6 +85,7 @@ export class PiRpcProcess {
         PI_DESKTOP_MCP_ENTRY: this.options.mcpEntryPath,
         NO_UPDATE_NOTIFIER: "1",
         ...this.options.remoteEnvironment,
+        PI_DESKTOP_ENGINE_OPTIONS: JSON.stringify(engineOptions),
         PI_DESKTOP_CONVERSATION_ID: this.options.sessionId,
         PI_DESKTOP_SKILLS_PROJECT: this.options.skillsProject ? "1" : "0",
         ...(this.options.goalStatePath ? { PI_DESKTOP_GOAL_STATE_FILE: this.options.goalStatePath } : {}),
@@ -150,7 +132,7 @@ export class PiRpcProcess {
       child.once("exit", (code) => {
         if (code !== null && code !== 0) {
           clearTimeout(timeout);
-          reject(new Error(`Не удалось запустить Pi (${code}). ${this.stderr}`));
+          reject(new Error(`Не удалось запустить движок Pi (${code}). ${this.stderr}`));
         }
       });
     });
@@ -160,7 +142,7 @@ export class PiRpcProcess {
     const child = this.process;
     if (!child) return;
     this.process = undefined;
-    this.rejectPending(new Error("Процесс Pi остановлен"));
+    this.rejectPending(new Error("Движок Pi остановлен"));
     child.kill("SIGTERM");
     await new Promise<void>((resolve) => {
       const timer = setTimeout(() => {
@@ -176,7 +158,7 @@ export class PiRpcProcess {
 
   async request<T = unknown>(type: string, payload: JsonObject = {}, timeoutMs = 86_400_000): Promise<T> {
     const child = this.process;
-    if (!child || child.killed) throw new Error("Процесс Pi не запущен");
+    if (!child || child.killed) throw new Error("Движок Pi не запущен");
     const id = `desktop-${++this.sequence}`;
     const command = `${JSON.stringify({ ...payload, id, type })}\n`;
     const promise = new Promise<T>((resolve, reject) => {
@@ -256,7 +238,7 @@ export class PiRpcProcess {
   private handleExit(error?: Error, child = this.process): void {
     if (!child || this.process !== child) return;
     this.process = undefined;
-    this.rejectPending(error ?? new Error("Процесс Pi завершён"));
+    this.rejectPending(error ?? new Error("Движок Pi завершён"));
     if (error && child.exitCode === null && child.signalCode === null && !child.killed) {
       // A broken stdin is terminal for RPC, but does not itself stop the child.
       try { child.kill("SIGTERM"); } catch { /* Still report the original transport failure. */ }

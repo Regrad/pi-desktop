@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { spawn } from "node:child_process";
 import { existsSync } from "node:fs";
-import { copyFile, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
@@ -23,12 +23,6 @@ interface ComponentDefinition {
 }
 
 const COMPONENTS: ComponentDefinition[] = [
-  {
-    id: "pi-core",
-    packageName: "@earendil-works/pi-coding-agent",
-    name: "Pi Core",
-    description: "Ядро агента и штатные инструменты Pi.",
-  },
   { id: "pi-web-access", packageName: "pi-web-access", name: "Web Access", description: "Поиск и чтение веб-страниц." },
   { id: "pi-tool-repair", packageName: "pi-tool-repair", name: "Tool Repair", description: "Исправление некорректных вызовов инструментов." },
   { id: "pi-llama-cpp-stats", packageName: "pi-llama-cpp-stats", name: "llama.cpp Stats", description: "Статистика prompt processing и генерации." },
@@ -82,6 +76,9 @@ export class UpdateManager {
       checkedAt: new Date().toISOString(),
       npmAvailable,
       components: [
+        { id: 'pi-core', name: 'Pi Engine', description: 'Встроенный движок. Обновляется вместе с приложением.',
+          currentVersion: await readPackageVersion(this.store.getEffectivePackagePath('@earendil-works/pi-coding-agent')),
+          source: 'bundled', updateAvailable: false, updateable: false },
         ...components,
         ...LOCAL_COMPONENTS.map((component) => ({ ...component, updateAvailable: false })),
       ],
@@ -91,6 +88,7 @@ export class UpdateManager {
   }
 
   updateComponent(id: UpdateComponentId): Promise<UpdateResult> {
+    if (id === 'pi-core') throw new Error('Встроенный Pi обновляется вместе с приложением');
     return this.runExclusive([id]);
   }
 
@@ -128,7 +126,6 @@ export class UpdateManager {
           "--no-fund",
           `${definition.packageName}@${assertSafeVersion(component.latestVersion)}`,
         ]);
-        if (definition.id === "pi-core") await this.applyRpcBridge();
         await this.applyAddonCompatibility(definition.packageName);
         if (definition.packageName === "pi-lens") await this.applyLensGrammarCache();
         await this.store.refreshManagedPackageConfiguration();
@@ -145,7 +142,6 @@ export class UpdateManager {
               "--no-fund",
               `${definition.packageName}@${assertSafeVersion(previousOverrideVersion)}`,
             ]);
-            if (definition.id === "pi-core") await this.applyRpcBridge();
             await this.applyAddonCompatibility(definition.packageName);
             if (definition.packageName === "pi-lens") await this.applyLensGrammarCache();
           } else {
@@ -180,31 +176,6 @@ export class UpdateManager {
     await ensurePiLensGrammars(this.store.getEffectivePackagePath("pi-lens"));
   }
 
-  private async applyRpcBridge(): Promise<void> {
-    const corePath = this.store.getEffectivePackagePath("@earendil-works/pi-coding-agent");
-    if (await readPackageVersion(corePath) !== "1.5.0") {
-      throw new Error("RPC и отложенные инструменты проверены для Pi 1.5.0; новая версия требует проверки совместимости");
-    }
-    const destination = path.join(
-      this.store.getEffectivePackagePath("@earendil-works/pi-coding-agent"),
-      "dist", "modes", "rpc", "rpc-mode.js",
-    );
-    if (!existsSync(path.join(path.dirname(destination), "jsonl.js"))) {
-      throw new Error("Новая версия Pi несовместима с RPC-интерфейсом Pi Desktop");
-    }
-    const routingRoot = path.join(this.appRoot, "resources", "tool-routing");
-    const { patchToolRouting } = await import(pathToFileURL(path.join(routingRoot, "patch.js")).href);
-    const loaderPath = path.join(corePath, "dist", "core", "extensions", "loader.js");
-    const source = new TextDecoder("utf-8", { fatal: true }).decode(await readFile(loaderPath));
-    const patched = patchToolRouting(source);
-    await copyFile(path.join(routingRoot, "index.js"), path.join(path.dirname(loaderPath), "desktop-tool-routing.js"));
-    if (patched !== source) await writeFile(loaderPath, patched, "utf8");
-    await copyFile(path.join(this.appRoot, "resources", "pi-rpc-bridge", "rpc-mode.js"), destination);
-    const compatibility = path.join(this.appRoot, "resources", "pi-rpc-bridge", "compatibility.js");
-    const { applyCoreRequestCompatibility } = await import(pathToFileURL(compatibility).href);
-    await applyCoreRequestCompatibility(corePath);
-  }
-
   private async applyAddonCompatibility(name: string): Promise<void> {
     if (!["pi-mcp-adapter", "pi-llama-cpp-stats"].includes(name)) return;
     const compatibility = path.join(this.appRoot, "resources", "pi-rpc-bridge", "compatibility.js");
@@ -217,7 +188,7 @@ export class UpdateManager {
     let exitError: Error | undefined;
     const rpc = new PiRpcProcess({
       executablePath: this.runtimeExecutable,
-      cliPath: this.store.getPiCliPath(),
+      enginePath: this.store.getEngineEntryPath(),
       cwd: this.store.dataDir,
       agentDir: this.store.agentDir,
       sessionsDir: smokeDir,

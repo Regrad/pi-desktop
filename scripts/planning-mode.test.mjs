@@ -368,7 +368,7 @@ registerHooks({resolve(s,c,n){return n(s.endsWith("desktop-tool-routing.js")?${J
   writeFileSync(path.join(agentDir, "models.json"), JSON.stringify({ providers: { "planning-test": { baseUrl: `http://127.0.0.1:${server.address().port}/v1`, api: "openai-completions", apiKey: "test-only",
     models: [{ id: "test", name: "test", reasoning: false, input: ["text"], cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, contextWindow: 32768, maxTokens: 1024 }] } } }));
   const events = [], hostRequests = []; let settled;
-  const rpc = new PiRpcProcess({ executablePath: process.execPath, cliPath: path.resolve("node_modules/@earendil-works/pi-coding-agent/dist/cli.js"),
+  const rpc = new PiRpcProcess({ executablePath: process.execPath, enginePath: path.resolve("resources/pi-engine/worker.mjs"),
     cwd: folder, agentDir, sessionsDir: path.join(folder, "sessions"), sessionId: "chat", appRoot: process.cwd(), provider: "planning-test", model: "test", goalStatePath: stateFile,
     remoteEnvironment: { NODE_OPTIONS: `--import=${new URL(`file:///${overlay.replaceAll("\\", "/")}`).href}` }, planningExtensionPath: path.resolve("electron/planning-extension.ts"),
     goalExtensionPath: path.resolve("electron/goal-extension.ts"), planExtensionPath: path.resolve("electron/plan-extension.ts"), notebookExtensionPath: path.resolve("electron/notebook-extension.ts"), browserExtensionPath: path.resolve("electron/browser-extension.ts"),
