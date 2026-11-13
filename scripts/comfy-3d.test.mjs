@@ -81,6 +81,40 @@ test("3D quality and watertight controls apply without automatic low-poly postpr
       assert.ok(!(Array.isArray(value) && value[0] === "327"));
   }
 });
+test("3D texturing generates six mesh-aligned views without holding mismatched reference pixels", () => {
+  const images = ["front.png", "left.png", "back.png", "right.png"];
+  const graph = builtinGraph(DEFAULT_COMFY_SETTINGS, "model3d_multiview", {}, images);
+  assert.deepEqual([338, 341, 342, 345].map(id => graph[`mv_${id}`].inputs.image), images);
+  assert.deepEqual(graph[375].inputs.reference, ["122", 0]);
+  for (const name of ["reference_back", "reference_character_left_side", "reference_character_right_side"])
+    assert.equal(graph[375].inputs[name], undefined);
+  for (const id of [358, 364]) {
+    assert.equal(graph[id].inputs.view_count, 6);
+    assert.equal(graph[id].inputs.steps, 25);
+    assert.equal(graph[id].inputs.refine_denoise, 0);
+  }
+  assert.equal(graph[358].inputs.view_resolution, 2048);
+  assert.equal(graph[364].inputs.view_resolution, 1024);
+  assert.equal(graph[375].inputs.normal_view_resolution, 2048);
+  assert.equal(graph[341].inputs.normal_map_resolution, 2048);
+  assert.deepEqual(graph[384].inputs.mesh, ["pi_orient", 0]);
+  assert.ok(!graph.pi_model_process);
+  const aligned = builtinGraph(DEFAULT_COMFY_SETTINGS, "model3d_multiview", {
+    texture_options: { use_view_references: true, steps: 12, albedo_resolution: 1024, mr_resolution: 512 },
+  }, images);
+  assert.deepEqual(aligned[375].inputs.reference_back, ["mv_342", 0]);
+  assert.deepEqual(aligned[375].inputs.reference_character_left_side, ["mv_341", 0]);
+  assert.deepEqual(aligned[375].inputs.reference_character_right_side, ["mv_345", 0]);
+  assert.equal(aligned[358].inputs.steps, 12);
+  assert.equal(aligned[364].inputs.steps, 12);
+  assert.equal(aligned[358].inputs.view_resolution, 1024);
+  assert.equal(aligned[364].inputs.view_resolution, 512);
+  assert.equal(aligned[375].inputs.normal_view_resolution, 1024);
+  assert.throws(() => builtinGraph(DEFAULT_COMFY_SETTINGS, "model3d_multiview", {
+    texture_options: { use_view_references: "yes" },
+  }, images), /use_view_references/);
+});
+
 test("3D API round trip persists only file metadata and serves a portable model", async (t) => {
   const dir = await mkdtemp(path.join(os.tmpdir(), "pi-3d-test-"));
   const bytes = glb(); let queued = 0; let submitted;

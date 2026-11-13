@@ -6,7 +6,10 @@ import { processingInputs, processingDefaults } from "../../lib/model3d-options.
 import { CHARACTER_GRAPH, MULTIVIEW_SHAPE } from "./pixelartistry-graphs.js";
 
 type Graph = typeof CHARACTER_GRAPH;
-type GenerationInput = ComfyInput & { model3d_options?: NonNullable<ComfyInput["model3d_options"]> & { geometry_model?: "pixal3d" | "trellis2" } };
+type GenerationInput = ComfyInput & {
+  model3d_options?: NonNullable<ComfyInput["model3d_options"]> & { geometry_model?: "pixal3d" | "trellis2" };
+  texture_options?: NonNullable<ComfyInput["texture_options"]> & { use_view_references?: boolean };
+};
 
 function prune(graph: Graph, output: string) {
   const used = new Set<string>();
@@ -33,6 +36,8 @@ export function modelGraph(settings: ComfySettings, mode: "model3d" | "model3d_m
   const graph = fillWorkflow(CHARACTER_GRAPH, input, images, settings.steps);
   const o = input.model3d_options ?? {};
   const t = input.texture_options ?? {};
+  if (t.use_view_references !== undefined && typeof t.use_view_references !== "boolean")
+    throw new Error("Invalid use_view_references flag");
   const target = number(o.target_face_count, 12000, "target_face_count", 0, 10000000);
   const resolution = number(o.shape_resolution, 1536, "shape_resolution", 1024, 2048, 128);
   const texture = number(o.texture_resolution ?? t.texture_resolution, 2048, "texture_resolution", 512, 8192, 512);
@@ -66,9 +71,13 @@ export function modelGraph(settings: ComfySettings, mode: "model3d" | "model3d_m
     graph["mv_94"].inputs.target_resolution = resolution;
     graph["325"].inputs.mesh = ["mv_92", 0];
     if (o.watertight === false) graph["328"].inputs.mesh = ["mv_92", 0];
-    graph["375"].inputs.reference_back = ["mv_342", 0];
-    graph["375"].inputs.reference_character_left_side = ["mv_341", 0];
-    graph["375"].inputs.reference_character_right_side = ["mv_345", 0];
+    // These inputs hold fitted reference pixels during sampling. A generated
+    // mesh need not match their silhouettes, so use them only when requested.
+    if (t.use_view_references) {
+      graph["375"].inputs.reference_back = ["mv_342", 0];
+      graph["375"].inputs.reference_character_left_side = ["mv_341", 0];
+      graph["375"].inputs.reference_character_right_side = ["mv_345", 0];
+    }
     // Pixal's four-view mesh faces -Z; UltraTex's front camera expects +Z.
     // Rotate the complete baked mesh (normals/tangents included), retaining its UV atlas.
     graph.pi_orient = { class_type: "RotateMesh", inputs: { mesh: ["353", 0], mode: "euler_xyz",
@@ -86,17 +95,20 @@ export function modelGraph(settings: ComfySettings, mode: "model3d" | "model3d_m
   graph["341"].inputs.normal_map_resolution = texture;
   graph["341"].inputs.load_output_images = false;
   for (const id of ["358", "364"]) Object.assign(graph[id].inputs, {
-    steps: number(t.steps, 4, "texture steps", 1, 100),
-    extra_steps: number(t.steps, 4, "texture steps", 1, 100),
+    steps: number(t.steps, 25, "texture steps", 1, 100),
+    extra_steps: number(t.steps, 25, "texture steps", 1, 100),
+    // The baker uses the canonical six for covered surfaces; extra cameras
+    // require another diffusion pass and only contribute to unseen regions.
+    view_count: 6,
     guidance: number(t.cfg, 4, "texture cfg", 0, 20, 0),
     sparse_retention: number(t.sparse_topk, 0.2, "sparse_topk", 0.01, 1, 0),
     refine_denoise: 0, refine_steps: 4,
   });
   for (const [id, requested] of [["358", t.albedo_resolution], ["364", t.mr_resolution]] as const) {
-    const size = number(requested, 1024, "view resolution", 256, 4096, 16);
+    const size = number(requested, id === "358" ? 2048 : 1024, "view resolution", 256, 4096, 16);
     graph[id].inputs.view_resolution = size;
   }
-  graph["375"].inputs.normal_view_resolution = Math.max(1024, ...[t.albedo_resolution ?? 1024, t.mr_resolution ?? 1024].map(size => size <= 1024 ? 1024 : size <= 2048 ? 2048 : 4096));
+  graph["375"].inputs.normal_view_resolution = Math.max(1024, ...[t.albedo_resolution ?? 2048, t.mr_resolution ?? 1024].map(size => size <= 1024 ? 1024 : size <= 2048 ? 2048 : 4096));
   graph["387"].inputs.token_chunk = number(t.token_chunk, 4096, "token_chunk", 0, 32768, 256);
   if (t.memory_factor !== undefined && t.memory_factor !== 0)
     graph["387"].inputs.activation_factor = number(t.memory_factor, 12, "memory_factor", 4, 64, 0.5);

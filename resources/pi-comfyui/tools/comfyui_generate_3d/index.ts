@@ -15,7 +15,8 @@ export default function register(pi: ExtensionAPI, context: ToolContext) {
     promptSnippet: "Generate textured 3D models locally from one image or four views; show an interactive model in chat.",
     promptGuidelines: [...modelGuidelines,
       "Use the supplied reference and requirements; ask only about missing choices that materially affect the result. Reuse agreed settings on retries.",
-      "Default output is one solid static mesh with watertight preparation and baked normal/PBR maps. Use component_mode=auto for intentional separate parts. One-image generation supports Pixal3D or Trellis2; four views use Pixal3D and guide both shape and textures.",
+      "Default output is one solid static mesh with watertight preparation and baked normal/PBR maps. Use component_mode=auto for intentional separate parts. One-image generation supports Pixal3D or Trellis2; four views guide Pixal3D geometry. Texturing uses the front reference to generate six views on the actual mesh; enable use_view_references only for extra texture references aligned with that mesh.",
+      "Preserve the reference's intended low-poly style. For a texture-only defect, reuse the finished mesh with media_texture_3d instead of regenerating geometry or adding automatic smoothing, remeshing or repeated repair passes.",
       "The default completion is the first finished GLB in the interactive viewer. Choose additional rendered views or another iteration when the request or a meaningful validation need justifies them.",
       "The generated result stays at its requested generation budget and texture resolution. Use postprocess only for an explicitly requested repair, retopology, polygon reduction or texture reduction. Inspect returned processing reports, not just the success label."],
     parameters: Type.Object({
@@ -23,7 +24,8 @@ export default function register(pi: ExtensionAPI, context: ToolContext) {
       seed: Type.Optional(Type.Integer({ minimum: 0 })),
       postprocess: Type.Optional(Type.Object(processingProperties)),
       texture_options: Type.Optional(Type.Object({
-        steps: Type.Optional(Type.Integer({ minimum: 1, maximum: 100, description: "Texture sampling steps; default 4, increase for a deliberate quality comparison." })), cfg: Type.Optional(Type.Number({ minimum: 0, maximum: 20 })),
+        steps: Type.Optional(Type.Integer({ minimum: 1, maximum: 100, description: "Texture sampling steps per PBR branch; default 25. Lower values trade quality for speed." })), cfg: Type.Optional(Type.Number({ minimum: 0, maximum: 20 })),
+        use_view_references: Type.Optional(Type.Boolean({ description: "Hold fitted side/back reference pixels during texturing; default false. Enable only when those views align with the generated mesh, otherwise clothing boundaries and facial details can be misplaced." })),
         albedo_resolution: Type.Optional(Type.Integer({ minimum: 256, maximum: 4096, multipleOf: 16 })),
         mr_resolution: Type.Optional(Type.Integer({ minimum: 256, maximum: 4096, multipleOf: 16 })),
         memory_factor: Type.Optional(Type.Union([Type.Literal(0), Type.Number({ minimum: 4, maximum: 64, multipleOf: 0.5 })], { description: "Activation-memory estimate; 0 uses the installed default." })),
