@@ -4,6 +4,10 @@ A portable Windows desktop app for the [Pi coding agent](https://github.com/eare
 
 Pi is built from the bundled source and integrated through its SDK. You do not need to install or launch a separate Pi application.
 
+**[Download for Windows x64](https://github.com/Regrad/pi-desktop/releases/download/v0.1.0/Pi-Desktop-0.1.0-win-x64.zip)** · [Release notes and SHA-256 checksum](https://github.com/Regrad/pi-desktop/releases/tag/v0.1.0)
+
+Extract the ZIP into a folder you can write to and run `app\Pi Desktop.exe`. No installer is required. The app creates its own `data` folder next to `app` on first launch. To update, close Pi Desktop and replace only `app`, keeping your existing `data` folder.
+
 ![Pi Desktop showing a project chat and completed work plan](docs/assets/pi-desktop.png)
 
 *The screenshot uses a separate demo profile with fictional projects and conversation content. No personal chats or user data are included.*
