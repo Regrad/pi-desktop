@@ -4,6 +4,7 @@ dist-electron/
 release/
 release-*/
 data/
+exports/
 *.log
 client-agent/bin/
 client-agent/obj/
