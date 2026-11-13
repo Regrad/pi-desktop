@@ -5,6 +5,24 @@ import path from "node:path";
 import test from "node:test";
 import { FAST_RELEASE_MANIFEST, changedReleaseInputs, classifyReleaseChanges, collectReleaseInputs, createFastReleaseManifest, assertReleaseInputsUnchanged, writeFastReleaseManifest } from "./release-update-core.mjs";
 
+test("changes to the bridge packaging graph trigger a modular bridge update", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "pi-release-bridge-graph-"));
+  try {
+    await mkdir(path.join(root, "scripts"));
+    await writeFile(path.join(root, "scripts", "update-portable-fast.mjs"), "staging graph");
+    await writeFile(path.join(root, "scripts", "release-update-core.mjs"), "manifest logic");
+    const captured = await collectReleaseInputs(root);
+    for (const name of ["scripts/update-portable-fast.mjs", "scripts/release-update-core.mjs"]) {
+      assert.equal(typeof captured[name], "string");
+      const classification = classifyReleaseChanges([name]);
+      assert.equal(classification.bridge, true); assert.equal(classification.renderer, false);
+    }
+    const script = await readFile(new URL("./update-portable-fast.mjs", import.meta.url), "utf8");
+    assert.ok(script.includes('"dist/extensions/codemode/execute.js"'));
+    assert.ok(script.includes('"dist/core/extensions/desktop-planning-permissions.js"'));
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
+
 test("source manifest excludes generated client-agent output", async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), "pi-release-inputs-"));
   try {

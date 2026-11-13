@@ -1,7 +1,8 @@
 import path from "node:path";
 import { constants, createReadStream } from "node:fs";
-import { copyFile, mkdir, readdir, realpath, stat } from "node:fs/promises";
+import { copyFile, mkdir, readdir, realpath, stat, rename, lstat } from "node:fs/promises";
 import { createHash } from "node:crypto";
+import { chatDirectory } from "../resources/pi-comfyui/lib/chat-storage.js";
 
 type SessionReference = { id: string; sessionFile?: string };
 
@@ -14,15 +15,13 @@ export function portableSessionsDir(dataDir: string): string {
   return path.resolve(dataDir, "agent", "sessions");
 }
 
-function sessionTarget(dataDir: string, reference: string): string {
-  const root = portableSessionsDir(dataDir);
-  const absolute = path.resolve(dataDir, reference);
-  if (within(root, absolute) && path.extname(absolute).toLowerCase() === ".jsonl") return absolute;
+function sessionTarget(dataDir: string, reference: string, id: string): string {
+  const root = path.join(chatDirectory(dataDir, id), "sessions");
   const normalized = reference.replaceAll("\\", "/");
+  if (normalized.split("/").includes("..")) throw new Error("Некорректный путь сессии Pi");
   const marker = normalized.toLowerCase().lastIndexOf("/sessions/");
-  if (marker < 0) throw new Error("Некорректный путь сессии Pi");
-  const tail = normalized.slice(marker + "/sessions/".length);
-  const target = path.resolve(root, tail);
+  if (marker < 0 && !normalized.startsWith("agent/sessions/")) throw new Error("Некорректный путь сессии Pi");
+  const target = path.resolve(root, path.posix.basename(normalized));
   if (!within(root, target) || path.extname(target).toLowerCase() !== ".jsonl")
     throw new Error("Некорректный путь сессии Pi");
   return target;
@@ -32,7 +31,8 @@ function sessionTarget(dataDir: string, reference: string): string {
 export function storedSessionReference(dataDir: string, file: string): string {
   const root = portableSessionsDir(dataDir);
   const resolved = path.resolve(file);
-  if (!within(root, resolved) || path.extname(resolved).toLowerCase() !== ".jsonl")
+  const owned = path.relative(path.resolve(dataDir, "chats"), resolved).split(path.sep).join("/");
+  if ((!within(root, resolved) && !/^[a-zA-Z0-9_-]{1,128}\/sessions\/[^/]+\.jsonl$/i.test(owned)) || path.extname(resolved).toLowerCase() !== ".jsonl")
     throw new Error("Сессия находится вне портативной папки Pi Desktop");
   return path.relative(path.resolve(dataDir), resolved).replaceAll("\\", "/");
 }
@@ -73,19 +73,23 @@ export async function migratePortableSessions<T extends SessionReference>(
   let localIndex: string[] | undefined, legacyIndex: string[] | undefined;
   const result: T[] = [];
   for (const conversation of conversations) {
-    let target = conversation.sessionFile ? sessionTarget(dataDir, conversation.sessionFile) : undefined;
+    let target = conversation.sessionFile ? sessionTarget(dataDir, conversation.sessionFile, conversation.id) : undefined;
     if (target && await regularFile(target)) {
       // Reject junction/symlink escapes without changing a user's files.
-      if (!within(await realpath(root), await realpath(target))) throw new Error("Сессия выходит за пределы портативной папки");
+      if (!within(await realpath(dataDir), await realpath(target))) throw new Error("Сессия выходит за пределы портативной папки");
       result.push({ ...conversation, sessionFile: target });
       continue;
     }
     let source: string | undefined;
     if (conversation.sessionFile && path.isAbsolute(conversation.sessionFile) && await regularFile(conversation.sessionFile))
       source = conversation.sessionFile;
-    if (!source && target) {
-      const legacy = path.resolve(legacyRoot, path.relative(root, target));
-      if (within(path.resolve(legacyRoot), legacy) && await regularFile(legacy)) source = legacy;
+    if (!source && conversation.sessionFile) {
+      const normalized = conversation.sessionFile.replaceAll("\\", "/");
+      const tail = normalized.slice(normalized.toLowerCase().lastIndexOf("/sessions/") + "/sessions/".length);
+      for (const directory of [root, legacyRoot]) {
+        const legacy = path.resolve(directory, tail);
+        if (within(path.resolve(directory), legacy) && await regularFile(legacy)) { source = legacy; break; }
+      }
     }
     if (!source) {
       // Recover a reference lost by an older build, using the exact session id,
@@ -93,22 +97,35 @@ export async function migratePortableSessions<T extends SessionReference>(
       const suffix = `_${conversation.id}.jsonl`;
       localIndex ??= await sessionFiles(root);
       const local = localIndex.find((file) => path.basename(file).endsWith(suffix));
-      if (local) { result.push({ ...conversation, sessionFile: local }); continue; }
-      legacyIndex ??= await sessionFiles(legacyRoot);
-      source = legacyIndex.find((file) => path.basename(file).endsWith(suffix));
+      if (local) source = local;
+      else {
+        legacyIndex ??= await sessionFiles(legacyRoot);
+        source = legacyIndex.find((file) => path.basename(file).endsWith(suffix));
+      }
+      if (!source) {
+        const owned = path.join(chatDirectory(dataDir, conversation.id), "sessions");
+        source = (await sessionFiles(owned)).find(file => path.basename(file).endsWith(suffix));
+      }
     }
     if (!source) {
       if (conversation.sessionFile) missing.push(conversation.id);
       result.push(target ? { ...conversation, sessionFile: target } : { ...conversation });
       continue;
     }
-    target ??= sessionTarget(dataDir, source);
+    target ??= sessionTarget(dataDir, source, conversation.id);
     await mkdir(path.dirname(target), { recursive: true });
+    if (!within(await realpath(dataDir), await realpath(path.dirname(target)))) throw new Error("Папка сессии находится вне data");
     // Existing portable history wins: never replace it with an older global copy.
     try {
-      await copyFile(source, target, constants.COPYFILE_EXCL);
-      if (await sessionFileHash(source) !== await sessionFileHash(target)) throw new Error("Копия сессии Pi не прошла проверку");
-      copied++;
+      if (path.resolve(source) !== path.resolve(target)) {
+        if ((await lstat(source)).isSymbolicLink()) throw new Error("Вместо сессии обнаружена ссылка");
+        if (within(await realpath(dataDir), await realpath(source))) await rename(source, target);
+        else {
+          await copyFile(source, target, constants.COPYFILE_EXCL);
+          if (await sessionFileHash(source) !== await sessionFileHash(target)) throw new Error("Копия сессии Pi не прошла проверку");
+          copied++;
+        }
+      }
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
     }

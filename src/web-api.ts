@@ -120,7 +120,7 @@ export async function installWebApi(): Promise<boolean> {
       if (name === "controlSelectionReady") return () => {};
       if (name === "showGeneratedFile") return async (kind: string, filename: string) => {
         const anchor = document.createElement("a");
-        anchor.href = `/api/media/${kind}/${encodeURIComponent(filename)}?mode=${mode}`; anchor.download = filename; anchor.click();
+        anchor.href = `/api/media/${kind}/${encodeURIComponent(filename)}?mode=${mode}`; anchor.download = filename.split("/").pop()!; anchor.click();
       };
       if (name === "showItemInFolder") return mode === "remote" ? (...args: unknown[]) => rpc(name, args) : async () => { throw new Error("В браузере используйте скачивание файла."); };
       if (name === "showGeneratedOnClient") return (kind: string, filename: string) => rpc("showGeneratedFile", [kind, filename]);

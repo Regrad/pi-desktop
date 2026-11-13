@@ -1,14 +1,14 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
-import { cp, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { cp, mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 import os from "node:os";
 import { startControlApi } from "../resources/control-api/server.mjs";
 
 test("portable PowerShell client relocates, discovers API and preserves UTF-8", async () => {
   const temporary = await mkdtemp(path.join(os.tmpdir(), "pi-portable-client-"));
-  const script = path.join(temporary, "Invoke-PiDesktop.ps1");
+  let script = path.join(temporary, "Invoke-PiDesktop.ps1");
   await cp("resources/control-api/Invoke-PiDesktop.ps1", script);
   const snapshot = { conversation: { id: "portable-chat" }, messages: [], state: { isStreaming: false }, extensionUi: { pendingDialogs: [] } };
   let prompt;
@@ -43,6 +43,10 @@ test("portable PowerShell client relocates, discovers API and preserves UTF-8", 
     assert.equal(result.code, 0, result.stderr);
     assert.equal(JSON.parse(result.stdout)[0].name, "Проект после переноса");
     assert.equal(result.stdout.includes(api.connection.token), false);
+    const application = path.join(temporary, "app"); await mkdir(application);
+    await cp(script, path.join(application, "Invoke-PiDesktop.ps1")); script = path.join(application, "Invoke-PiDesktop.ps1");
+    result = await invoke("-Action projects"); assert.equal(result.code, 0, result.stderr);
+    assert.equal(JSON.parse(result.stdout)[0].name, "Проект после переноса");
     result = await invoke("-Action select -ConversationId 'portable-chat'");
     assert.equal(result.code, 0, result.stderr);
     assert.equal(selected, "portable-chat");
@@ -70,7 +74,7 @@ test("portable PowerShell client relocates, discovers API and preserves UTF-8", 
     for (const name of ["CONNECT_CODEX.md", "Invoke-PiDesktop.ps1"]) {
       assert.ok(packageJson.build.extraFiles.some((entry) => entry.to === name), `${name} must be shipped beside executable`);
     }
-    assert.equal(await readFile("CONNECT_CODEX.md", "utf8"), await readFile("release/Pi Desktop/CONNECT_CODEX.md", "utf8"));
-    assert.equal(await readFile("resources/control-api/Invoke-PiDesktop.ps1", "utf8"), await readFile("release/Pi Desktop/Invoke-PiDesktop.ps1", "utf8"));
+    assert.equal(await readFile("CONNECT_CODEX.md", "utf8"), await readFile("release/Pi Desktop/app/CONNECT_CODEX.md", "utf8"));
+    assert.equal(await readFile("resources/control-api/Invoke-PiDesktop.ps1", "utf8"), await readFile("release/Pi Desktop/app/Invoke-PiDesktop.ps1", "utf8"));
   } finally { await api.close(); await rm(temporary, { recursive: true, force: true }); }
 });

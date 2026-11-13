@@ -1,17 +1,38 @@
 // Host-wide exposure policy; execution remains Pi's native ctx.executeTool pipeline.
+export { guardExtensionHandler, assertPlanningModelAccess } from "./desktop-planning-permissions.js";
 const directTools = new Set([
   "read", "bash", "powershell", "edit", "write", "grep", "find", "ls",
   "get_goal", "create_goal", "update_goal", "desktop_goal_report", "update_plan", "update_notebook", "codemode",
+  "update_implementation_plan",
 ]);
 const retiredLoaders = new Set(["tool_search", "pi_lens_activate_tools", "mcpScript"]);
 const routed = Symbol("pi-desktop/routed-tool");
 const resultSchema = {
-  type: "object", required: ["content"], properties: {
-    content: { type: "array", items: { type: "object", additionalProperties: true } },
+  type: "object", required: ["data", "text"], properties: {
+    data: {}, text: { type: "string" },
+    images: { type: "array", items: { type: "object", required: ["type", "data", "mimeType"], properties: {
+      type: { const: "image" }, data: { type: "string" }, mimeType: { type: "string" },
+    } } },
     details: {}, isError: { type: "boolean" },
   }, additionalProperties: true,
 };
-const resultGuideline = "Codemode returns {content, details, isError}. Show text blocks with text(block.text) and image blocks with image(block); never print base64. Check isError. Audio and 3D paths are in details; no audio is supplied for listening.";
+const resultGuideline = "Returns {data,text,images?,details?,isError?}. data is already parsed structured data, or null for plain text. Use data when non-null; otherwise read text. Do not JSON.parse the result. Show images with image(block), never print base64. Check isError.";
+
+function addonResult(result) {
+  const text = result.content.filter(block => block.type === "text").map(block => block.text).join("\n");
+  let data = result.structuredContent ?? null;
+  // Parse only an entire JSON object/array. Never guess a JSON fragment inside prose,
+  // Markdown or multiple blocks; retain the exact original text for these tools.
+  if (data === null && result.content.filter(block => block.type === "text").length === 1 && /^[\s]*[\[{]/.test(text)) {
+    try { data = JSON.parse(text); } catch { /* Plain text remains authoritative. */ }
+  }
+  const images = result.content.filter(block => block.type === "image");
+  return {
+    data, text, ...(images.length ? { images } : {}),
+    ...(result.details === undefined ? {} : { details: result.details }),
+    ...(result.isError === undefined ? {} : { isError: result.isError }),
+  };
+}
 
 export function routingEnabled() { return process.env.PI_DESKTOP_TOOL_ROUTING === "1"; }
 
@@ -43,11 +64,7 @@ export function routeTool(tool, source) {
     definition.promptGuidelines = [...(tool.promptGuidelines ?? []), resultGuideline];
     definition.execute = async function (...args) {
       const result = await tool.execute.apply(tool, args);
-      return { ...result, structuredContent: {
-        content: result.content,
-        ...(result.details === undefined ? {} : { details: result.details }),
-        ...(result.isError === undefined ? {} : { isError: result.isError }),
-      } };
+      return { ...result, structuredContent: addonResult(result) };
     };
   }
   Object.defineProperty(definition, routed, { value: true });
@@ -60,7 +77,7 @@ export function declaredTools(names, inventory) {
   return names.filter(name => !retiredLoaders.has(name) && !["deferred", "codemode", "hidden"].includes(exposures.get(name)));
 }
 
-const policy = "Optional browser, web, ComfyUI, MCP, code-analysis and add-on tools are available through codemode, not missing. Find them with searchTools using English keywords, inspect describeTool/describeNamespace, then call tools.<name>(args). Discover only what this task needs. Core file, shell, goal, plan and notebook tools remain direct. Do not activate optional tool schemas: that can invalidate a local server's prompt cache. Nested calls retain validation, permission checks and cancellation. Media results use {content,details,isError}: show text with text(block.text), images with image(block), never print base64. Music and 3D output remains available in the desktop interface.";
+const policy = "Optional browser, web, ComfyUI, MCP, code-analysis and add-on tools are available through codemode, not missing. Find them with searchTools using English keywords, inspect describeTool/describeNamespace, then call tools.<name>(args). Discover only what this task needs. Core file, shell, goal, plan and notebook tools remain direct. Do not activate optional tool schemas: that can invalidate a local server's prompt cache. Nested calls retain validation, permission checks and cancellation. Read each tool's declared return type: structured results are already objects, not JSON strings. Browser/ComfyUI return fields directly; untyped add-ons use data/text; MCP retains its content envelope. Show image blocks with image(block), never print base64. Music and 3D output remains available in the desktop interface.";
 
 export default function desktopToolRouting(pi) {
   const pendingMedia = new Map();

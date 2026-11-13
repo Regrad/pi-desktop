@@ -6,6 +6,7 @@ import path from "node:path";
 import { registerHooks, stripTypeScriptTypes } from "node:module";
 import { updatedPlan, planContext, planPolicy, planTick, canContinuePlan, planRequestSuffix, planRequestText, requestedPlanContext, visiblePlanRequestText } from "../shared/plan.ts";
 import { confirmedPlanRevision } from "../shared/plan-activity.ts";
+import { isPlanning, approvedPlanning, planningToolAllowed } from "../shared/planning.ts";
 
 const hooks = registerHooks({ resolve(specifier, context, next) {
   const local = ["../shared/plan.js", "../shared/goal.js", "./goal-extension.js", "./state-context.js"];
@@ -19,12 +20,17 @@ const step = (text, status = "pending") => ({ step: text, status });
 
 test("explanation-only plan writes carry a revision and reach the host writer", async () => {
   const tools = [], calls = [];
-  const current = { steps: [step("Work", "in_progress")], execution: "active", revision: 7 };
+  let current = { steps: [step("Work", "in_progress")], execution: "active", revision: 7 };
   planExtension({ on() {}, registerTool(tool) { tools.push(tool); } }, () => current,
-    async (name, params) => { calls.push(params); return { plan: updatedPlan(params, current) }; });
+    async (name, params) => { calls.push(params); if (params.expectedRevision !== undefined) current = updatedPlan(params, current); return { plan: current }; });
   const result = await tools[0].execute("call", { explanation: "New verified evidence" });
   assert.equal(calls[0].expectedRevision, 7);
-  assert.equal(JSON.parse(result.content[0].text).plan.explanation, "New verified evidence");
+  assert.equal(JSON.parse(result.content[0].text).plan.revision, 8);
+  assert.equal(JSON.parse(result.content[0].text).plan.explanation, undefined);
+  assert.equal(current.explanation, "New verified evidence");
+  const read = JSON.parse((await tools[0].execute("read", {})).content[0].text);
+  assert.equal(read.plan.explanation, "New verified evidence");
+  assert.deepEqual(read.plan.steps, current.steps);
   const source = readFileSync(new URL("../electron/pi-manager.ts", import.meta.url), "utf8");
   assert.match(source, /params\?\.plan === undefined && params\?\.execution === undefined && params\?\.explanation === undefined/);
 });
@@ -88,11 +94,11 @@ test("real dispatcher uses one launch for goal and checklist, prioritizes user q
   const end = source.indexOf("\n  }", begin);
   const body = stripTypeScriptTypes(`function launch(conversationId, attachments = [], requestPlan = false, resumeBeforeQueue = false) {${source.slice(begin, end)}\n}`);
   const timers = [];
-  const launch = new Function("canContinuePlan", "setTimeout", `${body};return launch;`)(canContinuePlan, callback => timers.push(callback));
+  const launch = new Function("canContinuePlan", "setTimeout", "isPlanning", "approvedPlanning", `${body};return launch;`)(canContinuePlan, callback => timers.push(callback), isPlanning, approvedPlanning);
   const conversation = { status: "idle", plan: updatedPlan({ plan: [step("Work")], execution: "active" }) };
   const calls = [], runtime = { snapshot: { state: { isStreaming: false } } };
   let queued = [];
-  const host = { goalLaunching: new Set(), goalContinuationRequested: new Set(), runtimes: new Map([["chat", runtime]]),
+  const host = { planningTransitions: new Set(), goalLaunching: new Set(), goalContinuationRequested: new Set(), runtimes: new Map([["chat", runtime]]),
     store: { getConversation: () => conversation, getQueuedPrompts: () => queued }, async sendPrompt(...args) { calls.push(args); } };
   launch.call(host, "chat"); launch.call(host, "chat");
   assert.equal(timers.length, 1);
@@ -120,7 +126,7 @@ test("Stop pauses checklist before abort and stale writes cannot revive it", asy
   const abort = new Function("updatedPlan", `${body};return abort;`)(updatedPlan);
   const chat = { plan: updatedPlan({ plan: [step("Work")], execution: "active" }), goal: { id: "goal", status: "active", updatedAt: "2026-01-01T00:00:00.000Z" } };
   const revision = chat.plan.revision, calls = [];
-  const host = { goalContinuationRequested: new Set(), store: { getConversation: () => chat }, async updateConversation(_id, patch) { Object.assign(chat, patch); calls.push("save"); },
+  const host = { invalidateStartup() {}, goalContinuationRequested: new Set(), store: { getConversation: () => chat }, async updateConversation(_id, patch) { Object.assign(chat, patch); calls.push("save"); },
     runtimes: new Map([["chat", { rpc: { async request(type) { assert.equal(chat.plan.execution, "paused"); calls.push(type); } } }]]) };
   await abort.call(host, "chat");
   assert.deepEqual(calls, ["abort", "save"]);
@@ -135,15 +141,17 @@ test("actual continuation sends service RPC, not another user prompt, and rechec
   const begin = source.indexOf("): Promise<void> {", start) + "): Promise<void> {".length;
   const end = source.indexOf("\n  }", begin);
   const body = stripTypeScriptTypes(`async function send(conversationId, message, attachments, behavior, expectedGoalId, historyEdit = false, requestPlan = false, expectedPlanRevision, resumeBeforeQueue = false) {${source.slice(begin, end)}\n}`);
-  const send = new Function("canContinuePlan", "planContext", "imageAttachmentPrompt", `${body};return send;`)(canContinuePlan, planContext, () => "");
-  const chat = { title: "Existing chat", plan: updatedPlan({ plan: [step("Work")], execution: "active" }) }, calls = [];
+  const send = new Function("canContinuePlan", "planContext", "imageAttachmentPrompt", "isPlanning", "approvedPlanning", `${body};return send;`)(canContinuePlan, planContext, () => "", isPlanning, approvedPlanning);
+  const chat = { title: "Existing chat", plan: updatedPlan({ plan: [step("Work", "in_progress")], execution: "active" }) }, calls = [], events = [];
   const runtime = { snapshot: { state: { isStreaming: false } }, diffTracker: { covers: () => true, async beginRun() {} }, rpc: { async request(type, payload) { calls.push({ type, payload }); } } };
   let queue = [];
-  const host = { historyMutations: new Set(), runtimes: new Map([["chat", runtime]]), async ensureRuntime() { return runtime; }, async reloadPendingInstructions() {}, publish() {},
+  const host = { startupEpochs: new Map(), async getModelServers() { return []; }, planningTransitions: new Set(), historyMutations: new Set(), runtimes: new Map([["chat", runtime]]), async ensureRuntime() { return runtime; }, async reloadPendingInstructions() {}, publish(_channel, payload) { events.push(payload.event); },
     store: { getConversation: () => chat, getQueuedPrompts: () => queue, async saveConversationRun() {}, async getConversationWorkspacePaths() { return []; } } };
   await send.call(host, "chat", "Service", [], undefined, undefined, false, false, chat.plan.revision);
   assert.equal(calls.length, 1); assert.equal(calls[0].type, "desktop_plan_continue");
   assert.match(calls[0].payload.message, /source="plan"/);
+  assert.equal(events.find(event => event.type === "desktop_run_started").planWorkingRevision, chat.plan.revision,
+    "The scheduled checklist run keeps its spinner active while agent_start is pending");
   queue = [{ id: "waiting" }];
   await send.call(host, "chat", "Service", [], undefined, undefined, false, false, chat.plan.revision);
   assert.equal(calls.length, 1, "Automatic continuation cannot jump ahead of queued input");
@@ -230,7 +238,7 @@ test("actual host handler stores the checklist per chat and publishes through no
   const begin = source.indexOf(signature, start) + signature.length;
   const end = source.indexOf("\n  }", begin);
   const body = stripTypeScriptTypes(`async function handle(conversationId, request) {${source.slice(begin, end)}\n}`);
-  const handle = new Function("updatedPlan", "confirmedPlanRevision", `${body}; return handle;`)(updatedPlan, confirmedPlanRevision);
+  const handle = new Function("updatedPlan", "confirmedPlanRevision", "isPlanning", "planningToolAllowed", `${body}; return handle;`)(updatedPlan, confirmedPlanRevision, isPlanning, planningToolAllowed);
   const chats = new Map([["one", {}], ["two", {}]]), published = [];
   const runtime = { snapshot: { state: { isStreaming: true } } }, events = [];
   const host = { runtimes: new Map([["one", runtime]]), publish(_channel, event) { events.push(event); }, store: { getConversation: id => chats.get(id) }, async updateConversation(id, changes) { Object.assign(chats.get(id), changes); published.push(id); } };
@@ -429,7 +437,8 @@ test("mark-only writes keep the revision guard and confirm working state like pl
     async (_action, params) => { calls.push(params); return { plan: updatedPlan(params, current) }; });
   const result = await tools[0].execute("call", { mark: 1, status: "completed" });
   assert.equal(calls[0].expectedRevision, 4);
-  assert.equal(JSON.parse(result.content[0].text).plan.steps[0].status, "completed");
+  assert.equal(JSON.parse(result.content[0].text).plan.steps, undefined);
+  assert.deepEqual(JSON.parse(result.content[0].text).progress, { completed: 1, total: 1 });
   assert.deepEqual(tools[0].parameters.properties.mark.anyOf, undefined);
   assert.equal(tools[0].parameters.properties.mark.minimum, 1);
   assert.deepEqual(tools[0].parameters.properties.status.anyOf.map(value => value.const), ["pending", "in_progress", "completed"]);
@@ -447,6 +456,38 @@ test("checklist tick reports progress without repeating the whole list", () => {
   assert.match(planTick(updatedPlan({ execution: "paused" }, running)), /execution paused/);
   assert.match(planTick(updatedPlan({ plan: [step("Short"), step("Second")] })), /0\/2 completed, next: Short/);
   assert.match(planTick(updatedPlan({ plan: [step("Д".repeat(120))] })), new RegExp(`${"Д".repeat(77)}…`));
+  assert.doesNotMatch(planTick(running), /write a finished|continue|resume/i);
+});
+
+test("only active unfinished checklists get a short tick every three tool turns; acknowledgements reset it", () => {
+  let current = updatedPlan({ plan: [step("Current", "in_progress"), step("Later")], execution: "active" });
+  const handlers = new Map(), sent = [];
+  planExtension({ on(name, handler) { handlers.set(name, handler); }, registerTool() {}, sendMessage(message) { sent.push(message); } }, () => current);
+  const run = messages => handlers.get("context")({ messages }).messages;
+  let history = run([{ role: "user", content: "Work" }]);
+  const addTurn = () => history.push({ role: "assistant", content: [{ type: "toolCall", id: `call-${history.length}`, name: "read", arguments: {} }] },
+    { role: "toolResult", toolName: "read", content: [] });
+  for (let turn = 1; turn <= 9; turn++) {
+    addTurn(); const next = run(history);
+    assert.equal(next.length - history.length, turn % 3 === 0 ? 1 : 0);
+    if (turn % 3 === 0) {
+      assert.match(next.at(-1).content, /Checklist tick/);
+      assert.doesNotMatch(next.at(-1).content, /Later|"steps"/);
+      assert.deepEqual(next.slice(0, history.length), history);
+    }
+    history = next;
+    assert.deepEqual(run(history), history, "same history cannot add another reminder");
+  }
+  addTurn(); addTurn();
+  current = updatedPlan({ mark: 1, status: "completed" }, current);
+  history.push({ role: "toolResult", toolName: "update_plan", content: [{ type: "text", text: JSON.stringify({ plan: current }) }] });
+  assert.deepEqual(run(history), history);
+  addTurn(); assert.deepEqual(run(history), history, "a plan write just presented the latest state");
+  current = updatedPlan({ execution: "paused" }, current); history = run(history);
+  for (let turn = 0; turn < 10; turn++) { addTurn(); assert.deepEqual(run(history), history); }
+  current = updatedPlan({ mark: 2, status: "completed" }, current); history = run(history);
+  history.push({ role: "user", content: "Unrelated question" });
+  assert.deepEqual(run(history), history, "completed lists do not generate reminders");
 });
 
 test("active checklist gets a compact tick on a new user turn so marks cannot lag behind", () => {

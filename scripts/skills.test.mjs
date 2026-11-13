@@ -223,6 +223,18 @@ test("catalog never reaches the forced leading prompt, tool schema remains defer
   assert.ok(rpcSource.indexOf('args.push("--extension", this.options.skillsExtensionPath)') < rpcSource.indexOf('"builtin:codemode"'));
 });
 
+test("skills tool returns catalog/documents directly, without JSON text envelopes in codemode", async () => {
+  const { store } = await fixture();
+  const catalog = {skills:[],roots:{user:"C:/skills"},diagnostics:[],revision:"one"};
+  const host = harness(store, async () => catalog);
+  const tool = host.tools[0];
+  const result = await tool.execute("id", {action:"list"});
+  assert.ok(tool.outputSchema);
+  assert.equal(result.structuredContent, catalog);
+  assert.deepEqual(JSON.parse(result.content[0].text), catalog);
+  assert.equal(result.structuredContent.content, undefined);
+});
+
 test("ordinary file edits update catalog after the tool boundary without extra model tools", async () => {
   const { store } = await fixture(); const host = harness(store); const skill = await save(store, "editable");
   const initial = await store.catalog();

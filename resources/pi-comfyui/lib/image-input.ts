@@ -1,6 +1,7 @@
 import path from "node:path";
+import { chatFileDirectory } from "./chat-storage.js";
 import { readFile, stat, mkdir, writeFile } from "node:fs/promises";
-import { createHash, randomUUID } from "node:crypto";
+import { createHash } from "node:crypto";
 import { hostRequire } from "./host.js";
 const { imageSize } = hostRequire("image-size") as typeof import("image-size");
 import type { HistoryImage } from "../shared/image-attachments.js";
@@ -33,10 +34,7 @@ export async function readImageInput(reference: string, resolveAttachment?: (ref
 
 export async function publishImage(dataDir: string, reference: string, resolveAttachment?: (reference: string) => HistoryImage) {
   const image = await readImageInput(reference, resolveAttachment);
-  const folder = path.join(dataDir, "image-generation");
-  await mkdir(folder, { recursive: true });
-  const file = path.join(folder, `shown-${randomUUID()}${image.extension}`);
-  await writeFile(file, image.bytes, { flag: "wx" });
+  const file = reference.startsWith("attachment:") ? (await imagePathForTool(dataDir, reference, resolveAttachment)).path : reference;
   return { path: file, mimeType: image.mimeType, data: image.bytes.toString("base64") };
 }
 
@@ -52,7 +50,7 @@ export async function imagePathForTool(dataDir: string, reference: string, resol
     return { path: result.result.path, width: image.width, height: image.height, mimeType: image.mimeType };
   }
   if (!reference.startsWith("attachment:")) return { path: reference, width: image.width, height: image.height, mimeType: image.mimeType };
-  const folder = path.join(dataDir, "chat-attachments");
+  const folder = chatFileDirectory(dataDir, "chat-attachments");
   await mkdir(folder, { recursive: true });
   const digest = createHash("sha256").update(image.bytes).digest("hex");
   const file = path.join(folder, `attached-${digest}${image.extension}`);

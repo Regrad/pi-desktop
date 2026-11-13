@@ -1,15 +1,40 @@
 import path from "node:path";
-import { realpath, stat } from "node:fs/promises";
+import { realpath, stat, readdir } from "node:fs/promises";
 import { createReadStream } from "node:fs";
 import { Readable } from "node:stream";
 
 export async function generatedFile(dataDir: string, kind: string, filename: string): Promise<string> {
-  if (!["image", "music", "model3d", "video", "artifact"].includes(kind) || !filename || filename === "." || filename === ".." || /[\\/\0:]/.test(filename))
+  if (!["image", "music", "model3d", "video", "artifact"].includes(kind) || !filename || /[\\\0:]/.test(filename)
+    || filename.split("/").some(part => !part || part === "." || part === ".."))
     throw new Error("Некорректный файл генерации");
-  const folder = await realpath(path.join(dataDir, kind === "artifact" ? "comfy-results" : kind === "video" ? "video-generation" : kind === "model3d" ? "3d-generation" : kind === "music" ? "music-generation" : "image-generation"));
-  const file = await realpath(path.join(folder, filename));
-  if (path.dirname(file) !== folder || !(await stat(file)).isFile()) throw new Error("Файл генерации не найден");
-  return file;
+  const category = kind === "artifact" ? "comfy-results" : kind === "video" ? "video-generation" : kind === "model3d" ? "3d-generation" : kind === "music" ? "music-generation" : "image-generation";
+  const resolveFile = async (folder: string, relative: string) => {
+    const root = await realpath(folder), file = await realpath(path.join(root, relative));
+    const tail = path.relative(root, file);
+    if (!tail || tail.startsWith("..") || path.isAbsolute(tail) || !(await stat(file)).isFile()) throw new Error("Файл генерации не найден");
+    return file;
+  };
+  if (filename.includes("/")) {
+    const [id, folder, ...rest] = filename.split("/");
+    if (!/^[a-zA-Z0-9_-]{1,128}$/.test(id) || ![category, "workspace", "chat-attachments"].includes(folder) || !rest.length)
+      throw new Error("Некорректный файл чата");
+    // Check the chat itself as well: a junction must not escape data/chats.
+    const chats = await realpath(path.join(dataDir, "chats")), chat = await realpath(path.join(chats, id));
+    if (path.dirname(chat) !== chats) throw new Error("Папка чата находится вне data");
+    return resolveFile(chat, [folder, ...rest].join(path.sep));
+  }
+  // Old transcripts keep their original basename-only addresses. Resolve moved
+  // results without rewriting conversation text or duplicating the old files.
+  try { return await resolveFile(path.join(dataDir, category), filename); }
+  catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }
+  const matches: string[] = [];
+  const entries = await readdir(path.join(dataDir, "chats"), { withFileTypes: true }).catch(error => { if (error.code !== "ENOENT") throw error; return []; });
+  for (const entry of entries) if (entry.isDirectory() && /^[a-zA-Z0-9_-]{1,128}$/.test(entry.name)) {
+    try { matches.push(await resolveFile(path.join(dataDir, "chats", entry.name), path.join(category, filename))); }
+    catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }
+  }
+  if (matches.length !== 1) throw new Error("Файл генерации не найден или адрес неоднозначен");
+  return matches[0];
 }
 
 // Stream from the portable data directory, with seeking; never load a full track into chat history.

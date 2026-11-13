@@ -1,6 +1,7 @@
 import { app, BrowserWindow, dialog, ipcMain, Menu, nativeImage, Notification, shell, protocol } from "electron";
 import { appendFile, mkdir, realpath, rename, stat } from "node:fs/promises";
 import path from "node:path";
+import { portableDataDirectory } from "./portable-paths.js";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import type { Attachment, BuiltinModuleId, ConfiguredModelUpdate, ModelServerDiscoveryInput, ThinkingLevel, UpdateComponentId, UpdateResult } from "../shared/types.js";
 import { DataStore } from "./data-store.js";
@@ -15,6 +16,7 @@ import { parseGeneratedLink } from "../shared/generated-links.js";
 import { randomUUID } from "node:crypto";
 import type { RemoteRuntime } from "./remote-runtime.js";
 import { StartupTasks } from "./startup-tasks.js";
+import { installImageContextMenu } from "./image-context-menu.js";
 import type { WebAccessSettings } from "../shared/web-access.js";
 
 protocol.registerSchemesAsPrivileged([{ scheme: "pi-generated", privileges: { standard: true, secure: true, supportFetchAPI: true, stream: true, corsEnabled: true } }]);
@@ -73,10 +75,7 @@ async function prepareAttachments(paths: string[]): Promise<Attachment[]> {
 }
 
 function resolveDataDir(): string {
-  const portableDir = process.env.PORTABLE_EXECUTABLE_DIR;
-  if (portableDir) return path.join(portableDir, "data");
-  if (!app.isPackaged) return path.join(projectRoot, "data");
-  return path.join(path.dirname(process.execPath), "data");
+  return portableDataDirectory(projectRoot, process.execPath, app.isPackaged, process.env.PORTABLE_EXECUTABLE_DIR);
 }
 
 async function createWindow(): Promise<void> {
@@ -101,6 +100,7 @@ async function createWindow(): Promise<void> {
       sandbox: false,
     },
   });
+  installImageContextMenu(mainWindow);
   const shown = new Promise<void>(resolve => {
     mainWindow!.once("ready-to-show", () => { mainWindow?.show(); resolve(); });
     mainWindow!.once("closed", resolve);
@@ -212,9 +212,7 @@ function registerIpc(): void {
       type: "warning",
       title: "Удалить чат?",
       message: `Удалить чат «${conversation.title}»?`,
-      detail: conversation.sessionFile
-        ? "Файл сессии Pi будет перемещён в корзину Windows. Это затронет и обычный Pi."
-        : "Чат ещё не записан в сессию Pi и будет удалён из списка.",
+      detail: "История и собственные файлы чата будут перемещены в корзину Windows. Внешние проекты и файлы-ссылки останутся нетронутыми.",
       buttons: ["Отмена", "Удалить"],
       defaultId: 0,
       cancelId: 0,
@@ -261,6 +259,7 @@ function registerIpc(): void {
     piManager.editGoal(id, objective));
   ipcMain.handle("pi:remove-plan", (_event, id: string) => piManager.removePlan(id));
   ipcMain.handle("pi:control-plan", (_event, id: string, action: "pause" | "resume") => piManager.controlPlan(id, action));
+  ipcMain.handle("pi:control-planning", (_event, id: string, action: "start" | "revise" | "approve" | "cancel", revision: number) => piManager.controlPlanning(id, action, revision));
   ipcMain.handle("pi:save-notebook", (_event, id: string, content: string, revision: number) => piManager.saveNotebook(id, content, revision));
   ipcMain.handle("desktop:get-notebook-limit", () => store.getNotebookCharacterLimit());
   ipcMain.handle("desktop:set-notebook-limit", (_event, value: number) => store.setNotebookCharacterLimit(value));
@@ -446,8 +445,8 @@ function registerIpc(): void {
     const link = typeof url === "string" ? parseGeneratedLink(url) : undefined;
     if (!link) throw new Error("Некорректная ссылка на медиафайл");
     const file = await generatedFile(store.dataDir, link.kind, link.filename);
-    if ((await realpath(fileURLToPath(url))).toLowerCase() !== file.toLowerCase())
-      throw new Error("Ссылка ведёт за пределы папки генерации Pi Desktop");
+    // The original absolute path is historical. Open only the asset resolved
+    // inside current data, including results moved into their owning chat.
     const error = await shell.openPath(file);
     if (error) throw new Error(error);
   });
@@ -462,8 +461,6 @@ async function initializeDesktop(): Promise<void> {
   logPath = path.join(logsDir, "pi-desktop.log");
   store = new DataStore(dataDir, projectRoot, process.execPath);
   await store.initialize({ refreshSessions: false });
-  await mkdir(path.join(store.dataDir, "image-generation"), { recursive: true });
-  await mkdir(path.join(store.dataDir, "music-generation"), { recursive: true });
   protocol.handle("pi-generated", (request) => generatedMediaResponse(store.dataDir, request));
   browserManager = new BrowserManager(store.dataDir, () => mainWindow, state => mainWindow?.webContents.send("desktop:browser-changed", state));
   piManager = new PiManager(store, () => mainWindow, (conversation) => {

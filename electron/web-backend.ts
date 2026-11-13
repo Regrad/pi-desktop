@@ -21,7 +21,7 @@ export function webBackend(store: DataStore, manager: PiManager, options?: { met
       if (dimensions && dimensions.width * dimensions.height > 40_000_000) throw new Error("Изображение слишком большое: максимум 40 мегапикселей");
       const id = randomUUID();
       const image = nativeImage.createFromBuffer(bytes);
-      const folder = path.join(store.dataDir, "web-attachments");
+      const folder = path.join(store.dataDir, "incoming-attachments");
       await mkdir(folder, { recursive: true });
       const extension = /^\.[a-z0-9]{1,10}$/i.test(path.extname(input.name)) ? path.extname(input.name) : ".bin";
       const file = path.join(folder, `${id}${image.isEmpty() ? extension : ".png"}`);
@@ -45,6 +45,7 @@ export function webBackend(store: DataStore, manager: PiManager, options?: { met
     setGoal: (id: string, objective: string, attachments: Attachment[]) => manager.setGoal(id, objective, attachments),
     controlGoal: (id: string, action: "pause" | "resume" | "remove") => manager.controlGoal(id, action),
     controlPlan: (id: string, action: "pause" | "resume") => manager.controlPlan(id, action),
+    controlPlanning: (id: string, action: "start" | "revise" | "approve" | "cancel", revision: number) => manager.controlPlanning(id, action, revision),
     editGoal: (id: string, objective: string) => manager.editGoal(id, objective),
     rewindConversation: (id: string, entryId: string) => manager.rewindConversation(id, entryId),
     editLastMessage: (id: string, entryId: string, text: string) => manager.editLastMessage(id, entryId, text),

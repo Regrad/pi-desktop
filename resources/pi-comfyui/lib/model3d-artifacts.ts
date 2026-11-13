@@ -1,4 +1,5 @@
 import path from "node:path";
+import { chatFileDirectory } from "./chat-storage.js";
 import { mkdir, writeFile } from "node:fs/promises";
 import { validateLocalGlb } from "../shared/glb.js";
 
@@ -45,7 +46,7 @@ export async function saveModelArtifacts(dataDir: string, id: string, prefix: st
   // Validate every returned path before making any download request.
   const locations = references.map(file => modelArtifactLocation(file, prefix));
   const reportedLocations = new Set(locations.map(location => `${location.subfolder}/${location.filename}`));
-  const folder = path.join(dataDir, "3d-generation");
+  const folder = chatFileDirectory(dataDir, "3d-generation");
   await mkdir(folder, { recursive: true });
   const files: { path: string; mimeType: string; nodeId: string; data?: string }[] = [];
   const localPaths = new Map<string, string>();
@@ -61,7 +62,7 @@ export async function saveModelArtifacts(dataDir: string, id: string, prefix: st
     if (location.mimeType === "model/gltf-binary") validateLocalGlb(bytes);
     // GLBs stay at the viewer's root; keep OBJ/MTL/texture bundles in their original relative layout.
     const relative = path.posix.join(location.subfolder, location.filename).slice(prefix.length + 1);
-    const file = renders.has(references[index]) ? path.join(dataDir, "image-generation", `${id}-${index + 1}-${location.filename}`)
+    const file = renders.has(references[index]) ? path.join(chatFileDirectory(dataDir, "image-generation"), `${id}-${index + 1}-${location.filename}`)
       : location.mimeType === "model/gltf-binary" ? path.join(folder, `${id}-${index + 1}-${location.filename}`)
       : path.join(folder, `${id}-assets`, ...relative.split("/"));
     await mkdir(path.dirname(file), { recursive: true });

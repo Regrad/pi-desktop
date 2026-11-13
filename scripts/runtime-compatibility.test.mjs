@@ -41,9 +41,11 @@ test("runtime core updates install request, summary and media bridges idempotent
   await put(target, "package.json", JSON.stringify({ name: "@earendil-works/pi-coding-agent", version: "1.5.0", type: "module" }));
   await put(targetProvider, "package.json", JSON.stringify({ name: "@earendil-works/pi-ai", version: "1.5.0", type: "module", main: "index.js" }));
   await put(targetProvider, "index.js", "export {};\n");
-  for (const file of ["dist/core/messages.js", "dist/core/compaction/compaction.js", "dist/extensions/codemode/tool.js", "dist/core/agent-session.js", "dist/core/tools/bash.js"])
+  for (const file of ["dist/core/messages.js", "dist/core/compaction/compaction.js", "dist/extensions/codemode/tool.js", "dist/extensions/codemode/execute.js", "dist/core/agent-session.js", "dist/core/tools/bash.js"])
     await put(target, file, await readFile(path.join(core, file), "utf8"));
   await put(targetProvider, "dist/api/openai-completions.js", await readFile(path.join(provider, "dist/api/openai-completions.js"), "utf8"));
+  for (const file of ["dist/utils/overflow.js", "dist/utils/retry.js"])
+    await put(targetProvider, file, await readFile(path.join(provider, file), "utf8"));
   await applyCoreRequestCompatibility(target);
   const paths = [path.join(target, "dist/core/messages.js"), path.join(target, "dist/core/compaction/compaction.js"),
     path.join(target, "dist/core/desktop-service-context.js"), path.join(targetProvider, "dist/api/openai-completions.js"), path.join(target, "dist/extensions/codemode/tool.js"), path.join(target, "dist/core/agent-session.js"), path.join(target, "dist/core/tools/bash.js")];
@@ -58,6 +60,8 @@ test("runtime core updates install request, summary and media bridges idempotent
   assert.match(before[5], /messageType: "custom", message: appMessage/);
   assert.match(before[6], /timeout = defaultShellTimeout\(command\)/);
   assert.match(before[6], /Execution may be partial/);
+  assert.match(await readFile(path.join(targetProvider, "dist/utils/overflow.js"), "utf8"), /context size has been exceeded/);
+  assert.match(await readFile(path.join(targetProvider, "dist/utils/retry.js"), "utf8"), /UND_ERR_SOCKET/);
   await put(target, "package.json", JSON.stringify({ name: "@earendil-works/pi-coding-agent", version: "9.0.0" }));
   await assert.rejects(applyCoreRequestCompatibility(target), /requires.*1\.5\.0/);
 });

@@ -4,6 +4,7 @@ const snapshots = new Set([
   "desktop_goal_state", "desktop_plan_state", "desktop_notebook_state",
   "desktop_notebook_limit_state", "desktop_plan_request",
   "desktop_skills_state",
+  "desktop_implementation_plan_state",
 ]);
 
 export function desktopContextEnabled() {
@@ -22,7 +23,8 @@ export function discardDelayedStateSnapshots(messages) {
   const revisions = new Map();
   let acknowledgedGoal;
   const tools = new Map([["update_plan", ["desktop_plan_state", "plan"]],
-    ["update_notebook", ["desktop_notebook_state", "notebook"]]]);
+    ["update_notebook", ["desktop_notebook_state", "notebook"]],
+    ["update_implementation_plan", ["desktop_implementation_plan_state", "planning"]]]);
   return messages.filter(message => {
     if (message.role === "toolResult" && !message.isError
       && ["get_goal", "create_goal", "update_goal"].includes(message.toolName)) {

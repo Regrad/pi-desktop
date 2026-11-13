@@ -6,7 +6,7 @@ import { patchToolResultImages } from "./tool-result-images-patch.mjs";
 import { patchMcpIndex, patchMcpProxy, patchMcpOnDemandInit, patchMcpOnDemandManager } from "./mcp-config-patch.mjs";
 import { patchLlamaStatsCancellation } from "./llama-stats-patch.mjs";
 import { patchToolRouting } from "./tool-routing-patch.mjs";
-import { applyContextCompatibility } from "../resources/pi-rpc-bridge/compatibility.js";
+import { applyContextCompatibility, applyRequestDiagnosticsCompatibility } from "../resources/pi-rpc-bridge/compatibility.js";
 import { applyPiLensGrammarCache } from "../resources/pi-lens/grammar-cache-patch.mjs";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
@@ -43,12 +43,14 @@ await copyFile(source, destination);
 process.stdout.write("Pi Desktop RPC compatibility bridge applied.\n");
 
 await applyContextCompatibility(path.dirname(corePackagePath));
+await applyRequestDiagnosticsCompatibility(path.dirname(corePackagePath));
 process.stdout.write("Pi Desktop service-context and compaction compatibility bridge applied.\n");
 
 const loaderPath = path.join(path.dirname(corePackagePath), "dist", "core", "extensions", "loader.js");
 const loaderSource = new TextDecoder("utf-8", { fatal: true }).decode(await readFile(loaderPath));
 const patchedLoader = patchToolRouting(loaderSource);
 await copyFile(path.join(root, "resources", "tool-routing", "index.js"), path.join(path.dirname(loaderPath), "desktop-tool-routing.js"));
+await copyFile(path.join(root, "resources", "tool-routing", "desktop-planning-permissions.js"), path.join(path.dirname(loaderPath), "desktop-planning-permissions.js"));
 if (patchedLoader !== loaderSource) await writeFile(loaderPath, patchedLoader, "utf8");
 process.stdout.write("Pi Desktop native tool-exposure policy applied.\n");
 

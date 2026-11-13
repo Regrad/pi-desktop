@@ -41,7 +41,7 @@ export function planTick(plan: ConversationPlan): string {
   if (running) parts.push(`in progress: ${tickStepText(running.step)}`);
   else if (next) parts.push(`next: ${tickStepText(next.step)}`);
   parts.push(plan.execution === "active" ? "execution active" : "execution paused");
-  return `<pi_desktop_service_context source="plan">Checklist tick (revision ${plan.revision}; not a new task): ${parts.join(", ")}. Marks may lag behind the work - write a finished step right away with update_plan({mark: N, status: "completed"}); update_plan({}) reads the current list.</pi_desktop_service_context>`;
+  return `<pi_desktop_service_context source="plan">Checklist tick (revision ${plan.revision}; not a new task): ${parts.join(", ")}. Read full list: update_plan({}).</pi_desktop_service_context>`;
 }
 
 export function updatedPlan(params: Record<string, unknown>, current?: ConversationPlan): ConversationPlan {
@@ -85,7 +85,7 @@ export function planContext(plan: ConversationPlan): string {
   return `<pi_desktop_service_context source="plan">\nChecklist snapshot (revision ${plan.revision}; not a new task; steps are numbered in list order from 1):\n${JSON.stringify({ steps: plan.steps, explanation: plan.explanation, execution: plan.execution === "active" ? "active" : "paused" })}\nLater confirmed states supersede this snapshot. Use update_plan to revise it, update_plan({mark: N, status}) to write one step; a checklist does not resume a paused goal.\n</pi_desktop_service_context>`;
 }
 
-export const planExecutionPolicy = "Set execution=active only for work the user has authorized you to carry out, not for a proposed plan or discussion. Active unfinished plans automatically continue after your response ends. Before ending to ask a question, await approval or report a real blocker, set execution=paused and briefly state the reason in explanation; explicit Stop also pauses continuation. Resume a paused plan with execution=active only when the user's latest instruction authorizes continuation. Replanning stays flexible and does not grant extra scope. Completion or clearing stops plan continuation. A paused/blocked/budget-limited goal must never be bypassed by a plan.";
+export const planExecutionPolicy = "Set execution=active only for work the user has authorized you to carry out, not for a proposed plan or discussion. Active unfinished plans automatically continue after your response ends. Before ending to ask a question, await approval or report a real blocker, set execution=paused and briefly state the reason in explanation; explicit Stop also pauses continuation. Resume a paused plan with execution=active only when the user's latest instruction authorizes continuation. Replanning stays flexible and does not grant extra scope. Completion or clearing stops plan continuation. A paused/blocked/budget-limited goal must never be bypassed by its checklist. A separately user-approved implementation document may authorize independent work without resuming an unrelated goal.";
 
 export function canContinuePlan(plan?: ConversationPlan, goal?: { status: string }): boolean {
   return Boolean(plan?.execution === "active" && plan.steps.some(step => step.status !== "completed")

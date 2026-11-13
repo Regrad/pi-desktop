@@ -4,27 +4,27 @@
 
 ## Пользователю
 
-1. Запустите `Pi Desktop.exe`.
-2. В локальном чате Codex скажите: «Подключись к Pi Desktop в папке D:\Pi Desktop. Прочитай CONNECT_CODEX.md».
+1. Запустите `Start Pi Desktop.cmd` из корня установки или `app\Pi Desktop.exe`.
+2. В локальном чате Codex скажите: «Подключись к Pi Desktop в папке D:\Pi Desktop. Прочитай app\CONNECT_CODEX.md».
 3. Codex проверит подключение и сможет переключать чаты, отправлять задания, получать результаты и останавливать работу. Укажите фактический путь после переноса папки.
 
 Доступ требует локального терминала и разрешений на эту папку. Облачный чат без доступа к компьютеру подключиться не сможет. Пути проектов и настройки внешних серверов моделей после переноса нужно проверить отдельно.
 
 ## Агенту: подключение без настройки MCP
 
-Считай корнем установки папку, где лежит этот документ. Не используй пути со старого компьютера. Все команды ниже выполняй через локальный PowerShell. В примерах замени D:\Pi Desktop фактическим корнем установки.
+Документ лежит в `app`. Корень установки — её родительская папка, содержащая `app` и `data`. Не используй пути со старого компьютера. Команды ниже выполняются через локальный PowerShell; замени D:\Pi Desktop фактическим корнем установки.
 
 Проверка подключения — только чтение, без отправки задания модели:
 
 ```powershell
-& 'D:\Pi Desktop\Invoke-PiDesktop.ps1' -Action projects
-& 'D:\Pi Desktop\Invoke-PiDesktop.ps1' -Action chats
+& 'D:\Pi Desktop\app\Invoke-PiDesktop.ps1' -Action projects
+& 'D:\Pi Desktop\app\Invoke-PiDesktop.ps1' -Action chats
 ```
 
-Скрипт сам читает актуальный адрес и ключ из `data/control-api/connection.json` рядом с собой, проверяет адрес 127.0.0.1 и вызывает локальный HTTP API. Он не меняет настройки Codex и не выводит ключ. Каждый вызов работает самостоятельно: не нужно сохранять переменные или функции между терминальными командами.
+Скрипт читает адрес и ключ из `data/control-api/connection.json` в корне установки, проверяет 127.0.0.1 и вызывает локальный HTTP API. Ключ не выводится; настройки Codex не меняются.
 
 Если запуск ps1 блокирует локальная политика, можно выполнить отдельный процесс с политикой только для этого процесса, если это разрешено средой:
-`powershell.exe -NoProfile -ExecutionPolicy Bypass -File "D:\Pi Desktop\Invoke-PiDesktop.ps1" -Action projects`.
+`powershell.exe -NoProfile -ExecutionPolicy Bypass -File "D:\Pi Desktop\app\Invoke-PiDesktop.ps1" -Action projects`.
 Не меняй постоянную политику компьютера.
 
 Если файла подключения нет — попроси пользователя запустить Pi Desktop. Если API недоступен — проверь, что открыта именно эта копия приложения. Файл подключения не является постоянным адресом: порт и ключ меняются при запуске. Не публикуй файл или ключ и не отправляй их во внешнюю сеть.
@@ -34,13 +34,13 @@
 Переключить видимый чат, ничего не отправляя:
 
 ```powershell
-& 'D:\Pi Desktop\Invoke-PiDesktop.ps1' -Action select -ConversationId '<id из chats>'
+& 'D:\Pi Desktop\app\Invoke-PiDesktop.ps1' -Action select -ConversationId '<id из chats>'
 ```
 
 Отправить разрешённое пользователем задание в новый чат проекта:
 
 ```powershell
-& 'D:\Pi Desktop\Invoke-PiDesktop.ps1' -Action start -ProjectId '<id из projects>' -Message 'Конкретная задача, допустимые изменения, проверки и критерий готовности.'
+& 'D:\Pi Desktop\app\Invoke-PiDesktop.ps1' -Action start -ProjectId '<id из projects>' -Message 'Конкретная задача, допустимые изменения, проверки и критерий готовности.'
 ```
 
 Для продолжения существующего чата используй `-ConversationId` вместо `-ProjectId`. Если оба параметра отсутствуют, создаётся отдельный чат без проекта. Не выдумывай id. Вложения передаются через `-Paths` — до 20 абсолютных путей к существующим файлам.
@@ -50,8 +50,8 @@
 Проверить состояние и получить результат:
 
 ```powershell
-& 'D:\Pi Desktop\Invoke-PiDesktop.ps1' -Action status -TaskId '<id задания>'
-& 'D:\Pi Desktop\Invoke-PiDesktop.ps1' -Action status -TaskId '<id задания>' -Diff
+& 'D:\Pi Desktop\app\Invoke-PiDesktop.ps1' -Action status -TaskId '<id задания>'
+& 'D:\Pi Desktop\app\Invoke-PiDesktop.ps1' -Action status -TaskId '<id задания>' -Diff
 ```
 
 Состояния: `running`, `needs_input`, `completed`, `failed`, `aborted`.
@@ -60,9 +60,9 @@
 Ответить на ожидающий вопрос из поля `questions`:
 
 ```powershell
-& 'D:\Pi Desktop\Invoke-PiDesktop.ps1' -Action reply -TaskId '<id задания>' -QuestionId '<id вопроса>' -Value 'Текст или точный предложенный вариант'
-& 'D:\Pi Desktop\Invoke-PiDesktop.ps1' -Action reply -TaskId '<id задания>' -QuestionId '<id вопроса>' -Confirmed $true
-& 'D:\Pi Desktop\Invoke-PiDesktop.ps1' -Action reply -TaskId '<id задания>' -QuestionId '<id вопроса>' -Cancel
+& 'D:\Pi Desktop\app\Invoke-PiDesktop.ps1' -Action reply -TaskId '<id задания>' -QuestionId '<id вопроса>' -Value 'Текст или точный предложенный вариант'
+& 'D:\Pi Desktop\app\Invoke-PiDesktop.ps1' -Action reply -TaskId '<id задания>' -QuestionId '<id вопроса>' -Confirmed $true
+& 'D:\Pi Desktop\app\Invoke-PiDesktop.ps1' -Action reply -TaskId '<id задания>' -QuestionId '<id вопроса>' -Cancel
 ```
 
 Для `input/editor/select` используй `-Value`, для `confirm` — `-Confirmed $true/$false`, для `custom` — `-CustomInput`. Не подтверждай новые права или действия вместо пользователя, если они выходят за уже разрешённую задачу.
@@ -70,7 +70,7 @@
 Остановить задание:
 
 ```powershell
-& 'D:\Pi Desktop\Invoke-PiDesktop.ps1' -Action abort -TaskId '<id задания>'
+& 'D:\Pi Desktop\app\Invoke-PiDesktop.ps1' -Action abort -TaskId '<id задания>'
 ```
 
 Не запускай второй запрос в занятый чат. При HTTP 409 проверь статус первого задания. Если `start` завершился сетевым тайм-аутом, не повторяй его вслепую: запрос мог быть принят; сначала проверь чаты и интерфейс. После перезапуска приложения API-id заданий исчезают, но чаты сохраняются. После `abort` проверь статус: остановка может быть не мгновенной.
@@ -89,8 +89,8 @@
 `pi_desktop_projects`, `pi_desktop_chats`, `pi_desktop_select`, `pi_desktop_start`, `pi_desktop_status`, `pi_desktop_reply`, `pi_desktop_abort`.
 
 Для STDIO-моста используются файлы из этой же установки:
-- команда: абсолютный путь к `Pi Desktop.exe`;
-- первый аргумент: абсолютный путь к `resources/app/resources/control-api/mcp.mjs`;
+- команда: абсолютный путь к `app/Pi Desktop.exe`;
+- первый аргумент: абсолютный путь к `app/resources/app/resources/control-api/mcp.mjs`;
 - второй аргумент: абсолютный путь к `data/control-api/connection.json`;
 - окружение процесса моста: `ELECTRON_RUN_AS_NODE=1`.
 

@@ -29,7 +29,7 @@ function fixture() {
   }
   const sessionEvents = new EventEmitter();
   const session = { fromPath(directory) { this.directory = directory; return Object.assign(sessionEvents, { setPermissionRequestHandler() {}, setPermissionCheckHandler() {}, flushStorageData() {}, cookies: { async flushStore() {} } }); } };
-  const { BrowserManager, browserUrl } = new Function("BrowserWindow", "WebContentsView", "session", "dialog", "shell", "path", "randomUUID", "mkdirSync", "statSync", "webMcpBootstrap", `${code};return {BrowserManager,browserUrl};`)(View, View, session, { async showOpenDialog() { return { canceled: true, filePaths: [] }; } }, { showItemInFolder() {} }, path, () => `tab-${++id}`, () => {}, () => ({ isFile: () => true }), "/* site tools bootstrap */");
+  const { BrowserManager, browserUrl } = new Function("BrowserWindow", "WebContentsView", "session", "dialog", "shell", "path", "randomUUID", "mkdirSync", "statSync", "webMcpBootstrap", "chatDirectory", `${code};return {BrowserManager,browserUrl};`)(View, View, session, { async showOpenDialog() { return { canceled: true, filePaths: [] }; } }, { showItemInFolder() {} }, path, () => `tab-${++id}`, () => {}, () => ({ isFile: () => true }), "/* site tools bootstrap */", (root, id) => path.join(root, "chats", id));
   const children = [], win = { isDestroyed: () => false, getContentSize: () => [1400, 1000], contentView: { children,
     addChildView(view) { children.push(view); }, removeChildView(view) { const i = children.indexOf(view); if (i >= 0) children.splice(i, 1); } } };
   const manager = new BrowserManager("C:/test-data", () => win, () => {});
@@ -113,8 +113,13 @@ test("extension selects vision from the actual current model on every call", asy
   extension({ registerTool(value) { tool = value; } }, async (_action, params) => { modes.push(params.vision); return params.vision ? { image: "png", tab: { id: "t" } } : { page: { text: "text" } }; });
   const image = await tool.execute("id", { action: "state" }, undefined, undefined, { model: { input: ["text", "image"] } });
   assert.equal(image.content[1].type, "image"); assert.doesNotMatch(image.content[0].text, /page|png/);
+  assert.ok(tool.outputSchema);
+  assert.equal(image.structuredContent.tab.id, "t");
+  assert.deepEqual(image.structuredContent.images, [image.content[1]]);
+  assert.equal(image.structuredContent.content, undefined);
   const text = await tool.execute("id", { action: "state" }, undefined, undefined, { model: { input: ["text"] } });
   assert.equal(text.content.length, 1); assert.deepEqual(modes, [true, false]);
+  assert.equal(text.structuredContent.page.text, "text"); assert.equal(text.structuredContent.images, undefined);
 });
 test("site tool execution requires actual user confirmation, not model-supplied approval", async () => {
   const hooks = registerHooks({ resolve(specifier, context, next) { return next(["./goal-extension.js", "./state-context.js", "../shared/goal.js", "../shared/browser.js"].includes(specifier) ? specifier.replace(/\.js$/, ".ts") : specifier, context); } });
@@ -126,7 +131,9 @@ test("site tool execution requires actual user confirmation, not model-supplied 
   });
   const ctx = { model: { input: ["text"] }, ui: { async confirm(title, description) { confirmations.push({title,description}); return allow; } } };
   const params = { action: "webmcp-call", tabId: "t", toolId: "registered", arguments: { text: "hello" }, approved: true };
-  assert.match((await tool.execute("id", params, undefined, undefined, ctx)).content[0].text, /отменён/);
+  const cancelled = await tool.execute("id", params, undefined, undefined, ctx);
+  assert.match(cancelled.content[0].text, /отменён/);
+  assert.equal(cancelled.structuredContent.cancelled, true);
   assert.equal(calls.filter(p => p.action === "webmcp-call").length, 0);
   allow = true;
   await tool.execute("id", params, undefined, undefined, ctx);
@@ -144,9 +151,9 @@ test("browser is wired through the real chat controller and desktop-only preload
   const begin = manager.indexOf("): Promise<unknown> {", start) + "): Promise<unknown> {".length;
   const end = manager.indexOf("\n  }", begin);
   const body = stripTypeScriptTypes(`async function handle(conversationId, request) {${manager.slice(begin, end)}\n}`);
-  const handle = new Function(`${body};return handle;`)();
+  const handle = new Function("isPlanning", `${body};return handle;`)(() => false);
   const calls = [];
-  const host = { store: { getConversation(id) { assert.equal(id, "owner"); } }, async browserRequest(id, params) { calls.push({ id, params }); return { ok: true }; } };
+  const host = { store: { getConversation(id) { assert.equal(id, "owner"); return {}; } }, async browserRequest(id, params) { calls.push({ id, params }); return { ok: true }; } };
   assert.deepEqual(await handle.call(host, "owner", { action: "browser", params: { action: "list", conversationId: "spoofed" } }), { ok: true });
   assert.equal(calls[0].id, "owner");
   await assert.rejects(handle.call(host, "owner", { action: "browser" }), /параметры/);
@@ -218,6 +225,7 @@ test("downloads are attributed to a chat, report progress and never auto-launch 
   item.emit("updated", {}, "progressing");
   const downloads = (await f.manager.request("one", { action: "downloads" })).downloads;
   assert.equal(downloads.length, 1); assert.equal(downloads[0].tabId, tab.id); assert.equal(downloads[0].receivedBytes, 512);
+  assert.equal(path.dirname(downloads[0].path), path.join("C:/test-data", "chats", "one", "downloads"));
   assert.deepEqual((await f.manager.request("two", { action: "downloads" })).downloads, []);
   item.emit("done", {}, "completed"); assert.equal((await f.manager.request("one", { action: "downloads" })).downloads[0].state, "completed");
   let blocked = false; f.sessionEvents.emit("will-download", { preventDefault() { blocked = true; } }, item, {}); assert.equal(blocked, true);

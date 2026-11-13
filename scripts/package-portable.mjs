@@ -10,6 +10,7 @@ import { activatePortableBuild } from "./portable-swap.mjs";
 import { createFastReleaseManifest, assertReleaseInputsUnchanged, writeFastReleaseManifest } from "./release-update-core.mjs";
 import { createReleaseTransaction } from "./release-transaction.mjs";
 import { planComfyAddonUpdate, stageComfyAddonUpdate, assertComfyAddonState } from "./release-addon.mjs";
+import { portableBinaryDirectory } from "./portable-layout.mjs";
 
 const projectRoot = path.resolve(
   path.dirname(fileURLToPath(import.meta.url)),
@@ -245,35 +246,23 @@ try {
     cp(builtDir, nextDir, { recursive: true }),
   );
 
-  const portableData = path.join(targetDir, "data");
-  let dataSource = (await exists(portableData)) ? portableData : null;
-  if (!dataSource && targetDir !== canonicalTarget) {
-    // Brand-new test copy: seed it with the canonical installation's data so
-    // it opens with the same chats and settings.
-    const seed = path.join(canonicalTarget, "data");
-    if (await exists(seed)) dataSource = seed;
-  }
   await closeDesktopInstances();
-  const addonPlan = await planComfyAddonUpdate(projectRoot, dataSource ? path.dirname(dataSource) : targetDir, snapshot);
-  if (dataSource) {
-    await retry("carry portable data", () =>
-      cp(dataSource, path.join(nextDir, "data"), { recursive: true }),
-    );
-  }
+  await mkdir(targetDir, { recursive: true });
+  const addonPlan = await planComfyAddonUpdate(projectRoot, targetDir, snapshot);
 
-  const addonTransaction = await createReleaseTransaction(nextDir);
+  const addonTransaction = await createReleaseTransaction(targetDir);
   try {
-    await stageComfyAddonUpdate(addonTransaction, addonPlan, nextDir);
+    await stageComfyAddonUpdate(addonTransaction, addonPlan, targetDir);
     await addonTransaction.commit(async phase => {
       await assertReleaseInputsUnchanged(projectRoot, snapshot);
-      await assertComfyAddonState(addonPlan, nextDir, phase === "after");
+      await assertComfyAddonState(addonPlan, targetDir, phase === "after");
     });
   } finally { await addonTransaction.dispose(); }
   if (addonPlan.preserved.length) process.stdout.write(`Preserving local addon edits/deletions: ${addonPlan.preserved.join(", ")}\n`);
-  await writeFastReleaseManifest(projectRoot, nextDir, snapshot);
   await assertReleaseInputsUnchanged(projectRoot, snapshot);
 
-  await activatePortableBuild({ target: targetDir, next: nextDir, previous: previousDir }, { exists, rename: renameWithRecovery });
+  await activatePortableBuild({ target: portableBinaryDirectory(targetDir), next: nextDir, previous: previousDir }, { exists, rename: renameWithRecovery });
+  await writeFastReleaseManifest(projectRoot, targetDir, snapshot);
   await retry("remove old build", () =>
     rm(previousDir, { recursive: true, force: true }),
   );

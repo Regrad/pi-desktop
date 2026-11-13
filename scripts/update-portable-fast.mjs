@@ -15,10 +15,12 @@ import {
 import { createReleaseTransaction } from "./release-transaction.mjs";
 import { planComfyAddonUpdate, stageComfyAddonUpdate, assertComfyAddonState } from "./release-addon.mjs";
 import { treeIsolationFiles } from "../resources/pi-lens/tree-isolation-patch.mjs";
+import { portableBinaryDirectory, portableApplicationDirectory } from "./portable-layout.mjs";
 
 const projectRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const targetDir = path.join(projectRoot, "release", "Pi Desktop");
-const appDir = path.join(targetDir, "resources", "app");
+const binaryDir = portableBinaryDirectory(targetDir);
+const appDir = portableApplicationDirectory(targetDir);
 const manifestPath = path.join(targetDir, FAST_RELEASE_MANIFEST);
 const lockPath = path.join(projectRoot, "release", ".pi-desktop-package.lock");
 const cacheDir = path.join(projectRoot, ".cache", "release-update");
@@ -182,14 +184,16 @@ async function syncBridgeOutputs() {
     "dist/core/agent-session.js",
     "dist/core/tools/bash.js",
     "dist/extensions/codemode/tool.js",
+    "dist/extensions/codemode/execute.js",
     "dist/core/extensions/loader.js",
     "dist/core/extensions/desktop-tool-routing.js",
+    "dist/core/extensions/desktop-planning-permissions.js",
   ];
   await syncChangedFiles(coreFiles, sourceCore, targetCore);
 
   const sourceProvider = await findPackage(projectRoot, "@earendil-works/pi-ai");
   const targetProvider = await findPackage(appDir, "@earendil-works/pi-ai");
-  await syncChangedFiles(["dist/api/openai-completions.js"], sourceProvider, targetProvider);
+  await syncChangedFiles(["dist/api/openai-completions.js", "dist/utils/overflow.js", "dist/utils/retry.js"], sourceProvider, targetProvider);
 
   for (const [name, files] of [
     ["pi-mcp-adapter", ["index.ts", "proxy-modes.ts", "init.ts", "server-manager.ts", "desktop-config.js"]],
@@ -265,8 +269,8 @@ try {
         await transaction.replace(clientAgentOutput, path.join(appDir, "resources", "client-agent", "Pi Desktop Agent.exe"));
       }
       if (changes.packageMetadata) await transaction.replace(path.join(projectRoot, "package.json"), path.join(appDir, "package.json"));
-      if (changes.rootFiles.length) await syncChangedFiles(changes.rootFiles, projectRoot, targetDir);
-      if (changes.resources.includes("resources/control-api/Invoke-PiDesktop.ps1")) await transaction.replace(path.join(projectRoot, "resources", "control-api", "Invoke-PiDesktop.ps1"), path.join(targetDir, "Invoke-PiDesktop.ps1"));
+      if (changes.rootFiles.length) await syncChangedFiles(changes.rootFiles, projectRoot, binaryDir);
+      if (changes.resources.includes("resources/control-api/Invoke-PiDesktop.ps1")) await transaction.replace(path.join(projectRoot, "resources", "control-api", "Invoke-PiDesktop.ps1"), path.join(binaryDir, "Invoke-PiDesktop.ps1"));
       await writeFastReleaseManifest(projectRoot, stagingRoot, snapshot);
       await transaction.replace(path.join(stagingRoot, FAST_RELEASE_MANIFEST), manifestPath);
       await assertReleaseInputsUnchanged(projectRoot, snapshot);

@@ -1,4 +1,4 @@
-import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import type { AgentToolResult, ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import { requestGoal } from "./goal-extension.js";
 import { browserPolicy, browserCapabilities } from "../shared/browser.js";
@@ -6,6 +6,17 @@ import { browserPolicy, browserCapabilities } from "../shared/browser.js";
 export default function browserExtension(pi: ExtensionAPI, request = requestGoal) {
   pi.registerTool({
     name: "browser", label: "Встроенный браузер", description: `${browserPolicy} ${browserCapabilities}`,
+    outputSchema: Type.Object({
+      tabs: Type.Optional(Type.Array(Type.Unknown())), tab: Type.Optional(Type.Record(Type.String(), Type.Unknown())),
+      viewport: Type.Optional(Type.Record(Type.String(), Type.Unknown())), page: Type.Optional(Type.Record(Type.String(), Type.Unknown())),
+      frames: Type.Optional(Type.Array(Type.Unknown())), tools: Type.Optional(Type.Array(Type.Unknown())),
+      logs: Type.Optional(Type.Array(Type.Unknown())), downloads: Type.Optional(Type.Array(Type.Unknown())),
+      result: Type.Optional(Type.Unknown()), ready: Type.Optional(Type.Boolean()), timedOut: Type.Optional(Type.Boolean()),
+      loading: Type.Optional(Type.Boolean()), visible: Type.Optional(Type.Boolean()), closed: Type.Optional(Type.Boolean()),
+      cancelled: Type.Optional(Type.Boolean()), untrusted: Type.Optional(Type.Boolean()), note: Type.Optional(Type.String()),
+      images: Type.Optional(Type.Array(Type.Object({ type: Type.Literal("image"), data: Type.String(), mimeType: Type.String() }))),
+    }, { additionalProperties: true }),
+    promptGuidelines: ["Returns an object directly: result.tabs/tab/page/etc. Screenshot blocks are in result.images; display with image(block), never text() their base64. Do not JSON.parse the result."],
     parameters: Type.Object({
       action: Type.Union(["list", "open", "navigate", "select", "handoff", "state", "snapshot", "screenshot", "logs", "webmcp-list", "webmcp-call", "webmcp-result", "wait", "viewport", "viewport-reset", "click", "move", "drag", "type", "fill", "check", "uncheck", "select-option", "key", "scroll", "back", "forward", "reload", "stop-loading", "zoom", "dialog", "upload", "downloads", "close", "show", "hide"].map(value => Type.Literal(value))),
       tabId: Type.Optional(Type.String()), url: Type.Optional(Type.String()),
@@ -49,14 +60,16 @@ export default function browserExtension(pi: ExtensionAPI, request = requestGoal
         const tool = listed.tools.find(tool => tool.id === params.toolId);
         if (!tool) throw new Error("Инструмент сайта устарел. Получите webmcp-list заново.");
         approved = await ctx.ui.confirm("Инструмент сайта (недоверенные данные)", `Страница: ${listed.tab.url}\nИсточник инструмента: ${tool.origin || listed.tab.url}\nIframe: ${tool.frameUrl || listed.tab.url}\nИнструмент: ${tool.name}\n${tool.description}\nАргументы: ${JSON.stringify(params.arguments ?? {})}\nРазрешить этот вызов?`);
-        if (!approved || signal?.aborted) return { content: [{ type: "text" as const, text: "Вызов инструмента сайта отменён пользователем." }], details: undefined };
+        if (!approved || signal?.aborted) return { content: [{ type: "text" as const, text: "Вызов инструмента сайта отменён пользователем." }], details: undefined,
+          structuredContent: { cancelled: true, note: "Site tool call cancelled by the user." } };
       }
       const result = await request("browser", { ...params, approved, vision: Boolean(ctx.model?.input.includes("image")) }, signal) as { image?: string; [key: string]: unknown };
       const { image, ...metadata } = result;
+      const images = image ? [{ type: "image" as const, data: image, mimeType: "image/png" }] : [];
       return { content: [
         { type: "text" as const, text: JSON.stringify(metadata) },
-        ...(image ? [{ type: "image" as const, data: image, mimeType: "image/png" }] : []),
-      ], details: undefined };
+        ...images,
+      ], structuredContent: { ...metadata, ...(images.length ? { images } : {}) } as NonNullable<AgentToolResult<undefined>["structuredContent"]>, details: undefined };
     },
   });
 }

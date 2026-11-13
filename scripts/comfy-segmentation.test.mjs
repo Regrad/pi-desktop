@@ -19,7 +19,6 @@ const { segmentationGraph, validateSegmentation } = await import("../electron/co
 const { DEFAULT_COMFY_SETTINGS } = await import("../shared/comfy.ts");
 const { saveComfySettings, loadComfySettings, runComfy } = await import("../electron/comfy-client.ts");
 const { collectAnswerMedia, collectComfyImages } = await import("../src/comfy-images.ts");
-const { default: extension } = await import("../electron/comfy-extension.ts");
 const png = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aF3sAAAAASUVORK5CYII=", "base64");
 
 test("segmentation validates original-coordinate prompts and rejects control syntax", () => {
@@ -65,7 +64,7 @@ test("one, two and several boxes are dictionaries, never literal API arrays", ()
   }
 });
 
-test("mask tool returns correct roles regardless of history output order and stays inside tool", async t => {
+test("legacy mask results keep correct roles regardless of history output order", async t => {
   const dir = await mkdtemp(path.join(os.tmpdir(), "pi-sam-test-"));
   let calls = 0, graph;
   const server = http.createServer(async (req, res) => {
@@ -87,21 +86,13 @@ test("mask tool returns correct roles regardless of history output order and sta
   assert.equal((await loadComfySettings(dir)).segmentationCheckpoint, DEFAULT_COMFY_SETTINGS.segmentationCheckpoint);
   await assert.rejects(runComfy(dir, "segment", { images: ["attachment:a:1"], positive_points: [{ x: 1, y: 0 }] }, undefined, undefined, () => ({ data: png.toString("base64"), mimeType: "image/png" })), /Точки/);
   assert.equal(calls, 0);
-  const old = process.env.PI_DESKTOP_DATA_DIR;
-  process.env.PI_DESKTOP_DATA_DIR = dir;
-  t.after(() => { if (old === undefined) delete process.env.PI_DESKTOP_DATA_DIR; else process.env.PI_DESKTOP_DATA_DIR = old; });
-  const tools = []; await extension({ registerTool: tool => tools.push(tool), on() {} });
-  const tool = tools.find(tool => tool.name === "comfyui_create_mask");
-  const history = [{ id: "a", type: "message", message: { role: "user", content: [{ type: "image", data: png.toString("base64"), mimeType: "image/png" }] } }];
-  const result = await tool.execute("id", { image: "attachment:a:1", targets: ["person"] }, undefined, undefined, { sessionManager: { getBranch: () => history } });
-  const text = JSON.parse(result.content[0].text);
-  assert.match(text.mask_path, /mask\.png$/); assert.match(text.preview_path, /selection\.png$/);
-  assert.deepEqual(await readFile(text.mask_path), png);
-  assert.equal(result.content.filter(p => p.type === "image").length, 2);
+  const result = await runComfy(dir, "segment", { images: ["attachment:a:1"], targets: ["person"] }, undefined, undefined, () => ({ data: png.toString("base64"), mimeType: "image/png" }));
+  const mask = result.images.find(image => image.nodeId === "save_mask");
+  const preview = result.images.find(image => image.nodeId === "save_preview");
+  assert.match(mask.path, /mask\.png$/); assert.match(preview.path, /selection\.png$/);
+  assert.deepEqual(await readFile(mask.path), png);
+  assert.equal(result.images.length, 2);
   assert.equal(graph.text.inputs.text, "person:1");
-  assert.deepEqual(collectAnswerMedia([{ id: "a", name: tool.name, result }]).parts, []);
-  assert.equal(collectComfyImages([{ id: "a", name: tool.name, result }]).length, 2);
-  assert.match(tool.promptGuidelines.join(" "), /script/);
 });
 
 test("segmentation graph matches installed local schema and downloaded checkpoint", { skip: !process.env.PI_TEST_COMFY_SCHEMA }, async () => {

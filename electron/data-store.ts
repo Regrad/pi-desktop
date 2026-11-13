@@ -18,7 +18,7 @@ import {
 import { homedir } from "node:os";
 import path from "node:path";
 import type { SessionInfo } from "@earendil-works/pi-coding-agent";
-import { getSessionManager } from "./pi-sdk.js";
+import { listSessions } from "./session-read.js";
 import { sessionDirectoryStamp } from "./session-index.js";
 import type {
   Attachment,
@@ -45,6 +45,7 @@ import {
 } from "./model-server-discovery.js";
 import { migratePortableSessions, portableSessionsDir, storedSessionReference } from "./portable-sessions.js";
 import { ensureComfyAddon } from "./comfy-addon.js";
+import { chatDirectory, migrateChatFiles } from "./chat-storage.js";
 
 interface DesktopState {
   version: 4;
@@ -209,12 +210,9 @@ export class DataStore {
         await readFile(this.statePath, "utf8"),
       ) as DesktopState;
       loadedState = true;
-      if (Array.isArray(parsed.conversations) && !this.sharedDataDir) {
-        // Preserve the old index and original JSONL files before adopting portable storage.
-        await copyFile(this.statePath, `${this.statePath}.before-portable-sessions`, constants.COPYFILE_EXCL).catch((error) => {
-          if (error.code !== "EEXIST") throw error;
-        });
-        const migrated = await migratePortableSessions(this.dataDir, parsed.conversations, resolveStandardSessionsDir());
+      if (Array.isArray(parsed.conversations)) {
+        const migrated = await migratePortableSessions(this.dataDir, parsed.conversations,
+          this.sharedDataDir ? this.sessionsDir : resolveStandardSessionsDir());
         parsed.conversations = migrated.conversations;
         if (migrated.missing.length) console.warn("Недоступные сессии Pi:", migrated.missing);
       }
@@ -284,7 +282,10 @@ export class DataStore {
     }
     // Persist restart pauses and migrated references even when history scans
     // are deferred, or when every cached directory is already current.
-    if (loadedState) await this.save();
+    if (loadedState) {
+      await migrateChatFiles(this.dataDir, this.state.conversations);
+      await this.save();
+    }
     if (!this.sharedDataDir && options.refreshSessions !== false) await this.refreshAllProjectSessions();
   }
 
@@ -1119,24 +1120,27 @@ export class DataStore {
 
   private async refreshProjectSessionIndex(projectId: string, signal?: AbortSignal): Promise<void> {
     const project = this.getProject(projectId);
-    const directory = this.getSessionDir(project.path);
-    const stamp = await sessionDirectoryStamp(directory);
+    const directories = [...new Set([this.getSessionDir(project.path), ...this.state.conversations
+      .filter(chat => chat.projectId === projectId).map(chat => this.getSessionDir(project.path, chat.id))])];
+    const directoryStamps = () => Promise.all(directories.map(directory => sessionDirectoryStamp(directory)));
+    const stamps = await directoryStamps(), stamp = JSON.stringify(stamps);
     signal?.throwIfAborted();
     const previousStamp = this.state.sessionIndex?.[projectId];
     if (this.state.sessionIndex?.[projectId] === stamp) return;
-    let complete = stamp === "[]";
+    const expectedCount = stamps.reduce((count, value) => count + (JSON.parse(value) as unknown[]).length, 0);
+    let complete = expectedCount === 0;
     let sessions: SessionInfo[] = [];
-    if (stamp !== "[]") {
-      const SessionManager = await getSessionManager();
+    if (expectedCount) {
       signal?.throwIfAborted();
-      sessions = await SessionManager.list(project.path, directory, undefined, signal);
+      for (let index = 0; index < directories.length; index++) if (stamps[index] !== "[]")
+        sessions.push(...await listSessions(project.path, directories[index], signal));
       signal?.throwIfAborted();
       if (!this.state.projects.some(current => current.id === projectId && current.path === project.path)) return;
-      complete = sessions.length === (JSON.parse(stamp) as unknown[]).length;
+      complete = sessions.length === expectedCount;
     }
     // A file may change while discovery is reading it. Never cache that scan
     // as current; the next refresh must inspect it again.
-    const unchanged = await sessionDirectoryStamp(directory) === stamp;
+    const unchanged = JSON.stringify(await directoryStamps()) === stamp;
     signal?.throwIfAborted();
     if (!this.state.projects.some(current => current.id === projectId && current.path === project.path)) return;
     if (unchanged) for (const session of sessions) this.mergeSession(projectId, session);
@@ -1280,7 +1284,8 @@ export class DataStore {
     };
   }
 
-  getSessionDir(cwd: string): string {
+  getSessionDir(cwd: string, conversationId?: string): string {
+    if (conversationId) return path.join(chatDirectory(this.dataDir, conversationId), "sessions");
     const resolvedCwd = path.resolve(cwd);
     const safePath = `--${resolvedCwd.replace(/^[/\\]/, "").replace(/[/\\:]/g, "-")}--`;
     return path.join(this.sessionsDir, safePath);
@@ -1360,11 +1365,11 @@ export class DataStore {
   }
 
   getConversationChatDirectory(conversation: ConversationRecord): string {
-    const chatDir = path.resolve(this.dataDir, "chats", conversation.id);
-    const chatsRoot = path.resolve(this.dataDir, "chats");
-    if (!chatDir.startsWith(chatsRoot + path.sep))
-      throw new Error("Недопустимая папка чата");
-    return chatDir;
+    return chatDirectory(this.dataDir, conversation.id);
+  }
+
+  getConversationDataDirectories(conversation: ConversationRecord): string[] {
+    return [...new Set([this.getConversationChatDirectory(conversation), chatDirectory(this.sharedDataDir ?? this.dataDir, conversation.id)])];
   }
 
   async getConversationWorkingDirectory(
@@ -1491,7 +1496,7 @@ export class DataStore {
     const destination = this.getRunPath(conversationId);
     const content = `${JSON.stringify(run, null, 2)}\n`;
     await this.enqueueWrite(async () => {
-      await mkdir(this.runsDir, { recursive: true });
+      await mkdir(path.dirname(destination), { recursive: true });
       await atomicStateWrite(destination, content);
     });
   }
@@ -1514,6 +1519,8 @@ export class DataStore {
   assertManagedSessionFile(sessionFile: string): string {
     const resolved = path.resolve(sessionFile);
     const relative = path.relative(this.sessionsDir, resolved);
+    const chatRelative = path.relative(path.resolve(this.dataDir, "chats"), resolved).split(path.sep).join("/");
+    if (/^[a-zA-Z0-9_-]{1,128}\/sessions\/[^/]+\.jsonl$/i.test(chatRelative)) return resolved;
     if (
       !relative ||
       relative.startsWith("..") ||
@@ -1591,7 +1598,7 @@ export class DataStore {
   }
 
   private getRunPath(conversationId: string): string {
-    return path.join(this.runsDir, `${conversationId}.json`);
+    return path.join(chatDirectory(this.dataDir, conversationId), "run.json");
   }
 
   private enqueueWrite(task: () => Promise<void>): Promise<void> {

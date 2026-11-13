@@ -83,6 +83,7 @@ test("fast initialization persists restart pauses without scanning session histo
     goal: { id: "goal", status: "active" }, plan: { revision: 7, execution: "active", steps: [] } }], sessionIndex: { p: "[]" } };
   const bindings = { mkdir: async () => {}, readFile: async () => JSON.stringify(parsed), copyFile: async () => {}, constants: {}, path,
     migratePortableSessions: async (_dir, conversations) => ({ conversations, missing: [] }), resolveStandardSessionsDir: () => "unused",
+    migrateChatFiles: async () => {},
     EMPTY_STATE: {}, normalizeQueuedPrompts: () => ({}), normalizeCompactions: () => ({}) };
   const code = stripTypeScriptTypes(`async function initialize(options = {}) {${storeSource.slice(begin, end)}\n}`);
   const initialize = new Function(...Object.keys(bindings), `${code}; return initialize;`)(...Object.values(bindings));
@@ -102,12 +103,12 @@ function storeMethod(name, args, getSessionManager) {
   const end = storeSource.indexOf("\n  }", begin);
   assert.ok(start >= 0 && begin > start && end > begin);
   const body = stripTypeScriptTypes(`async function run(${args}) {${storeSource.slice(begin, end)}\n}`);
-  return new Function("getSessionManager", "sessionDirectoryStamp", `${body}; return run;`)(getSessionManager, sessionDirectoryStamp);
+  return new Function("listSessions", "sessionDirectoryStamp", `${body}; return run;`)(async (cwd, dir, signal) => (await getSessionManager()).list(cwd, dir, undefined, signal), sessionDirectoryStamp);
 }
 async function fixture(t, sessions = [{ id: "listed", title: "Metadata", updatedAt: "now" }]) {
-  const directory = await mkdtemp(path.join(os.tmpdir(), "pi-startup-index-"));
+  const directory = await mkdtemp(path.join("C:/AI_Temp", "pi-startup-index-"));
   t.after(async () => {
-    assert.ok(directory.startsWith(path.join(os.tmpdir(), "pi-startup-index-")));
+    assert.ok(directory.startsWith(path.join("C:/AI_Temp", "pi-startup-index-")));
     await rm(directory, { recursive: true, force: true });
   });
   let imports = 0, scans = 0, saves = 0, duringScan;
@@ -125,7 +126,7 @@ async function fixture(t, sessions = [{ id: "listed", title: "Metadata", updated
 test("warm sidebar index never loads the SDK or reads a history for unchanged files", async t => {
   const f = await fixture(t);
   await writeFile(path.join(f.directory, "large.jsonl"), "Not parsed: it is an indexed history");
-  f.host.state.sessionIndex.p = await sessionDirectoryStamp(f.directory);
+  f.host.state.sessionIndex.p = JSON.stringify([await sessionDirectoryStamp(f.directory)]);
   f.host.state.conversations.push({ id: "old", projectId: "p", title: "Saved chat", updatedAt: "now" });
   assert.equal((await f.host.refreshProjectSessions("p"))[0].title, "Saved chat");
   assert.equal(f.imports, 0);
@@ -137,7 +138,7 @@ test("empty/new directories need no SDK; adding or changing a history invalidate
   const f = await fixture(t);
   await f.host.refreshProjectSessions("p");
   assert.equal(f.imports, 0);
-  assert.equal(f.host.state.sessionIndex.p, "[]");
+  assert.equal(f.host.state.sessionIndex.p, JSON.stringify(["[]"]));
   const file = path.join(f.directory, "chat.jsonl");
   await writeFile(file, "first");
   await f.host.refreshProjectSessions("p");
@@ -149,7 +150,7 @@ test("empty/new directories need no SDK; adding or changing a history invalidate
   assert.equal(f.scans, 2);
   await unlink(file);
   await f.host.refreshProjectSessions("p");
-  assert.equal(f.host.state.sessionIndex.p, "[]");
+  assert.equal(f.host.state.sessionIndex.p, JSON.stringify(["[]"]));
 });
 
 test("concurrent sidebar discovery shares one scan instead of parsing the same files twice", async t => {

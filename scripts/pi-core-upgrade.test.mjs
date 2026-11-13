@@ -51,7 +51,7 @@ test("Pi 1.5.0 desktop bridge loads add-ons, preserves user input, runs tools an
   const mcpReloadCode=`const cfg=await tools.mcp({action:'config'});if(!cfg.details.desktopConfig.sources.some(s=>s.path===${JSON.stringify(mcpConfigPath)}))throw new Error('Wrong config path');await tools.write({path:${JSON.stringify(mcpConfigPath)},content:${JSON.stringify(JSON.stringify(mcpConfig))}});const connected=await tools.mcp({connect:'fixture'});if(connected.details.error)throw new Error(JSON.stringify(connected));text('MCP-RELOADED:'+JSON.stringify(connected));`;
   const probePath = path.join(directory, "routing-probe.mjs");
   const png = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aF3sAAAAASUVORK5CYII=";
-  await writeFile(probePath, `export default pi => {pi.on('tool_call',event=>event.toolName==='comfyui_routing_probe'&&event.input.token==='blocked'?{block:true,reason:'fixture permission denied'}:undefined);pi.registerTool({name:"comfyui_routing_probe",label:"Routing probe",description:"Music and image routing fixture",parameters:{type:"object",properties:{token:{type:"string"}},required:["token"],additionalProperties:false},async execute(id,args){if(args.token!=="ok")throw new Error("Invalid call reached executor");return {content:[{type:"text",text:"probe-ok"},{type:"image",data:${JSON.stringify(png)},mimeType:"image/png"}],details:{media:[{type:"audio",path:"C:/fixture.flac",mimeType:"audio/flac"}],audioSelection:true}};}});};`, "utf8");
+  await writeFile(probePath, `export default pi => {pi.on('tool_call',event=>event.toolName==='comfyui_routing_probe'&&event.input.token==='blocked'?{block:true,reason:'fixture permission denied'}:undefined);pi.registerTool({name:"comfyui_routing_probe",label:"Routing probe",description:"Music and image routing fixture",parameters:{type:"object",properties:{token:{type:"string"}},required:["token"],additionalProperties:false},async execute(id,args){if(args.token==="json")return {content:[{type:"text",text:JSON.stringify({items:[{id:"typed-item"}],nextOffset:null})}],details:{}};if(args.token!=="ok")throw new Error("Invalid call reached executor");return {content:[{type:"text",text:"probe-ok"},{type:"image",data:${JSON.stringify(png)},mimeType:"image/png"}],details:{media:[{type:"audio",path:"C:/fixture.flac",mimeType:"audio/flac"}],audioSelection:true}};}});};`, "utf8");
   const captured = [];
   const messageText = message => typeof message.content === "string" ? message.content
     : message.content?.filter(block => block.type === "text").map(block => block.text).join("\n") ?? "";
@@ -82,7 +82,7 @@ test("Pi 1.5.0 desktop bridge loads add-ons, preserves user input, runs tools an
     const routingCalls = body.messages.filter(m => m.role === "tool" && String(m.tool_call_id).startsWith("routing-")).length;
     const code = routingCalls === 0
       ? "text(await describeTool('comfyui_routing_probe')); text(await searchTools('music')); const names=ALL_TOOLS.map(tool=>tool.name); for(const name of names) if(!await describeTool(name)) throw new Error('Missing declaration '+name); text('AUDIT:'+JSON.stringify(names));"
-      : "for (const token of ['blocked',42]) { let rejected=false; try { await tools.comfyui_routing_probe({token}); } catch(error) { rejected=true; text(String(error)); } if(!rejected) throw new Error('validation bypass'); } const result = await tools.comfyui_routing_probe({token:'ok'}); text(result.content[0].text); image(result.content[1]);" + mcpDiscoveryCode + mcpReloadCode;
+      : "for (const token of ['blocked',42]) { let rejected=false; try { await tools.comfyui_routing_probe({token}); } catch(error) { rejected=true; text(String(error)); } if(!rejected) throw new Error('validation bypass'); } const parsed = await tools.comfyui_routing_probe({token:'json'}); if(parsed.data.items[0].id!=='typed-item' || parsed.data.nextOffset!==null) throw new Error('JSON envelope not normalized'); const result = await tools.comfyui_routing_probe({token:'ok'}); text(result.text); image(result.images[0]);" + mcpDiscoveryCode + mcpReloadCode;
     const delta = routing ? (routingCalls < 2 ? { tool_calls: [{ index: 0, id: `routing-${routingCalls}`, type: "function", function: { name: "codemode", arguments: JSON.stringify({code}) } }] } : {content:"Routed."}) : body.messages.some(m => m.role === "tool")
       ? { content: "Verified." }
       : { reasoning_content: "Verified project X:/KDPI and editor https://tilda.ru/.", tool_calls: [{ index: 0, id: "upgrade-read", type: "function", function: {
@@ -115,7 +115,8 @@ test("Pi 1.5.0 desktop bridge loads add-ons, preserves user input, runs tools an
     "--provider", "upgrade-test", "--model", "upgrade"], {
     cwd: directory, windowsHide: true, stdio: ["pipe", "pipe", "pipe", "ipc"], env: { ...process.env,
       PI_CODING_AGENT_DIR: agent, PI_DESKTOP_APP_ROOT: root, PI_DESKTOP_DATA_DIR: directory,
-      PI_DESKTOP_CONVERSATION_ID: "upgrade-smoke", PI_DESKTOP_TOOL_ROUTING: "1", PI_OFFLINE: "1", NO_UPDATE_NOTIFIER: "1" },
+      PI_DESKTOP_CONVERSATION_ID: "upgrade-smoke", PI_DESKTOP_GOAL_STATE_FILE: path.join(directory, "desktop-state.json"),
+      PI_DESKTOP_TOOL_ROUTING: "1", PI_OFFLINE: "1", NO_UPDATE_NOTIFIER: "1" },
   });
   t.after(async () => {
     if (child.exitCode !== null) return;
@@ -172,7 +173,7 @@ test("Pi 1.5.0 desktop bridge loads add-ons, preserves user input, runs tools an
   assert.equal(unusedConnections, 0, "Starting Pi must not connect an unused HTTP server");
   assert.equal(existsSync(coldMarker), false, "Starting Pi must not spawn an unused stdio server");
   const inventory = await request("get_extension_state");
-  for (const name of ["get_goal", "update_plan", "update_notebook", "browser", "mcp", "comfyui_generate_music"]) {
+  for (const name of ["get_goal", "update_plan", "update_notebook", "browser", "mcp", "media_generate_image", "media_generate_music", "media_texture_3d"]) {
     assert.ok(inventory.tools.some(tool => tool.name === name), `Missing ${name}: ${stderr}`);
   }
   assert.doesNotMatch(stderr, /Failed to load extension|TypeError|SyntaxError/);
@@ -220,14 +221,15 @@ test("Pi 1.5.0 desktop bridge loads add-ons, preserves user input, runs tools an
   assert.ok(captured[0].messages.some(m => m.role === "user" && messageText(m).endsWith("Read evidence.txt and verify it.")));
   assert.equal(captured[1].messages.filter(m => m.role === "user").length, 1, "service metadata must not invent user turns after tools");
   assert.ok(captured[1].messages.some(m => m.role === "assistant" && m.reasoning_content === "Verified project X:/KDPI and editor https://tilda.ru/."));
-  assert.ok(captured[1].messages.some(m => m.role === "tool" && messageText(m).includes("upgrade evidence")));
+  assert.ok(captured[1].messages.some(m => m.role === "tool" && messageText(m).includes("upgrade evidence")),
+    JSON.stringify(captured[1].messages.filter(m => m.role === "tool")));
   const schemas = captured[0].tools;
   const names = schemas.map(tool => tool.function?.name);
   assert.ok(names.includes("codemode"));
   const discoveryDescription = schemas.find(tool => tool.function?.name === "codemode").function.description;
   for (const helper of ["searchTools", "describeTool", "describeNamespace"]) assert.ok(discoveryDescription.includes(`text(await ${helper}`));
   assert.ok(discoveryDescription.includes("ALL_TOOLS.map(t => t.name)"));
-  for (const name of ["browser", "mcp", "comfyui_generate_music", "comfyui_routing_probe", "tool_search", "pi_lens_activate_tools", "mcpScript"]) assert.ok(!names.includes(name), `Eager ${name}`);
+  for (const name of ["browser", "mcp", "media_generate_image", "media_generate_music", "media_texture_3d", "comfyui_routing_probe", "tool_search", "pi_lens_activate_tools", "mcpScript"]) assert.ok(!names.includes(name), `Eager ${name}`);
   await request("prompt", {message:"routing-test"});
   const routingDeadline = Date.now() + 15000;
   while ((await request("get_state")).isStreaming) {

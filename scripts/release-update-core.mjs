@@ -17,6 +17,10 @@ const ROOT_FILES = [
 ];
 const SOURCE_DIRECTORIES = ["src", "shared", "electron", "resources", "client-agent"];
 const BRIDGE_SCRIPTS = new Set([
+  "scripts/update-portable-fast.mjs",
+  "scripts/release-update-core.mjs",
+  "scripts/portable-layout.mjs",
+  "scripts/package-portable.mjs",
   "scripts/apply-rpc-bridge.mjs",
   "scripts/llama-stats-patch.mjs",
   "scripts/mcp-config-patch.mjs",

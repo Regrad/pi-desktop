@@ -1,5 +1,6 @@
 import { BrowserWindow, WebContentsView, session, dialog, shell } from "electron";
 import path from "node:path";
+import { chatDirectory } from "../resources/pi-comfyui/lib/chat-storage.js";
 import { randomUUID } from "node:crypto";
 import { mkdirSync, statSync } from "node:fs";
 import { BrowserAutomation, type BrowserLocator } from "./browser-automation.js";
@@ -57,13 +58,14 @@ export class BrowserManager {
     this.browserSession = session.fromPath(directory);
     this.browserSession.setPermissionRequestHandler((_contents, _permission, callback) => callback(false));
     this.browserSession.setPermissionCheckHandler(() => false);
-    // Downloads are explicit browser actions, stored outside chat history.
-    const downloads = path.join(directory, "downloads"); mkdirSync(downloads, { recursive: true });
+    // Cookies stay shared; downloaded files belong to the initiating chat.
     this.browserSession.on("will-download", (event, item, contents) => {
       const tab = [...this.tabs.values()].find(tab => tab.view.webContents === contents);
       if (!tab) { event.preventDefault(); return; }
       const filename = path.basename(item.getFilename()).replace(/[<>:"/\\|?*\x00-\x1f]/g, "_").slice(0, 150).replace(/[. ]+$/, "");
-      const id = randomUUID(), destination = path.join(downloads, `${id}-${filename || "download"}`);
+      const ownedDownloads = path.join(chatDirectory(dataDir, tab.record.conversationId), "downloads");
+      mkdirSync(ownedDownloads, { recursive: true });
+      const id = randomUUID(), destination = path.join(ownedDownloads, `${id}-${filename || "download"}`);
       item.setSavePath(destination);
       const record: BrowserDownload = { id, tabId: tab.record.id, conversationId: tab.record.conversationId, filename: filename || "download", path: destination, receivedBytes: 0, totalBytes: item.getTotalBytes(), state: "progressing" };
       this.downloads.set(id, record);

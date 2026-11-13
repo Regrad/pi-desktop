@@ -1,5 +1,6 @@
 import { mkdir, writeFile } from "node:fs/promises";
 import path from "node:path";
+import { chatFileDirectory } from "./chat-storage.js";
 import { randomUUID } from "node:crypto";
 import { setTimeout as delay } from "node:timers/promises";
 import { loadComfySettings, request, limitedBody, validateGraph } from "./comfy-client.js";
@@ -54,7 +55,7 @@ export async function runApiWorkflow(dataDir: string, graph: unknown, options: {
     const outputs = Object.entries(history.outputs ?? {}).filter(([node]) => !options.outputNodes || options.outputNodes.includes(node))
       .flatMap(([nodeId, value]) => (value[field] ?? []).map(output => ({ ...output, nodeId }))).filter(output => output.type === "output");
     if (!outputs.length) throw new Error(`Workflow завершён без сохранённого результата. Задание: ${id}`);
-    const folder = path.join(dataDir, options.kind === "image" ? "image-generation" : options.kind === "audio" ? "music-generation" : "3d-generation");
+    const folder = chatFileDirectory(dataDir, options.kind === "image" ? "image-generation" : options.kind === "audio" ? "music-generation" : "3d-generation");
     await mkdir(folder, { recursive: true });
     const files: { path: string; mimeType: string; nodeId: string; data?: string }[] = [];
     const mime: Record<string, string> = { ".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".webp": "image/webp", ".flac": "audio/flac", ".wav": "audio/wav", ".mp3": "audio/mpeg", ".ogg": "audio/ogg", ".opus": "audio/ogg", ".glb": "model/gltf-binary" };

@@ -3,25 +3,23 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { randomUUID } from "node:crypto";
 import { spawn } from "node:child_process";
+import { stripTypeScriptTypes } from "node:module";
+import { isPlanning, planningToolAllowed } from "../shared/planning.ts";
 
 const source = readFileSync(new URL("../electron/pi-manager.ts", import.meta.url), "utf8");
 const start = source.indexOf("  private async handleGoalRequest(");
 const bodyStart = source.indexOf("): Promise<unknown> {", start) + "): Promise<unknown> {".length;
 const bodyEnd = source.indexOf("\n  }", bodyStart);
 assert.ok(start >= 0 && bodyStart > start && bodyEnd > bodyStart);
-const body = source.slice(bodyStart, bodyEnd)
-  .replace(/ as JsonObject \| undefined/g, "")
-  .replace(/ as ConversationGoal\["status"\]/g, "")
-  .replace(/ as number \| undefined/g, "")
-  .replace(/params!/g, "params");
-const run = new (Object.getPrototypeOf(async function () {}).constructor)("randomUUID", "conversationId", "request", body);
+const body = stripTypeScriptTypes(`async function invoke(conversationId, request) {${source.slice(bodyStart, bodyEnd)}\n}`);
+const run = new Function("randomUUID", "isPlanning", "planningToolAllowed", `${body}; return invoke;`)(randomUUID, isPlanning, planningToolAllowed);
 function fixture(goal) {
   const conversation = { goal };
   const runtime = {};
   const ctx = { store: { getConversation() { return conversation; } }, runtimes: new Map([["chat", runtime]]),
     goalContinuationRequested: new Set(["chat"]),
     async updateConversation(_id, patch) { Object.assign(conversation, patch); } };
-  return { conversation, runtime, ctx, request: request => run.call(ctx, randomUUID, "chat", request) };
+  return { conversation, runtime, ctx, request: request => run.call(ctx, "chat", request) };
 }
 test("host creates persistent goal during a turn and rejects unfinished replacement", async () => {
   const f = fixture();
@@ -71,7 +69,9 @@ test("goal extension IPC returns actual host state without stdout protocol chang
 
 test("RPC continuation invokes the public custom-message API, never a user prompt", async () => {
   const bridge = readFileSync(new URL("../resources/pi-rpc-bridge/rpc-mode.js", import.meta.url), "utf8");
-  const start = bridge.indexOf('case "desktop_goal_continue": {') + 'case "desktop_goal_continue": {'.length;
+  const goalCase = bridge.indexOf('case "desktop_goal_continue":');
+  assert.ok(goalCase >= 0);
+  const start = bridge.indexOf('{', goalCase) + 1;
   const end = bridge.indexOf("\n            }", start);
   const run = new (Object.getPrototypeOf(async function () {}).constructor)("session", "command", "id", "success", "error", bridge.slice(start, end));
   const calls = [];

@@ -6,9 +6,11 @@ import { patchServiceMessages, patchDesktopCompaction } from "./context-patch.js
 import { patchToolResultImages } from "./tool-result-images-patch.js";
 import { patchLlamaStatsCancellation } from "./llama-stats-patch.js";
 import { patchMcpIndex, patchMcpProxy, patchMcpOnDemandInit, patchMcpOnDemandManager } from "../pi-mcp/config-patch.js";
-import { patchCodemodeDiscoveryDescription } from "../tool-routing/patch.js";
+import { patchCodemodeDiscoveryDescription, patchCodemodePlanning } from "../tool-routing/patch.js";
 import { patchDesktopContinuation } from "./continuation-patch.js";
 import { patchShellTimeout } from "./shell-timeout-patch.js";
+import { patchRequestDiagnostics } from "./request-diagnostics-patch.js";
+import { patchContextRecovery, patchTransportRecovery } from "./recovery-patch.js";
 
 const bridgeRoot = path.dirname(fileURLToPath(import.meta.url));
 async function requireVersion(root, version) {
@@ -30,13 +32,26 @@ export async function applyContextCompatibility(coreRoot) {
   await patchFile(path.join(directory, "agent-session.js"), patchDesktopContinuation);
   await patchFile(path.join(directory, "tools", "bash.js"), patchShellTimeout);
   await patchFile(path.join(coreRoot, "dist", "extensions", "codemode", "tool.js"), patchCodemodeDiscoveryDescription);
+  await patchFile(path.join(coreRoot, "dist", "extensions", "codemode", "execute.js"), patchCodemodePlanning);
 }
 
 export async function applyCoreRequestCompatibility(coreRoot) {
   await applyContextCompatibility(coreRoot);
+  await applyRequestDiagnosticsCompatibility(coreRoot);
   const providerRoot = path.dirname(findPackageJSON("@earendil-works/pi-ai", pathToFileURL(path.join(coreRoot, "package.json")).href));
   await requireVersion(providerRoot, "1.5.0");
   await patchFile(path.join(providerRoot, "dist", "api", "openai-completions.js"), patchToolResultImages);
+}
+
+export async function applyRequestDiagnosticsCompatibility(coreRoot) {
+  await requireVersion(coreRoot, "1.5.0");
+  const providerRoot = path.dirname(findPackageJSON("@earendil-works/pi-ai", pathToFileURL(path.join(coreRoot, "package.json")).href));
+  await requireVersion(providerRoot, "1.5.0");
+  const directory = path.join(providerRoot, "dist", "api");
+  await patchFile(path.join(providerRoot, "dist", "utils", "overflow.js"), patchContextRecovery);
+  await patchFile(path.join(providerRoot, "dist", "utils", "retry.js"), patchTransportRecovery);
+  await copyFile(path.join(bridgeRoot, "request-diagnostics.js"), path.join(directory, "desktop-request-diagnostics.js"));
+  await patchFile(path.join(directory, "openai-completions.js"), patchRequestDiagnostics);
 }
 
 export async function applyAddonRequestCompatibility(name, root) {

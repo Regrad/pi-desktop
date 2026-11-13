@@ -18,6 +18,7 @@ export interface ProjectInstructions {
 }
 
 export interface ConversationRecord {
+  planning?: ConversationPlanning;
   notebook?: ConversationNotebook;
   goal?: ConversationGoal;
   plan?: ConversationPlan;
@@ -37,6 +38,15 @@ export interface ConversationRecord {
 export interface PlanStep {
   step: string;
   status: "pending" | "in_progress" | "completed";
+}
+
+/** The agreed specification is independent of the execution checklist. */
+export interface ConversationPlanning {
+  content: string;
+  phase: "working" | "draft" | "review" | "implementation" | "completed" | "inactive";
+  revision: number;
+  approvedRevision?: number;
+  updatedAt: string;
 }
 
 export interface ConversationNotebook {
@@ -436,6 +446,7 @@ export interface PiDesktopApi {
   editGoal(conversationId: string, objective: string): Promise<void>;
   removePlan(conversationId: string): Promise<void>;
   controlPlan(conversationId: string, action: "pause" | "resume"): Promise<void>;
+  controlPlanning(conversationId: string, action: "start" | "revise" | "approve" | "cancel", expectedRevision: number): Promise<void>;
   saveNotebook(conversationId: string, content: string, expectedRevision: number): Promise<ConversationNotebook>;
   browserUi(command: import("./browser.js").BrowserUiCommand): Promise<import("./browser.js").BrowserState>;
   onBrowserChanged(listener: (state: import("./browser.js").BrowserState) => void): () => void;
@@ -468,7 +479,7 @@ export interface PiDesktopApi {
   addUserExtension(kind: "file" | "directory"): Promise<ModuleSettings | null>;
   removeUserExtension(name: string): Promise<ModuleSettings | null>;
   showItemInFolder(path: string): Promise<void>;
-  showGeneratedFile(kind: "image" | "music" | "model3d", filename: string): Promise<void>;
+  showGeneratedFile(kind: "image" | "music" | "model3d" | "video" | "artifact", filename: string): Promise<void>;
   openGeneratedLink(url: string): Promise<void>;
   onPiEvent(listener: (payload: { conversationId: string; event: Record<string, unknown> }) => void): () => void;
   onExtensionUi(listener: (payload: { conversationId: string; request: ExtensionUiRequest }) => void): () => void;

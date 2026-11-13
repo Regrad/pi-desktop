@@ -318,3 +318,34 @@ test("extension forwards partial edits with the observed revision and retains th
   assert.deepEqual(calls[2], {});
   assert.equal(notebook.content, "new\nnext");
 });
+
+test("small writes return compact acknowledgements, while reads and post-compaction restore the full notebook", async () => {
+  let notebook = updatedNotebook({ content: "URL: https://old.test\n" + "Important fact\n".repeat(400), expectedRevision: 0 });
+  const handlers = {}, tools = [], sent = [];
+  notebookExtension({ on(name, handler) { handlers[name] = handler; }, registerTool(tool) { tools.push(tool); }, sendMessage(message) { sent.push(message); } },
+    () => notebook, async (_name, params) => {
+      if (params.expectedRevision !== undefined) notebook = updatedNotebook(params, notebook);
+      return { notebook, usage: notebookUsage(notebook) };
+    });
+  const run = messages => handlers.context({ messages }).messages;
+  let history = run([{ role: "user", content: "Fix the URL" }]);
+  const original = structuredClone(history);
+  const reply = await tools[0].execute("edit", { old_text: "https://old.test", new_text: "https://correct.test" });
+  const result = JSON.parse(reply.content[0].text);
+  assert.equal(result.notebook.revision, 2); assert.equal(result.notebook.content, undefined);
+  assert.deepEqual(result.usage, notebookUsage(notebook)); assert.ok(reply.content[0].text.length < 250);
+  const ack = { role: "toolResult", toolName: "update_notebook", ...reply };
+  history.push(ack);
+  assert.deepEqual(run(history), history); assert.equal(sent.length, 2, "no full snapshot follows an acknowledged patch");
+  assert.deepEqual(history.slice(0, original.length), original, "history is append-only");
+  const read = JSON.parse((await tools[0].execute("read", {})).content[0].text);
+  assert.equal(read.notebook.content, notebook.content);
+  const restored = run([{ role: "compactionSummary", summary: "Earlier work" }, ack]);
+  assert.match(restored.find(message => message.customType === "desktop_notebook_state").content, /https:\/\/correct.test/);
+  assert.deepEqual(run(restored), restored);
+  notebook = updatedNotebook({ old_text: "https://correct.test", new_text: "https://user-change.test", expectedRevision: 2 }, notebook);
+  const external = run(history);
+  assert.match(external.at(-1).content, /https:\/\/user-change.test/, "external edits supply exact new facts");
+  await tools[0].execute("clear", { content: "" });
+  assert.equal(JSON.parse((await tools[0].execute("read", {})).content[0].text).notebook.content, "");
+});

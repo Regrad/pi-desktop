@@ -21,5 +21,5 @@ if errorlevel 1 (
 )
 
 echo.
-echo ===== Gotovo: release\Pi Desktop\Pi Desktop.exe =====
+echo ===== Gotovo: release\Pi Desktop\app\Pi Desktop.exe =====
 pause

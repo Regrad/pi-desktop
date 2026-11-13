@@ -37,7 +37,7 @@ export class RemoteRuntime {
     // Load only this device's own tool-result history. Never scan other devices' sessions.
     for (const chat of [...store.snapshot().conversations, ...store.getArchivedConversations()]) if (chat.sessionFile) {
       const file = path.resolve(chat.sessionFile);
-      if (!file.startsWith(path.resolve(store.sessionsDir) + path.sep)) throw new Error("Сессия удалённого чата вне его папки");
+      store.assertManagedSessionFile(file);
       const lines = (await readFile(file, "utf8").catch((error: NodeJS.ErrnoException) => { if (error.code === "ENOENT") return ""; throw error; })).split("\n");
       for (const line of lines) if (line.trim()) {
         const entry = JSON.parse(line);

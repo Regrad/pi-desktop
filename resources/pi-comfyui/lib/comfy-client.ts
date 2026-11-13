@@ -1,5 +1,6 @@
 import { readFile, writeFile, mkdir, stat } from "node:fs/promises";
 import path from "node:path";
+import { chatFileDirectory } from "./chat-storage.js";
 import { createHash, randomUUID } from "node:crypto";
 import { setTimeout as delay } from "node:timers/promises";
 import { DEFAULT_COMFY_SETTINGS, localComfyUrl, type ComfyMode, type ComfySettings } from "../shared/comfy.js";
@@ -126,7 +127,7 @@ async function readYuE2Abc(file: string): Promise<string> {
 
 export async function editComfyMusicVocals(dataDir: string, file: string, mode: VocalEditMode) {
   const result = editYuE2VocalScore(await readYuE2Abc(file), mode);
-  const folder = path.join(dataDir, "music-generation");
+  const folder = chatFileDirectory(dataDir, "music-generation");
   await mkdir(folder, { recursive: true });
   const abcFile = path.join(folder, `${randomUUID()}-${mode}.abc`);
   await writeFile(abcFile, result.abc, { encoding: "utf8", flag: "wx" });
@@ -323,7 +324,7 @@ export async function runComfy(dataDir: string, mode: ComfyMode, input: ComfyInp
     }
     let abcFile: string | undefined;
     if (typeof generatedAbc === "string" && generatedAbc.trim()) {
-      const folder = path.join(dataDir, "music-generation");
+      const folder = chatFileDirectory(dataDir, "music-generation");
       await mkdir(folder, { recursive: true });
       abcFile = path.join(folder, `${id}.abc`);
       await writeFile(abcFile, generatedAbc, { encoding: "utf8", flag: "wx" });
@@ -334,7 +335,7 @@ export async function runComfy(dataDir: string, mode: ComfyMode, input: ComfyInp
     const result = [];
     const audio: { path: string; mimeType: string }[] = [];
     const models: { path: string; mimeType: string }[] = [];
-    const folder = path.join(dataDir, model3d ? "3d-generation" : music ? "music-generation" : "image-generation");
+    const folder = chatFileDirectory(dataDir, model3d ? "3d-generation" : music ? "music-generation" : "image-generation");
     await mkdir(folder, { recursive: true });
     for (let i = 0; i < Math.min(outputs.length, 4); i++) {
       const output = outputs[i];

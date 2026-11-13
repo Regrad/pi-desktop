@@ -85,6 +85,5 @@ export function settleGoal(goal: ConversationGoal, previousProgress: string): Co
   if (goal.status !== "active") return goal;
   const stalledSteps = goal.progress === previousProgress ? goal.stalledSteps + 1 : 0;
   // No invented stage limit or automatic pause for missing progress reports.
-  // No-tool continuations are suppressed by the dispatcher, not a lifecycle change.
   return { ...goal, stalledSteps, updatedAt: new Date().toISOString() };
 }

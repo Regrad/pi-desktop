@@ -1,4 +1,5 @@
-const importLine = 'import { routeTool, declaredTools, routingEnabled } from "./desktop-tool-routing.js";\n';
+const oldImport = 'import { routeTool, declaredTools, routingEnabled } from "./desktop-tool-routing.js";\n';
+const importLine = 'import { routeTool, declaredTools, routingEnabled, guardExtensionHandler } from "./desktop-tool-routing.js";\n';
 
 const discoveryOriginal = '        "- `ALL_TOOLS`, `await searchTools(query, { limit?, namespace? })`, `await describeTool(name)`, `await describeNamespace(name)`: find unlisted tools, such as MCP tools.",';
 const discoveryReplacement = [
@@ -17,15 +18,32 @@ export function patchCodemodeDiscoveryDescription(source) {
 }
 
 export function patchToolRouting(source) {
-  const normalized = source.replace(/\r\n/g, "\n");
-  if (normalized.includes(importLine)) return source;
+  let normalized = source.replace(/\r\n/g, "\n").replace(oldImport, "").replace(importLine, "");
   const register = '        registerTool(tool) {\n            assertActive();';
   const activate = '            runtime.setActiveTools(toolNames);';
-  if (normalized.split(register).length !== 2 || normalized.split(activate).length !== 2) {
+  const routed = '            tool = routeTool(tool, extension.path);';
+  const declared = '            runtime.setActiveTools(routingEnabled() ? declaredTools(toolNames, runtime.getAllTools()) : toolNames);';
+  const handler = '            const registeredHandler = (...args) => handler(...args);';
+  const guarded = '            const guardedHandler = guardExtensionHandler(event, handler, extension.path);\n            const registeredHandler = (...args) => guardedHandler(...args);';
+  if (normalized.split(register).length !== 2 || (!normalized.includes(declared) && normalized.split(activate).length !== 2)
+    || (!normalized.includes(guarded) && normalized.split(handler).length !== 2)) {
     throw new Error("Pi tool routing anchors changed; review the extension loader.");
   }
-  const result = importLine + normalized
-    .replace(register, `${register}\n            tool = routeTool(tool, extension.path);`)
-    .replace(activate, '            runtime.setActiveTools(routingEnabled() ? declaredTools(toolNames, runtime.getAllTools()) : toolNames);');
+  if (!normalized.includes(routed)) normalized = normalized.replace(register, `${register}\n${routed}`);
+  if (!normalized.includes(declared)) normalized = normalized.replace(activate, declared);
+  if (!normalized.includes(guarded)) normalized = normalized.replace(handler, guarded);
+  const result = importLine + normalized;
+  return source.includes("\r\n") ? result.replace(/\n/g, "\r\n") : result;
+}
+
+/** Hidden model APIs bypass tool_call, so check the same live permission at their execution boundary. */
+export function patchCodemodePlanning(source) {
+  const header = 'import { assertPlanningModelAccess } from "../../core/extensions/desktop-tool-routing.js";\n';
+  const anchor = '    const runModelCall = async (name, type, [model, context], checkContext, run) => {';
+  const check = `${anchor}\n        assertPlanningModelAccess();`;
+  const normalized = source.replace(/\r\n/g, "\n");
+  if (normalized.includes(header) && normalized.includes(check)) return source;
+  if (normalized.split(anchor).length !== 2 || normalized.includes(header)) throw new Error("Pi codemode model-call permission anchor changed.");
+  const result = header + normalized.replace(anchor, check);
   return source.includes("\r\n") ? result.replace(/\n/g, "\r\n") : result;
 }

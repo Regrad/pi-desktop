@@ -30,9 +30,9 @@ try {
   assert.equal(first.getConversation(id).title, "Preserved title");
   assert.equal(first.getConversation(id).archived, true);
   const state = JSON.parse(await readFile(path.join(firstData, "desktop-state.json"), "utf8"));
-  assert.ok(state.conversations[0].sessionFile.startsWith("agent/sessions/"));
+  assert.ok(state.conversations[0].sessionFile.startsWith(`chats/${id}/sessions/`));
   assert.equal(path.isAbsolute(state.conversations[0].sessionFile), false);
-  assert.deepEqual(JSON.parse(await readFile(path.join(firstData, "desktop-state.json.before-portable-sessions"), "utf8")), originalState);
+  assert.equal(await readFile(path.join(firstData, "desktop-state.json.before-portable-sessions"), "utf8").then(() => true, error => { if (error.code === "ENOENT") return false; throw error; }), false);
   const movedData = path.join(temporary, "other-drive", "data");
   await cp(firstData, movedData, { recursive: true });
   await rm(firstData, { recursive: true, force: true });
@@ -46,7 +46,7 @@ try {
   assert.equal(resumed.buildSessionContext().messages.length, 2);
   resumed.appendMessage({ role: "user", content: "Continued after moving", timestamp: 3 });
   assert.equal(SessionManager.open(file).buildSessionContext().messages.length, 3);
-  console.log("DataStore startup, migration, backup, relative index, relocation and Pi continuation verified");
+  console.log("DataStore startup, no-copy local migration, relative index, relocation and Pi continuation verified");
 } finally {
   if (previousAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
   else process.env.PI_CODING_AGENT_DIR = previousAgentDir;

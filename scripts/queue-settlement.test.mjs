@@ -8,6 +8,7 @@ import { updatedPlan, canContinuePlan } from "../shared/plan.ts";
 import { confirmedPlanRevision } from "../shared/plan-activity.ts";
 import { settleGoal, goalPrompt } from "../shared/goal.ts";
 import { canResumeRun } from "../shared/run-state.ts";
+import { isPlanning, approvedPlanning, planningToolAllowed } from "../shared/planning.ts";
 
 // Exercise the actual controller methods without Electron, inference or a build.
 const source = readFileSync(new URL("../electron/pi-manager.ts", import.meta.url), "utf8");
@@ -17,13 +18,20 @@ function method(name, parameters, privateMethod = false) {
   const end = source.indexOf("\n  }", begin);
   assert.ok(start >= 0 && begin > start && end > begin, name);
   const body = stripTypeScriptTypes(`async function invoke(${parameters}) {${source.slice(begin, end)}\n}`);
-  return new Function("updatedPlan", "confirmedPlanRevision", "settleGoal", "randomUUID", "canContinuePlan", "goalPrompt", "imageAttachmentPrompt", "canResumeRun", `${body}; return invoke;`)(updatedPlan, confirmedPlanRevision, settleGoal, randomUUID, canContinuePlan, goalPrompt, () => "", canResumeRun);
+  return new Function("updatedPlan", "confirmedPlanRevision", "settleGoal", "randomUUID", "canContinuePlan", "goalPrompt", "imageAttachmentPrompt", "canResumeRun", "isPlanning", "approvedPlanning", "planningToolAllowed", `${body}; return invoke;`)(updatedPlan, confirmedPlanRevision, settleGoal, randomUUID, canContinuePlan, goalPrompt, () => "", canResumeRun, isPlanning, approvedPlanning, planningToolAllowed);
 }
 const handle = method("handleEvent", "conversationId, event", true);
+const launchStart = source.indexOf("\n  private launchGoal(");
+const launchBody = source.indexOf("): void {", launchStart) + "): void {".length;
+const launchEnd = source.indexOf("\n  }", launchBody);
+assert.ok(launchStart >= 0 && launchBody > launchStart && launchEnd > launchBody);
+const launchCode = stripTypeScriptTypes(`function launchGoal(conversationId, attachments = [], requestPlan = false, resumeBeforeQueue = false) {${source.slice(launchBody, launchEnd)}\n}`);
+const launch = new Function("isPlanning", "approvedPlanning", "canContinuePlan", `${launchCode}; return launchGoal;`)(isPlanning, approvedPlanning, canContinuePlan);
 const exit = method("handleRuntimeExit", "conversationId, runtime, error", true);
 const abort = method("abort", "conversationId");
 const sendQueued = method("sendQueuedPrompt", "conversationId, promptId");
 const sendNext = method("sendNextQueuedPrompt", "conversationId", true);
+const compact = method("compactConversation", "conversationId, customInstructions");
 const send = method("sendPrompt", "conversationId, message, attachments, behavior, expectedGoalId, historyEdit = false, requestPlan = false, expectedPlanRevision, resumeBeforeQueue = false");
 const controlGoal = method("controlGoal", "conversationId, action");
 const controlPlan = method("controlPlan", "conversationId, action");
@@ -113,6 +121,7 @@ function fixture(withWork = true) {
     async getModelServers() { return []; },
     startupEpochs: new Map(),
     invalidateStartup(id) { this.startupEpochs.set(id, (this.startupEpochs.get(id) ?? 0) + 1); },
+    planningTransitions: new Set(), historyMutations: new Set(),
     runtimes: new Map([["chat", runtime]]), resumingRuns: new Set(), goalLaunching: new Set(), goalContinuationRequested: new Set(["chat"]),
     store: { getConversation: () => chat, getQueuedPrompts: () => queue, async saveConversationRun() {},
       async removeQueuedPrompt(_id, promptId) { queue = queue.filter(item => item.id !== promptId); return queue; } },
@@ -132,6 +141,78 @@ function fixture(withWork = true) {
     settle: () => handle.call(host, "chat", { type: "agent_settled" }),
   };
 }
+
+for (const launching of [false, true]) {
+  test(`a text-only goal turn schedules its next step (launch still pending: ${launching})`, async () => {
+    const f = fixture();
+    for (const prompt of [...f.queue()]) await f.host.store.removeQueuedPrompt("chat", prompt.id);
+    f.host.goalContinuationRequested.clear();
+    // Reproduce the former dispatcher state for an autonomous text-only turn.
+    f.runtime.goalContinuationTurn = true;
+    f.runtime.goalToolCalls = 0;
+    if (launching) f.host.goalLaunching.add("chat");
+    await f.answer("stop");
+    await f.settle();
+    assert.equal(f.chat.goal.status, "active");
+    assert.equal(f.chat.status, "idle");
+    assert.deepEqual(f.launches, launching ? [] : ["chat"]);
+    assert.equal(f.host.goalContinuationRequested.has("chat"), launching);
+  });
+}
+
+test("queued user input takes priority after a text-only goal turn", async () => {
+  const f = fixture();
+  f.runtime.goalContinuationTurn = true;
+  f.runtime.goalToolCalls = 0;
+  await f.answer("stop");
+  await f.settle();
+  await nextTick();
+  assert.equal(f.requests.length, 1);
+  assert.equal(f.requests[0][1], "next task");
+  assert.deepEqual(f.launches, []);
+});
+
+test("real scheduler continues consecutive text-only turns until the goal is completed", async () => {
+  const f = fixture();
+  f.chat.plan = undefined;
+  f.chat.status = "idle";
+  f.runtime.snapshot.state.isStreaming = false;
+  f.host.goalContinuationRequested.clear();
+  for (const prompt of [...f.queue()]) await f.host.store.removeQueuedPrompt("chat", prompt.id);
+  f.host.launchGoal = launch.bind(f.host);
+  let turns = 0;
+  f.host.sendPrompt = async () => {
+    turns++;
+    await f.event({ type: "agent_start" });
+    f.runtime.goalContinuationTurn = true;
+    f.runtime.goalToolCalls = 0;
+    if (turns === 3) f.chat.goal.status = "complete";
+    await f.answer("stop");
+    await f.settle();
+  };
+  f.host.launchGoal("chat");
+  const deadline = Date.now() + 1000;
+  while ((turns < 3 || f.host.goalLaunching.size) && Date.now() < deadline)
+    await new Promise(resolve => setTimeout(resolve, 5));
+  assert.equal(turns, 3);
+  assert.equal(f.chat.goal.status, "complete");
+  assert.equal(f.host.goalLaunching.size, 0);
+  assert.equal(f.host.goalContinuationRequested.size, 0);
+});
+
+test("real scheduler never restarts paused, blocked, completed or budget-limited goals", () => {
+  for (const status of ["paused", "blocked", "complete", "budget_limited"]) {
+    const f = fixture();
+    f.chat.plan = undefined;
+    f.chat.status = "idle";
+    f.chat.goal.status = status;
+    f.runtime.snapshot.state.isStreaming = false;
+    f.host.store.getQueuedPrompts = () => [];
+    launch.call(f.host, "chat");
+    assert.equal(f.host.goalLaunching.size, 0, status);
+    assert.deepEqual(f.requests, []);
+  }
+});
 
 for (const reason of ["error", "aborted", "length", "toolUse", undefined]) {
   test(`interrupted run (${reason}) preserves queue and pauses unfinished work`, async () => {
@@ -180,6 +261,35 @@ test("successful retry sends only the oldest queued prompt, after final settleme
   assert.equal(f.requests.length, 1);
   assert.equal(f.requests[0][1], "next task");
   assert.equal(f.chat.plan.execution, "active");
+});
+
+test("manual compaction releases the oldest queued prompt after returning its idle snapshot", async () => {
+  const runtime = {
+    snapshot: { entries: [], compactions: [], state: { isStreaming: false, isCompacting: false } },
+    rpc: { async request(type) {
+      assert.equal(type, "compact");
+      return { tokensBefore: 1200, estimatedTokensAfter: 400 };
+    } },
+  };
+  const calls = [];
+  const host = {
+    runtimes: new Map([["chat", runtime]]),
+    async ensureRuntime() { return runtime; },
+    async refreshState() { return runtime.snapshot.state; },
+    async refreshRuntimeSnapshot() {},
+    applyEstimatedContextUsage() {},
+    publish() {},
+    store: {
+      getQueuedPrompts: () => [{ id: "queued", message: "after compact", attachments: [] }],
+      getCompactions: () => [],
+    },
+    async sendNextQueuedPrompt(id) { calls.push(id); },
+  };
+  const snapshot = await compact.call(host, "chat");
+  assert.deepEqual(snapshot.state, { isStreaming: false, isCompacting: false });
+  assert.deepEqual(calls, [], "Dispatch is deferred until the compact IPC can return its snapshot");
+  await new Promise(resolve => setTimeout(resolve, 0));
+  assert.deepEqual(calls, ["chat"]);
 });
 
 test("Stop while a tool is running prevents queue dispatch, even after a successful assistant message", async () => {
@@ -408,7 +518,7 @@ test("Stop during resume preparation cancels dispatch and keeps a resumable paus
   f.host.store.getConversationWorkspacePaths = async () => [];
   f.runtime.diffTracker = { covers: () => true, async beginRun() { await abort.call(f.host, "chat"); } };
   f.host.sendPrompt = send.bind(f.host);
-  await assert.rejects(resume.call(f.host, "chat"), /отменено пользователем/);
+  await assert.rejects(resume.call(f.host, "chat"), /отменен[ао] пользователем/);
   assert.deepEqual(f.requests, ["abort"]);
   assert.equal(f.chat.plan.execution, "paused");
   assert.equal(f.chat.goal.status, "paused");

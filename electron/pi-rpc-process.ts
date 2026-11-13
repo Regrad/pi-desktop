@@ -25,6 +25,7 @@ export interface PiRpcProcessOptions {
   appendSystemPrompt?: string;
   goalExtensionPath?: string;
   planExtensionPath?: string;
+  planningExtensionPath?: string;
   notebookExtensionPath?: string;
   skillsExtensionPath?: string;
   skillsProject?: boolean;
@@ -68,6 +69,7 @@ export class PiRpcProcess {
       args.push("--session-id", this.options.sessionId);
     }
     if (this.options.provider) args.push("--provider", this.options.provider);
+    if (this.options.planningExtensionPath) args.push("--extension", this.options.planningExtensionPath);
     // Skills must remove the dynamic catalog before forced desktop prompt handlers.
     if (this.options.skillsExtensionPath) args.push("--extension", this.options.skillsExtensionPath);
     if (this.options.appRoot) {

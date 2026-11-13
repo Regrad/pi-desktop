@@ -1,4 +1,4 @@
-import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import type { AgentToolResult, ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { stripFrontmatter } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import { SkillsStore } from "./skills-store.js";
@@ -53,12 +53,19 @@ export default function skillsExtension(pi: ExtensionAPI, store = new SkillsStor
   pi.registerTool({ name: "manage_skills", label: "Навыки", exposure: "deferred", defaultActive: false,
     namespace: { name: "Skills", description: "Discover, validate and manage reusable task skills." }, description:
     "Manage reusable SKILL.md instructions. list/refresh return only metadata and exact roots; read loads one file; validate checks one skill. enable toggles a skill. delete removes the exact user/project skill folder and resources only on explicit user request with confirm=true and the current expectedRevision. Create/revise with normal write/edit tools, then refresh and validate. Bundled/external files are protected. Changes do not reload extensions.",
+    outputSchema: Type.Object({
+      skills: Type.Optional(Type.Array(Type.Unknown())), diagnostics: Type.Optional(Type.Array(Type.Unknown())),
+      roots: Type.Optional(Type.Record(Type.String(), Type.Unknown())), revision: Type.Optional(Type.String()),
+      skill: Type.Optional(Type.Record(Type.String(), Type.Unknown())), content: Type.Optional(Type.String()),
+      valid: Type.Optional(Type.Boolean()), errors: Type.Optional(Type.Array(Type.String())),
+    }, { additionalProperties: true }),
+    promptGuidelines: ["Returns an object directly: list/refresh use result.skills/roots; read uses result.skill/content; validate uses result.valid/errors. Do not JSON.parse the result."],
     parameters: Type.Object({ action: Type.Union(["list", "refresh", "read", "validate", "enable", "delete"].map(value => Type.Literal(value))),
       id: Type.Optional(Type.String()), expectedRevision: Type.Optional(Type.String()), enabled: Type.Optional(Type.Boolean()), confirm: Type.Optional(Type.Boolean()) }),
     async execute(_id, params, signal) {
-      const result = await request("manage_skills", params, signal);
+      const result = await request("manage_skills", params, signal) as NonNullable<AgentToolResult<undefined>["structuredContent"]>;
       await store.catalog(true);
-      return { content: [{ type: "text", text: JSON.stringify(result) }], details: undefined };
+      return { content: [{ type: "text", text: JSON.stringify(result) }], structuredContent: result, details: undefined };
     },
   });
 }

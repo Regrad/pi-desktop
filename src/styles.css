@@ -773,6 +773,31 @@ button:not(:disabled) {
   white-space: nowrap;
   text-overflow: ellipsis;
 }
+
+.shell-timeout {
+  flex: 0 0 auto;
+  padding: 4px 7px;
+  border: 1px solid color-mix(in srgb, currentColor 13%, transparent);
+  border-radius: 6px;
+  color: var(--text-muted, #777773);
+  font-size: 10.5px;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+.shell-timeout.ticking { color: #647995; background: #7189a40b; }
+.shell-timeout.urgent { color: #ae762a; background: #b8832310; }
+.shell-timeout-label { display: flex; align-items: center; gap: 5px; }
+.shell-timeout-limit { opacity: .65; }
+.shell-timeout-track { display: block; height: 2px; margin-top: 4px; background: #7189a41c; border-radius: 2px; overflow: hidden; }
+.shell-timeout-track > span { display: block; height: 100%; background: currentColor; transform-origin: left; transition: transform 1s linear; }
+@media (max-width: 560px) {
+  .tool-card-head:has(.shell-timeout) { flex-wrap: wrap; }
+  .tool-card-head:has(.shell-timeout) .tool-heading { flex-basis: calc(100% - 55px); }
+  .shell-timeout { margin-left: 44px; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .shell-timeout-track > span { transition: none; }
+}
 .tool-state {
   flex: 0 0 auto;
   margin-left: auto;
@@ -1172,6 +1197,15 @@ button:not(:disabled) {
 .notebook-content textarea:focus-visible { box-shadow: inset 0 0 0 2px #b8d1c1; }
 .notebook-preview { padding: 0 16px 16px; width: 100%; overflow-wrap: anywhere; font-size: 12px; line-height: 1.7; }
 .notebook-preview pre { white-space: pre-wrap; }
+.planning-actions { display: flex; flex-direction: column; gap: 8px; }
+.planning-actions button { display: flex; justify-content: center; align-items: center; gap: 7px; padding: 10px 12px; border: 1px solid var(--line); border-radius: 9px; background: transparent; color: inherit; cursor: pointer; }
+.planning-actions .planning-approve { background: #e5f1e9; border-color: #b8d1c1; color: #315b40; font-weight: 600; }
+.planning-panel button:disabled { opacity: .5; cursor: default; }
+.planning-status { display: flex; gap: 8px; align-items: center; font-size: 12px; color: #63796b; }
+.planning-exit { margin-top: 12px; padding: 0; border: 0; background: transparent; color: #7e887f; font-size: 11px; cursor: pointer; }
+.planning-error { color: #b42318; font-size: 12px; overflow-wrap: anywhere; }
+.planning-spinner { animation: planning-spin 1s linear infinite; flex-shrink: 0; }
+@keyframes planning-spin { to { transform: rotate(360deg); } }
 .notebook-preview table { display: block; overflow-x: auto; }
 .notebook-empty { margin: auto; padding: 20px; text-align: center; color: #78847b; }
 .notebook-empty strong { display: block; margin-top: 10px; }
@@ -1765,18 +1799,20 @@ button:not(:disabled) {
   white-space: pre;
 }
 
-.loading-overlay {
-  position: absolute;
-  inset: 48px 0 0;
-  z-index: 20;
+.chat-loading {
+  min-height: 240px;
+  height: 100%;
   display: flex;
+  flex-direction: column;
   align-items: center;
   justify-content: center;
-  gap: 9px;
-  color: #777;
-  background: rgba(255, 255, 255, 0.76);
-  backdrop-filter: blur(3px);
+  gap: 12px;
+  color: #777773;
+  font-size: 12px;
 }
+.chat-loading strong { color: #555550; font-size: 14px; font-weight: 500; }
+.chat-loading .spinner { width: 20px; height: 20px; }
+
 .toast-stack {
   position: fixed;
   z-index: 100;
@@ -2268,6 +2304,21 @@ button.secondary.large {
   border: 1px solid #e4e4df;
   border-radius: 16px;
   background: #fff;
+}
+.comfy-workflow-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) max-content;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 0;
+  border-top: 1px solid var(--line);
+}
+.comfy-workflow-details {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.comfy-workflow-action {
+  white-space: nowrap;
 }
 .setting-row {
   min-height: 72px;

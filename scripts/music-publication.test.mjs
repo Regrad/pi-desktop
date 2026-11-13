@@ -3,8 +3,17 @@ import assert from "node:assert/strict";
 import { mkdtemp, mkdir, writeFile, rm, symlink } from "node:fs/promises";
 import path from "node:path";
 import os from "node:os";
+import { existsSync } from "node:fs";
+import { registerHooks } from "node:module";
 import { collectAnswerMedia, answerCanPublishMedia } from "../src/comfy-images.ts";
-import { selectMusicForAnswer } from "../resources/pi-comfyui/lib/music-publication.ts";
+registerHooks({ resolve(specifier, context, next) {
+  if (specifier.startsWith(".") && specifier.endsWith(".js") && context.parentURL) {
+    const file = new URL(specifier.replace(/\.js$/, ".ts"), context.parentURL);
+    if (existsSync(file)) return next(file.href, context);
+  }
+  return next(specifier, context);
+} });
+const { selectMusicForAnswer } = await import("../resources/pi-comfyui/lib/music-publication.ts");
 
 const track = name => ({ type: "audio", path: `C:/Pi/data/music-generation/${name}.flac`, mimeType: "audio/flac" });
 const generated = (id, media) => ({ id, name: "media_generate_music", result: { content: [], details: { media, files: media.map(part => part.path) } } });

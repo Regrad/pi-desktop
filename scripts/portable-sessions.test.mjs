@@ -3,8 +3,17 @@ import assert from "node:assert/strict";
 import { mkdtemp, mkdir, writeFile, readFile, cp, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
+import { existsSync } from "node:fs";
+import { registerHooks } from "node:module";
 import { SessionManager } from "@earendil-works/pi-coding-agent";
-import { migratePortableSessions, portableSessionsDir, storedSessionReference } from "../electron/portable-sessions.ts";
+registerHooks({ resolve(specifier, context, next) {
+  if (specifier.startsWith(".") && specifier.endsWith(".js") && context.parentURL) {
+    const file = new URL(specifier.replace(/\.js$/, ".ts"), context.parentURL);
+    if (existsSync(file)) return next(file.href, context);
+  }
+  return next(specifier, context);
+} });
+const { migratePortableSessions, portableSessionsDir, storedSessionReference } = await import("../electron/portable-sessions.ts");
 
 async function fixture(t) {
   const folder = await mkdtemp(path.join(os.tmpdir(), "pi-portable-session-test-"));
@@ -30,7 +39,7 @@ test("migration copies only referenced chats, preserves originals and supports P
   const migrated = await migratePortableSessions(data, [{ id: "11111111-1111-4111-8111-111111111111", sessionFile: source, title: "Keep title", archived: true }], legacy);
   assert.equal(migrated.copied, 1);
   const target = migrated.conversations[0].sessionFile;
-  assert.ok(target.startsWith(portableSessionsDir(data) + path.sep));
+  assert.ok(target.startsWith(path.join(data, "chats", migrated.conversations[0].id, "sessions") + path.sep));
   assert.deepEqual(await readFile(target), original);
   assert.deepEqual(await readFile(source), original);
   assert.equal(migrated.conversations[0].archived, true);
@@ -50,7 +59,7 @@ test("saved relative references reopen after moving to another data directory", 
   const source = await createSession(legacy, folder, id);
   const first = await migratePortableSessions(data, [{ id, sessionFile: source }], legacy);
   const stored = storedSessionReference(data, first.conversations[0].sessionFile);
-  assert.ok(stored.startsWith("agent/sessions/"));
+  assert.ok(stored.startsWith(`chats/${id}/sessions/`));
   assert.equal(path.isAbsolute(stored), false);
   const movedData = path.join(folder, "usb-other-drive", "data");
   await cp(data, movedData, { recursive: true });

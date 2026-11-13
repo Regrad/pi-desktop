@@ -6,6 +6,7 @@ import { stripTypeScriptTypes } from "node:module";
 import { applyGoalReport } from "../shared/goal.ts";
 import { updatedPlan } from "../shared/plan.ts";
 import { confirmedPlanRevision } from "../shared/plan-activity.ts";
+import { isPlanning, approvedPlanning, controlPlanningState } from "../shared/planning.ts";
 
 // Exercise the real method bodies without starting Electron or a model.
 // Remove only literal type assertions from these controller bodies; no project build.
@@ -19,7 +20,7 @@ function method(name, parameters) {
   const bodyEnd = source.indexOf("\n  }", bodyStart);
   assert.ok(bodyStart > start && bodyEnd > bodyStart);
   const body = stripTypeScriptTypes(`async function invoke(${parameters.join(",")}) {${source.slice(bodyStart, bodyEnd)}\n}`);
-  const execute = new Function("randomUUID", "updatedPlan", "confirmedPlanRevision", `${body}; return invoke;`)(randomUUID, updatedPlan, confirmedPlanRevision);
+  const execute = new Function("randomUUID", "updatedPlan", "confirmedPlanRevision", "isPlanning", "approvedPlanning", "controlPlanningState", `${body}; return invoke;`)(randomUUID, updatedPlan, confirmedPlanRevision, isPlanning, approvedPlanning, controlPlanningState);
   return function (...args) { return execute.call(this, ...args); };
 }
 const controlGoal = method("controlGoal", ["conversationId", "action"]);
@@ -34,6 +35,7 @@ function fixture(status = "active", working = true) {
   const runtime = { activeRun: run, snapshot: { state: { isStreaming: working } }, rpc: { async request(command) { requests.push(command); } } };
   const launches = [];
   const context = {
+    invalidateStartup() {},
     store: { getConversation() { return conversation; }, async saveConversationRun() {} },
     runtimes: new Map([["chat", runtime]]),
     goalLaunching: new Set(), goalContinuationRequested: new Set(["chat"]),

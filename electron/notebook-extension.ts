@@ -41,7 +41,7 @@ export default function notebookExtension(pi: ExtensionAPI, readNotebook = readD
   });
   pi.registerTool({
     name: "update_notebook", label: "Блокнот",
-    description: "Read or edit short persistent notes in this chat. Call {} to read. Choose one write operation: old_text + new_text replaces exactly one literal unique fragment (new_text: '' deletes it); append adds text verbatim at the end (include a newline if needed); content replaces the entire Markdown (content: '' clears it). Prefer targeted edits for small changes. Read and write results include notebook and usage: currentChars, limit, remainingChars. The limit applies to the final text. Invalid, missing, ambiguous or oversized edits are rejected without changes. On revision conflict, read current notes and merge your changes instead of overwriting them.",
+    description: "Read or edit short persistent notes in this chat. Call {} to read the full notebook. Choose one write operation: old_text + new_text replaces exactly one literal unique fragment (new_text: '' deletes it); append adds text verbatim at the end (include a newline if needed); content replaces the entire Markdown (content: '' clears it). Prefer targeted edits for small changes. Writes confirm revision and usage, without repeating the notebook. Usage: currentChars, limit, remainingChars. The limit applies to the final text. Invalid, missing, ambiguous or oversized edits are rejected without changes. On revision conflict, read current notes and merge your changes instead of overwriting them.",
     parameters: Type.Object({
       content: Type.Optional(Type.String()),
       old_text: Type.Optional(Type.String({ minLength: 1 })),
@@ -50,9 +50,10 @@ export default function notebookExtension(pi: ExtensionAPI, readNotebook = readD
     }),
     async execute(_id, params, signal) {
       const writing = params.content !== undefined || params.append !== undefined || params.old_text !== undefined || params.new_text !== undefined;
-      const result = await request("update_notebook", { ...params, ...(writing ? { expectedRevision: observedRevision } : {}) }, signal);
-      observedRevision = (result as { notebook?: ConversationNotebook })?.notebook?.revision ?? 0;
-      return { content: [{ type: "text", text: JSON.stringify(result) }], details: undefined };
+      const result = await request("update_notebook", { ...params, ...(writing ? { expectedRevision: observedRevision } : {}) }, signal) as { notebook?: ConversationNotebook; usage?: ReturnType<typeof notebookUsage> };
+      observedRevision = result?.notebook?.revision ?? 0;
+      const response = writing && result.notebook ? { notebook: { revision: result.notebook.revision, updatedAt: result.notebook.updatedAt }, usage: result.usage } : result;
+      return { content: [{ type: "text", text: JSON.stringify(response) }], details: undefined };
     },
   });
 }

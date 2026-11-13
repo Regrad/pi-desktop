@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { readFile, writeFile, unlink } from "node:fs/promises";
-import { randomUUID } from "node:crypto";
+import { readFile } from "node:fs/promises";
+import { createRequire, isBuiltin } from "node:module";
 import { setTimeout as delay } from "node:timers/promises";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import path from "node:path";
@@ -17,7 +17,7 @@ test("shell timeout bridge is version-sensitive, idempotent and preserves UTF-8/
   assert.equal(patchShellTimeout(original.replace(/\r?\n/g, "\r\n")), patched.replace(/\r?\n/g, "\r\n"));
   assert.throws(() => patchShellTimeout("unknown"), /no longer matches pinned Pi/);
   assert.match(patched, /timeout = defaultShellTimeout\(command\)/);
-  assert.match(patched, /60 seconds for simple inspections and 3600 seconds/);
+  assert.match(patched, /Timeout defaults to 300 seconds/);
   assert.match(patched, /Execution may be partial/);
   const pristine = original.replaceAll("timeout = 300", "timeout")
     .replace("Timeout in seconds (optional, defaults to 300)", "Timeout in seconds (optional, no default timeout)")
@@ -26,22 +26,22 @@ test("shell timeout bridge is version-sensitive, idempotent and preserves UTF-8/
   assert.equal(patchShellTimeout(pristine), patched);
 });
 
-test("only known inspections get 60 seconds; builds, wrappers and unknown scripts get an hour", () => {
+test("all commands default to five minutes", () => {
   for (const command of ["pwd", "rg -n cache electron", "git status --short; git diff --stat", "cd /x/server && head -50 CMakeLists.txt", "Get-Content 'C:\\my project\\log.txt' | Select-Object -Last 20", "cmake --version", "node --version", "echo 'build server'"])
-    assert.equal(defaultShellTimeout(command), 60, command);
+    assert.equal(defaultShellTimeout(command), 300, command);
   for (const command of ["cmake --build build --config Release", "ninja -C build", "make -j8", '"C:\\VS Tools\\MSBuild.exe" server.sln /m', "dotnet build", "npm run build", "npm ci", "cargo test", "cd /x/server && ./compile.sh", "bash -lc 'cmake --build build'", "& 'C:\\server\\build.ps1'", "python train.py", "node job.js", "Get-Content log -Wait", "tail -f server.log", "git status; cmake --build build", "echo $(make)", "Get-Process | ForEach-Object { $_.Name }", "ssh server make", "", "# comment\ncmake --build build"])
-    assert.equal(defaultShellTimeout(command), 3600, command);
+    assert.equal(defaultShellTimeout(command), 300, command);
 });
 
-// Load the actual patched executor, with a short default only inside this test.
-// The temporary module is adjacent to bash.js so all native imports stay real.
+// Load the patched executor in memory, resolving its real dependencies from Pi.
 async function executor(t, shortened = false) {
-  const file = path.join(path.dirname(bashFile), `.desktop-timeout-test-${randomUUID()}.js`);
-  const source = patchShellTimeout(original);
-  const deadlines = typeof shortened === "object" ? shortened : { quick: 1, work: 1 };
-  await writeFile(file, shortened ? source.replace("const quickSeconds = 60;", `const quickSeconds = ${deadlines.quick};`).replace("const workSeconds = 3600;", `const workSeconds = ${deadlines.work};`) : source, "utf8");
-  t.after(() => unlink(file));
-  return import(pathToFileURL(file).href);
+  const require = createRequire(bashFile);
+  let source = patchShellTimeout(original);
+  if (shortened) source = source.replace("return 300;", `return ${typeof shortened === "number" ? shortened : 1};`);
+  source = source.replace(/from "([^"]+)"/g, (match, specifier) => isBuiltin(specifier) ? match :
+    `from ${JSON.stringify(pathToFileURL(specifier.startsWith(".")
+      ? path.resolve(path.dirname(bashFile), specifier) : require.resolve(specifier)).href)}`);
+  return import(`data:text/javascript;base64,${Buffer.from(source).toString("base64")}`);
 }
 
 test("default reaches native and custom shell tools; explicit long timeouts remain unchanged", async t => {
@@ -53,11 +53,31 @@ test("default reaches native and custom shell tools; explicit long timeouts rema
     });
     for (const parameters of [{ command: "git status" }, { command: "cmake --build build" }, { command: "./compile.sh" }, { command: "noop", timeout: 1200 }, { command: "noop", timeout: 0.25 }])
       await tool.execute("test", parameters);
-    assert.deepEqual(calls, [60, 3600, 3600, 1200, 0.25]);
+    assert.deepEqual(calls, [300, 300, 300, 1200, 0.25]);
   }
 });
 
-test("default accounts for command prefixes and spawn hooks, not just the visible command", async t => {
+test("execution publishes the resolved deadline before output and persists it", async t => {
+  const { createShellToolDefinition } = await executor(t);
+  for (const timeout of [undefined, 1200, 0.25]) {
+    const updates = [];
+    const before = Date.now();
+    const tool = createShellToolDefinition(process.cwd(), { name: "powershell", shellName: "test" }, {
+      operations: { async exec(_command, _cwd, options) {
+        assert.equal(updates[0].details.shellTiming.timeoutSeconds, options.timeout);
+        options.onData(Buffer.from("output"));
+        return { exitCode: 0 };
+      } },
+    });
+    const result = await tool.execute("test", { command: "pwd", timeout }, undefined, update => updates.push(update));
+    const timing = result.details.shellTiming;
+    assert.equal(timing.timeoutSeconds, timeout ?? 300);
+    assert.ok(timing.startedAt >= before && timing.startedAt <= Date.now());
+    for (const update of updates) assert.deepEqual(update.details.shellTiming, timing);
+  }
+});
+
+test("prefixes and spawn hooks preserve the default and explicit override", async t => {
   const { createShellToolDefinition } = await executor(t);
   for (const options of [{ commandPrefix: "cmake --build build" }, { spawnHook: context => ({ ...context, command: "npm run build" }) }]) {
     const calls = [];
@@ -66,7 +86,7 @@ test("default accounts for command prefixes and spawn hooks, not just the visibl
     });
     await tool.execute("test", { command: "pwd" });
     await tool.execute("test", { command: "pwd", timeout: 1200 });
-    assert.deepEqual(calls, [3600, 1200]);
+    assert.deepEqual(calls, [300, 1200]);
   }
 });
 
@@ -100,8 +120,8 @@ test("native timeout preserves partial output; explicit larger timeout allows no
     await assert.rejects(operations.exec("", process.cwd(), { onData() {}, timeout }), /Invalid timeout/);
 });
 
-test("a silent script outlasting the quick deadline completes under the default work deadline", { timeout: 15000 }, async t => {
-  const { createLocalShellOperations, createShellToolDefinition } = await executor(t, { quick: 1, work: 3 });
+test("a silent script completes within its default deadline", { timeout: 15000 }, async t => {
+  const { createLocalShellOperations, createShellToolDefinition } = await executor(t, 3);
   const operations = createLocalShellOperations("test", () => ({ shell: process.execPath, args: ["-e"] }));
   const tool = createShellToolDefinition(process.cwd(), { name: "bash", label: "bash", shellName: "test", tempFilePrefix: "pi-timeout-test" }, { operations });
   const result = await tool.execute("test", { command: "setTimeout(()=>console.log('LONG_JOB_COMPLETED'),1500)" });

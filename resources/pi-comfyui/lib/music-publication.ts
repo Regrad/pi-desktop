@@ -1,4 +1,5 @@
 import path from "node:path";
+import { chatFileDirectory } from "./chat-storage.js";
 import { realpath, stat } from "node:fs/promises";
 
 const audioTypes: Record<string, string> = {
@@ -10,7 +11,7 @@ export async function selectMusicForAnswer(dataDir: string, tracks: string[], si
   if (!Array.isArray(tracks) || tracks.length > 64) throw new Error("Выберите не более 64 треков");
   const media: { type: "audio"; path: string; mimeType: string }[] = [];
   if (!tracks.length) return media;
-  const folder = await realpath(path.join(dataDir, "music-generation"));
+  const folder = await realpath(chatFileDirectory(dataDir, "music-generation"));
   const seen = new Set<string>();
   for (const requested of tracks) {
     signal?.throwIfAborted();

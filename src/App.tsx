@@ -55,7 +55,11 @@ import { applyAssistantMessageDelta } from "../shared/live-message";
 import { GoalPanel } from "./GoalPanel";
 import { PlanPanel } from "./PlanPanel";
 import { NotebookPanel } from "./NotebookPanel";
+import { PlanningPanel } from "./PlanningPanel";
+import { isPlanning } from "../shared/planning";
 import { SkillsPanel } from "./SkillsPanel";
+import { ShellTimeout } from "./ShellTimeout";
+import { shellTiming } from "./shell-timeout";
 import { historyHasLaterMessages } from "../shared/session-history";
 import { applyMessagePatch } from "../shared/message-sync";
 import { NotebookSettings } from "./NotebookSettings";
@@ -150,6 +154,9 @@ type TranscriptTimelineItem =
       kind: "message";
       message: JsonObject;
       fragment?: "thinking" | "answer";
+      fragmentIndex?: number;
+      sourceMessage?: JsonObject;
+      historyActions?: boolean;
       sourceIndex: number;
       timestamp: number;
       order: number;
@@ -171,11 +178,9 @@ type TranscriptTimelineItem =
     };
 
 /**
- * Timeline as displayed: everything the model produced between the previous
- * answer and the current one (thinking, tool calls and results, intermediate
- * texts, extension output) is collapsed into a single expandable fold above
- * that answer. A committed, tool-free answer closes the fold; automatic
- * continuation starts a new one without hiding the completed answer.
+ * Each visible assistant text closes the preceding process fold. Later
+ * thinking and tools start a new group below it, never absorbing earlier text.
+ * Content fragments retain their original order, including while streaming.
  */
 type TranscriptDisplayItem =
   | { display: "single"; item: TranscriptTimelineItem }
@@ -961,6 +966,7 @@ function messageWithoutToolCalls(message: JsonObject): JsonObject | undefined {
 }
 
 function hasAnswerText(message: JsonObject): boolean {
+  if (typeof message.content === "string") return Boolean(message.content.trim());
   if (!Array.isArray(message.content)) return false;
   return message.content.some(
     (part: JsonObject) =>
@@ -968,46 +974,44 @@ function hasAnswerText(message: JsonObject): boolean {
   );
 }
 
-function splitThinkingFromAnswer(
-  item: TranscriptTimelineItem,
-  keepWhole?: JsonObject | null,
-): {
-  item: TranscriptTimelineItem;
-  thinking?: TranscriptTimelineItem;
-} {
-  if (item.kind !== "message" || item.message === keepWhole) return { item };
+function splitAssistantTimelineItem(item: TranscriptTimelineItem): TranscriptTimelineItem[] {
+  if (item.kind !== "message" || item.message.role !== "assistant") return [item];
   const content: JsonObject[] = Array.isArray(item.message.content)
     ? item.message.content
     : [];
-  const thinking = content.filter(
-    (part) =>
-      part?.type === "thinking" &&
-      String(part.thinking ?? part.text ?? "").trim(),
-  );
-  if (!thinking.length) return { item };
-  const rest = content.filter((part) => part?.type !== "thinking");
-  return {
-    item: { ...item, fragment: "answer", message: { ...item.message, content: rest } },
-    thinking: { ...item, fragment: "thinking", message: { ...item.message, content: thinking } },
-  };
+  const groups: { process: boolean; index: number; content: JsonObject[] }[] = [];
+  content.forEach((part, index) => {
+    const process = ["thinking", "toolCall", "tool_call"].includes(String(part?.type));
+    const previous = groups[groups.length - 1];
+    if (previous?.process === process) previous.content.push(part);
+    else groups.push({ process, index, content: [part] });
+  });
+  if (groups.length < 2) return [item];
+  const lastAnswer = groups.reduce((last, group, index) => !group.process &&
+    hasAnswerText({ content: group.content }) ? index : last, -1);
+  return groups.map((group, index) => ({
+    ...item,
+    fragment: group.process ? "thinking" : "answer",
+    fragmentIndex: group.index,
+    sourceMessage: item.message,
+    historyActions: index === lastAnswer,
+    message: { ...item.message, content: group.content },
+  }));
 }
 
 function buildTranscriptDisplay(
   items: TranscriptTimelineItem[],
-  streamingMsg?: JsonObject | null,
 ): TranscriptDisplayItem[] {
   const result: TranscriptDisplayItem[] = [];
   let buffer: TranscriptTimelineItem[] = [];
-  let foldIndex = -1;
   const flush = () => {
     for (const item of buffer) result.push({ display: "single", item });
     buffer = [];
   };
-  for (const item of items) {
+  for (const item of items.flatMap(splitAssistantTimelineItem)) {
     if (item.kind === "compaction") {
       flush();
       result.push({ display: "single", item });
-      foldIndex = -1;
       continue;
     }
     if (item.kind === "extension") {
@@ -1023,51 +1027,24 @@ function buildTranscriptDisplay(
       }
       flush();
       result.push({ display: "single", item });
-      foldIndex = -1;
       continue;
     }
     if (!hasAnswerText(item.message)) {
       buffer.push(item);
       continue;
     }
-    // Thinking attached to the answer message itself is still kitchen: split
-    // it out so only the final text stays visible. The live streaming message
-    // keeps its shape until committed.
-    const split = splitThinkingFromAnswer(item, streamingMsg);
-    if (split.thinking) buffer.push(split.thinking);
-    const answer = split.item;
-    const key = `fold:${messageKey(item.message, item.sourceIndex)}`;
-    const previous = foldIndex >= 0 ? result[foldIndex] : undefined;
-    if (previous?.display === "fold") {
-      // Only intermediate text in the same unfinished run becomes process.
-      result[foldIndex] = {
-        display: "fold",
-        key,
-        process: [...previous.process, previous.answer, ...buffer],
-        answer,
-      };
-    } else if (buffer.length) {
+    const key = `fold:${messageKey(item.message, item.sourceIndex)}:${item.fragmentIndex ?? "whole"}`;
+    if (buffer.length) {
       result.push({
         display: "fold",
         key,
         process: buffer.slice(),
-        answer,
+        answer: item,
       });
-      foldIndex = result.length - 1;
     } else {
-      result.push({ display: "single", item: answer });
+      result.push({ display: "single", item });
     }
     buffer = [];
-    const includesTools = Array.isArray(item.message.content) &&
-      item.message.content.some((part: JsonObject) =>
-        part?.type === "toolCall" || part?.type === "tool_call",
-      );
-    if (item.message !== streamingMsg &&
-        item.message.stopReason !== "toolUse" && !includesTools) {
-      // Checklist/goal continuation does not insert a visible user message.
-      // Keep this completed answer even when the next run emits more text.
-      foldIndex = -1;
-    }
   }
   flush();
   return result;
@@ -1359,6 +1336,7 @@ function ToolResultContent({
 function ToolCard({ tool, hideMedia = false }: { tool: ToolActivity; hideMedia?: boolean }) {
   const args = parsedToolArguments(tool.args);
   const presentation = toolPresentation(tool.name, args);
+  const timing = shellTiming(tool.name, args, tool.result, tool.startedAt, tool.preparing);
   const [expanded, setExpanded] = useState(false);
   const output = tool.result === undefined ? "" : toolOutputText(tool.result);
   const codeFragments = toolCodeFragments(
@@ -1397,6 +1375,7 @@ function ToolCard({ tool, hideMedia = false }: { tool: ToolActivity; hideMedia?:
           <strong>{presentation.label}</strong>
           {presentation.summary && <small>{presentation.summary}</small>}
         </span>
+        {timing && <ShellTimeout timing={timing} running={tool.running && !tool.preparing} />}
         <span className="tool-state">
           {tool.preparing
             ? "Формируется…"
@@ -3495,6 +3474,7 @@ export default function App() {
   const [bootstrap, setBootstrap] = useState<BootstrapPayload | null>(null);
   const [projects, setProjects] = useState<ProjectRecord[]>([]);
   const [notebookOpen, setNotebookOpen] = useState(false);
+  const [planningOpen, setPlanningOpen] = useState(false);
   const [skillsOpen, setSkillsOpen] = useState(false);
   const [conversations, setConversations] = useState<ConversationRecord[]>([]);
   const [archivedConversations, setArchivedConversations] = useState<
@@ -3539,7 +3519,12 @@ export default function App() {
   const [thinkingMenuOpen, setThinkingMenuOpen] = useState(false);
   const [addMenuOpen, setAddMenuOpen] = useState(false);
   const [goalMode, setGoalMode] = useState(false);
-  const [planMode, setPlanMode] = useState(false);
+  const planning = snapshot?.conversation.planning;
+  const planMode = isPlanning(planning);
+  useEffect(() => {
+    setPlanningOpen(isPlanning(planning));
+    if (isPlanning(planning)) { setNotebookOpen(false); setSkillsOpen(false); }
+  }, [activeConversationId, planning?.phase]);
   const [search, setSearch] = useState("");
   const [searchMatches, setSearchMatches] = useState<Set<string>>();
   const [extensionDialog, setExtensionDialog] = useState<{
@@ -3596,7 +3581,6 @@ export default function App() {
   useEffect(() => {
     activeIdRef.current = activeConversationId;
     setGoalMode(false);
-    setPlanMode(false);
     setAddMenuOpen(false);
   }, [activeConversationId]);
 
@@ -4049,6 +4033,8 @@ export default function App() {
         setRunDiff(undefined);
         setDiffOpen(false);
       }
+    } else if (event.type === "desktop_chat_naming") {
+      setWorkingMessage(event.active ? "Модель выбирает название чата…" : "");
     } else if (event.type === "desktop_plan_activity") {
       setSnapshot(current => current ? { ...current, planWorkingRevision: event.revision } : current);
     } else if (event.type === "desktop_history_rewound" && event.snapshot) {
@@ -4279,10 +4265,11 @@ export default function App() {
     } else if (event.type === "desktop_persistence_error") {
       addNotice(String(event.error ?? "Не удалось сохранить состояние чата"), "error");
       // Persistence errors do not terminate the live model process.
-    } else if (
-      event.type === "runtime_error" ||
-      event.type === "extension_error"
-    ) {
+    } else if (event.type === "extension_error") {
+      // An extension failure is not a run-settled event. The agent may recover
+      // or continue with other tools; keep Stop and the live indicator available.
+      addNotice(String(event.error ?? "Ошибка расширения Pi"), "error");
+    } else if (event.type === "runtime_error") {
       addNotice(String(event.error ?? "Ошибка Pi"), "error");
       setWorking(false);
       setWorkingMessage("");
@@ -4321,7 +4308,10 @@ export default function App() {
 
   const openConversation = async (conversationId: string) => {
     const navigationSequence = ++navigationSequenceRef.current;
+    activeIdRef.current = conversationId;
     setActiveConversationId(conversationId);
+    setSnapshot(undefined);
+    setWorking(false);
     const conversation = conversations.find(
       (item) => item.id === conversationId,
     );
@@ -4396,6 +4386,7 @@ export default function App() {
         startedAtRef.current = undefined;
       }
     } catch (error) {
+      if (navigationSequenceRef.current !== navigationSequence) return;
       addNotice(
         error instanceof Error ? error.message : String(error),
         "error",
@@ -4408,6 +4399,9 @@ export default function App() {
 
   const newChat = async (projectId?: string) => {
     const navigationSequence = ++navigationSequenceRef.current;
+    activeIdRef.current = undefined;
+    setSnapshot(undefined);
+    setWorking(false);
     setLoading(true);
     try {
       const next = await window.piDesktop.createConversation(projectId);
@@ -4502,6 +4496,9 @@ export default function App() {
 
   const clearConversationView = (conversationId: string) => {
     if (activeConversationId !== conversationId) return;
+    navigationSequenceRef.current++;
+    activeIdRef.current = undefined;
+    setLoading(false);
     setActiveConversationId(undefined);
     setActiveProjectId(undefined);
     setSnapshot(undefined);
@@ -4674,7 +4671,23 @@ export default function App() {
     }
   };
 
+  const changePlanning = async (action: "start" | "revise" | "approve" | "cancel", revision: number) => {
+    if (!activeConversationId) return;
+    const id = activeConversationId;
+    if (!beginRequest(id)) throw new Error("Дождитесь завершения предыдущего действия.");
+    try {
+      await window.piDesktop.controlPlanning(id, action, revision);
+      if (activeIdRef.current === id) {
+        setGoalMode(false);
+        setPlanningOpen(action !== "approve" && action !== "cancel");
+        setNotebookOpen(false); setSkillsOpen(false);
+        if (action === "revise" || action === "start") composerInputRef.current?.focus();
+      }
+    } finally { finishRequest(id); }
+  };
+
   const submit = async (explainQuote?: string) => {
+    if (loading) return;
     const quick = explainQuote !== undefined;
     const submittedQuotes = quick ? [explainQuote] : historyQuotes;
     const originalInput = input;
@@ -4698,7 +4711,6 @@ export default function App() {
     const conversationId = activeConversationId;
     const submittedAttachments = quick ? [] : attachments;
     const submittedAsGoal = !quick && goalMode;
-    const submittedWithPlan = !quick && planMode;
     if (!working && !beginRequest(conversationId)) return;
     autoScrollRef.current = true;
     if (!quick) {
@@ -4706,7 +4718,6 @@ export default function App() {
       setAttachments([]);
       setHistoryQuotes([]);
       setGoalMode(false);
-      setPlanMode(false);
     }
     if (working) {
       try {
@@ -4714,7 +4725,7 @@ export default function App() {
           conversationId,
           text,
           submittedAttachments,
-          submittedWithPlan,
+          false,
         );
         if (activeIdRef.current === conversationId) setQueuedPrompts(queued);
       } catch (error) {
@@ -4722,7 +4733,6 @@ export default function App() {
           setInput(originalInput);
           setAttachments(submittedAttachments);
           setHistoryQuotes(submittedQuotes);
-          setPlanMode(submittedWithPlan);
         }
         addNotice(
           error instanceof Error ? error.message : String(error),
@@ -4755,7 +4765,7 @@ export default function App() {
           conversationId,
           text,
           submittedAttachments,
-          submittedWithPlan,
+          false,
         );
       else
         await window.piDesktop.sendPrompt(
@@ -4763,7 +4773,7 @@ export default function App() {
           text,
           submittedAttachments,
           undefined,
-          submittedWithPlan,
+          false,
         );
     } catch (error) {
       if (activeIdRef.current === conversationId) {
@@ -4775,7 +4785,6 @@ export default function App() {
           setAttachments(submittedAttachments);
           setHistoryQuotes(submittedQuotes);
           setGoalMode(submittedAsGoal);
-          setPlanMode(submittedWithPlan);
         }
       }
       addNotice(
@@ -5335,7 +5344,7 @@ export default function App() {
     index: number,
   ): string => {
     if (item.kind === "message")
-      return `${messageKey(item.message, item.sourceIndex)}:${item.fragment ?? "whole"}`;
+      return `${messageKey(item.message, item.sourceIndex)}:${item.fragment ?? "whole"}${item.fragmentIndex === undefined ? "" : `:${item.fragmentIndex}`}`;
     return String(item.entry.id ?? `${item.kind}-${item.sourceIndex}-${index}`);
   };
   const renderTranscriptItem = (item: TranscriptTimelineItem, published?: ReadonlySet<string>, answerMedia?: Record<string, unknown>[]): ReactNode => {
@@ -5388,8 +5397,9 @@ export default function App() {
     }
     const visibleMessage = messageWithoutToolCalls(message);
     const calls = toolCallParts(message);
-    const isStreamingMessage = message === streamingMessage;
-    const historyTarget = !isStreamingMessage && !message.optimistic
+    const originalMessage = item.sourceMessage ?? message;
+    const isStreamingMessage = originalMessage === streamingMessage;
+    const historyTarget = item.historyActions !== false && !isStreamingMessage && !message.optimistic
       ? snapshot?.historyTargets?.find(target => target.messageIndex === index) : undefined;
     const canRewind = Boolean(historyTarget) && historyHasLaterMessages(messages, index);
     return (
@@ -5413,11 +5423,11 @@ export default function App() {
             {historyTarget && activeConversationId && (historyTarget.editable || canRewind) && (
               <div className="message-history-actions">
                 {historyTarget.editable && <button title="Редактировать последнее сообщение" disabled={working || historyBusy}
-                  onClick={() => setHistoryAction({ conversationId: activeConversationId, entryId: historyTarget.entryId, mode: "edit", text: messageText(message) })}>
+                  onClick={() => setHistoryAction({ conversationId: activeConversationId, entryId: historyTarget.entryId, mode: "edit", text: messageText(originalMessage) })}>
                   <Pencil size={13} />Изменить
                 </button>}
                 {canRewind && <button title="Откатить сессию до этого сообщения включительно" disabled={working || historyBusy}
-                  onClick={() => setHistoryAction({ conversationId: activeConversationId, entryId: historyTarget.entryId, mode: "rewind", text: messageText(message) })}>
+                  onClick={() => setHistoryAction({ conversationId: activeConversationId, entryId: historyTarget.entryId, mode: "rewind", text: messageText(originalMessage) })}>
                   <RotateCcw size={13} />Откатить сюда
                 </button>}
               </div>
@@ -5447,8 +5457,8 @@ export default function App() {
   };
 
   const transcriptDisplay = useMemo(
-    () => buildTranscriptDisplay(transcriptItems, streamingMessage),
-    [transcriptItems, streamingMessage],
+    () => buildTranscriptDisplay(transcriptItems),
+    [transcriptItems],
   );
   const currentTurnStart = messages.reduce((last, message, index) => message.role === "user" ? index : last, -1);
   const [expandedProcessFolds, setExpandedProcessFolds] = useState<Set<string>>(
@@ -5524,7 +5534,7 @@ export default function App() {
     }
     const answerMessage = display.answer.kind === "message" ? display.answer.message : undefined;
     const answerComplete = answerCanPublishMedia({
-      streaming: answerMessage === streamingMessage,
+      streaming: display.answer.kind === "message" && (display.answer.sourceMessage ?? answerMessage) === streamingMessage,
       working,
       currentTurn: display.answer.sourceIndex >= currentTurnStart,
       stopReason: answerMessage?.stopReason,
@@ -5754,7 +5764,7 @@ export default function App() {
               </aside>
             )}
 
-            <main className={`main-panel${activeConversationId && (notebookOpen || snapshot?.conversation.plan?.steps.length) ? " has-plan" : ""}`}
+            <main className={`main-panel${activeConversationId && (notebookOpen || (planningOpen && planning) || snapshot?.conversation.plan?.steps.length) ? " has-plan" : ""}`}
               onDragEnter={(event) => {
                 if (!Array.from(event.dataTransfer.types).includes("Files")) return;
                 event.preventDefault();
@@ -5794,9 +5804,11 @@ export default function App() {
                 </strong>
                 <div className="header-spacer" />
                 {activeConversationId && window.piDesktop.webMode !== "remote" && <button className={`notebook-toggle${skillsOpen ? " is-active" : ""}`} title="Навыки — переиспользуемые инструкции"
-                  aria-label="Навыки" aria-expanded={skillsOpen} onClick={() => setSkillsOpen(value => !value)}><Wrench size={17} /><span>Навыки</span></button>}
+                  aria-label="Навыки" aria-expanded={skillsOpen} onClick={() => { setSkillsOpen(value => !value); setPlanningOpen(false); setNotebookOpen(false); }}><Wrench size={17} /><span>Навыки</span></button>}
+                {activeConversationId && planning && <button className={`notebook-toggle${planningOpen ? " is-active" : ""}`} title={planning.phase === "completed" ? "План реализации выполнен" : "Документ плана реализации"}
+                  aria-label="План реализации" aria-expanded={planningOpen} onClick={() => { setPlanningOpen(value => !value); setNotebookOpen(false); setSkillsOpen(false); }}>{planning.phase === "completed" ? <Check size={17} /> : <ListChecks size={17} />}<span>{planning.phase === "completed" ? "План выполнен" : "План"}</span></button>}
                 {activeConversationId && <button className={`notebook-toggle${notebookOpen ? " is-active" : ""}`} title="Блокнот — память текущего чата"
-                  aria-label="Блокнот" aria-expanded={notebookOpen} onClick={() => setNotebookOpen(value => !value)}><BookOpen size={17} /><span>Блокнот</span></button>}
+                  aria-label="Блокнот" aria-expanded={notebookOpen} onClick={() => { setNotebookOpen(value => !value); setPlanningOpen(false); }}><BookOpen size={17} /><span>Блокнот</span></button>}
                 <BrowserPanel conversationId={activeConversationId ?? undefined} />
                 {activeProject && (
                   <button
@@ -5815,6 +5827,7 @@ export default function App() {
                 className="conversation-scroll"
                 ref={conversationScrollRef}
                 onContextMenu={(event) => {
+                  if (event.target instanceof HTMLImageElement) return;
                   const selection = window.getSelection();
                   const text = selection?.toString().trim();
                   if (!activeConversationId || !text || !selection?.anchorNode || !selection.focusNode ||
@@ -5829,7 +5842,13 @@ export default function App() {
                 onPointerUp={handleConversationPointerEnd}
                 onPointerCancel={handleConversationPointerEnd}
               >
-                {!activeConversationId ? (
+                {loading ? (
+                  <div className="chat-loading" role="status" aria-live="polite">
+                    <span className="spinner" />
+                    <strong>{bootstrap ? "Загрузка чата…" : "Запуск приложения…"}</strong>
+                    <span>Можно переключиться на другой чат</span>
+                  </div>
+                ) : !activeConversationId ? (
                   <div className="welcome">
                     <div className="welcome-logo">
                       <Bot size={34} />
@@ -5981,16 +6000,19 @@ export default function App() {
                 )}
               </div>
 
-              {activeConversationId && snapshot && notebookOpen && <aside className="conversation-plan conversation-notebook" aria-label="Блокнот текущего чата">
+              {activeConversationId && planning && planningOpen && <aside className="conversation-plan conversation-notebook" aria-label="План реализации текущего чата">
+                <PlanningPanel key={`planning-${activeConversationId}`} planning={planning} working={working || requestPending} onAction={changePlanning} onClose={() => setPlanningOpen(false)} />
+              </aside>}
+              {activeConversationId && snapshot && notebookOpen && !planningOpen && <aside className="conversation-plan conversation-notebook" aria-label="Блокнот текущего чата">
                 <NotebookPanel key={`notebook-${activeConversationId}`} conversationId={activeConversationId} notebook={snapshot.conversation.notebook} open={notebookOpen} onClose={() => setNotebookOpen(false)} />
               </aside>}
               {activeConversationId && skillsOpen && <SkillsPanel key={`skills-${activeConversationId}`} conversationId={activeConversationId} onClose={() => setSkillsOpen(false)} />}
-              {activeConversationId && !notebookOpen && snapshot?.conversation.plan?.steps.length ? (
+              {activeConversationId && !planMode && !notebookOpen && !planningOpen && snapshot?.conversation.plan?.steps.length ? (
                 <aside className="conversation-plan" aria-label="План текущего чата">
                   <PlanPanel key={`plan-${snapshot.conversation.id}`} conversationId={snapshot.conversation.id} plan={snapshot.conversation.plan} working={planIsWorking(snapshot.conversation.plan, working, snapshot.planWorkingRevision)} />
                 </aside>
               ) : null}
-              {activeConversationId && (
+              {activeConversationId && !loading && (
                 <div
                   className={`composer-wrap${modelMenuOpen || thinkingMenuOpen || addMenuOpen || slashCommands.length > 0 ? " dropdown-open" : ""}`}
                 >
@@ -6005,7 +6027,7 @@ export default function App() {
                       <ArrowDown size={17} />
                     </button>
                   )}
-                  {snapshot && (
+                  {snapshot && !planMode && (
                     <GoalPanel
                       key={snapshot.conversation.id}
                       conversation={snapshot.conversation}
@@ -6264,7 +6286,7 @@ export default function App() {
                             </button>
                             <button
                               disabled={
-                                working || Boolean(snapshot?.conversation.goal)
+                                working || planMode || Boolean(snapshot?.conversation.goal)
                               }
                               onClick={() => {
                                 setAddMenuOpen(false);
@@ -6279,9 +6301,9 @@ export default function App() {
                                 </small>
                               </span>
                             </button>
-                            <button aria-pressed={planMode} onClick={() => { setAddMenuOpen(false); setPlanMode(value => !value); }}>
+                            <button aria-pressed={planMode} disabled={working || requestPending} onClick={() => { setAddMenuOpen(false); void changePlanning(planMode ? "cancel" : "start", planning?.revision ?? 0).catch(error => addNotice(String(error), "error")); }}>
                               <ListChecks size={16} />
-                              <span><strong>Составить план</strong><small>Сначала изучить системы, затем спланировать работу</small></span>
+                              <span><strong>План</strong><small>Изучить задачу и согласовать план · только чтение</small></span>
                               {planMode && <Check size={14} />}
                             </button>
                           </div>
@@ -6295,7 +6317,7 @@ export default function App() {
                         <SquareTerminal size={17} />
                       </button>
                       <span className="access-chip">
-                        <Check size={13} /> Полный доступ
+                        <Check size={13} /> {planMode ? "План · только чтение" : "Полный доступ"}
                       </span>
                       {goalMode && (
                         <button
@@ -6306,8 +6328,8 @@ export default function App() {
                           <Target size={14} /> Цель <X size={12} />
                         </button>
                       )}
-                      {planMode && <button className="goal-mode-chip" title="План для следующего сообщения: сначала изучить затрагиваемые системы. Нажмите, чтобы отключить."
-                        onClick={() => setPlanMode(false)}><ListChecks size={14} /> Составить план <X size={12} /></button>}
+                      {planMode && <button className="goal-mode-chip" title="Открыть план для согласования"
+                        onClick={() => { setPlanningOpen(true); setNotebookOpen(false); setSkillsOpen(false); }}><ListChecks size={14} />{planning?.phase === "review" ? "Согласование плана" : "Планирование"}</button>}
                       <div className="composer-spacer" />
                       <div className="dropdown-wrap model-dropdown-wrap">
                         <button
@@ -6470,11 +6492,6 @@ export default function App() {
                       </span>
                     )}
                   </div>
-                </div>
-              )}
-              {loading && (
-                <div className="loading-overlay">
-                  <span className="spinner" /> Загрузка чата…
                 </div>
               )}
             </main>

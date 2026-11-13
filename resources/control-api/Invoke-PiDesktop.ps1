@@ -17,7 +17,8 @@ param(
 )
 $ErrorActionPreference = 'Stop'
 [Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false)
-$connectionPath = Join-Path $PSScriptRoot 'data/control-api/connection.json'
+$installationRoot = if ((Split-Path -Leaf $PSScriptRoot) -ieq 'app') { Split-Path -Parent $PSScriptRoot } else { $PSScriptRoot }
+$connectionPath = Join-Path $installationRoot 'data/control-api/connection.json'
 if (-not (Test-Path -LiteralPath $connectionPath -PathType Leaf)) {
     throw 'Connection file not found. Start Pi Desktop from this folder first.'
 }
