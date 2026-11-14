@@ -1136,7 +1136,6 @@ button:not(:disabled) {
   flex-direction: column;
   flex: 0 0 auto;
   width: min(760px, calc(100% - 48px));
-  max-height: 48%;
   margin: 0 auto 14px;
   overflow: visible;
   padding: 1px 1px 0;
@@ -1392,8 +1391,10 @@ button:not(:disabled) {
 .composer textarea {
   display: block;
   width: 100%;
+  field-sizing: content;
   min-height: 49px;
-  max-height: 180px;
+  max-height: min(420px, 40vh);
+  overflow-y: auto;
   resize: none;
   border: 0;
   outline: 0;
