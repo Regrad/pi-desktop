@@ -1,6 +1,8 @@
 // Application-owned SDK host, intentionally independent of Pi's CLI options,
 // update notifications, executable discovery and terminal startup lifecycle.
 import { randomUUID } from "node:crypto";
+import { existsSync } from "node:fs";
+import path from "node:path";
 import {
   createAgentSessionServices, createAgentSessionFromServices, createAgentSessionRuntime,
   SessionManager, SettingsManager, resolveCliModel, initTheme,
@@ -30,6 +32,12 @@ try {
     : SessionManager.create(cwd, options.sessionsDir, { id: options.sessionId || randomUUID() });
   const runtime = await createAgentSessionRuntime(async ({ cwd, agentDir, sessionManager, sessionStartEvent }) => {
     const settingsManager = SettingsManager.create(cwd, agentDir, { projectTrusted: true });
+    const globalPromptPath = path.join(agentDir, "APPEND_SYSTEM.md");
+    // Keep file paths so reload reads saved edits; project context must not replace global rules.
+    const appendSystemPrompt = [...new Set([
+      ...(existsSync(globalPromptPath) ? [globalPromptPath] : []),
+      ...(options.appendSystemPrompt ? [options.appendSystemPrompt] : []),
+    ])];
     const services = await createAgentSessionServices({
       cwd, agentDir, settingsManager,
       modelRuntimeSignal: AbortSignal.timeout(15_000),
@@ -41,7 +49,7 @@ try {
         noExtensions: options.isolated, noSkills: options.isolated,
         noPromptTemplates: options.isolated, noThemes: options.isolated,
         noContextFiles: options.isolated,
-        appendSystemPrompt: options.appendSystemPrompt ? [options.appendSystemPrompt] : [],
+        appendSystemPrompt,
       },
     });
     const selection = resolveCliModel({ cliProvider: options.provider, cliModel: options.model,

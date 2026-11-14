@@ -19,7 +19,7 @@ export async function verifyPackagedEngine(binaryDirectory) {
   // Same real protocol/tools/media/cancellation contract as development, but
   // run with the packaged Electron executable and packaged extensions.
   await new Promise((resolve, reject) => {
-    const child = spawn(process.execPath, ["--test", "scripts/pi-core-upgrade.test.mjs", "scripts/chat-title.test.mjs"], {
+    const child = spawn(process.execPath, ["--test", "scripts/pi-core-upgrade.test.mjs", "scripts/chat-title.test.mjs", "scripts/engine-customization.test.mjs"], {
       cwd: root, windowsHide: true, stdio: "inherit",
       env: { ...process.env, PI_TEST_APP_ROOT: app, PI_TEST_EXECUTABLE: path.join(binaryDirectory, "Pi Desktop.exe"), PI_TEST_FORBID_PI_CLI: "1" },
     });
