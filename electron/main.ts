@@ -395,7 +395,7 @@ function registerIpc(): void {
     if (!pending.length) return { status, updated: [], errors: [] };
     const result = await dialog.showMessageBox(mainWindow!, {
       type: "question",
-      title: t("Обновить Pi и модули?"),
+      title: t("Обновить дополнения?"),
       message: t("Будет обновлено компонентов: {0}.", pending.length),
       detail: t("{0}\n\nЛокальные защищённые модули не изменяются.", pending.map((item) => `${item.name}: ${item.currentVersion ?? "?"} → ${item.latestVersion ?? "?"}`).join("\n")),
       buttons: [t("Отмена"), t("Обновить всё")],

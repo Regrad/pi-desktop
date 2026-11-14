@@ -2715,7 +2715,7 @@ function SettingsPage({
                   action={{ label: t("Показать"), onClick: showSessionsFolder }}
                 />
                 <SettingRow
-                  title={t("Обновления Pi и модулей")}
+                  title={t("Обновления приложения и дополнений")}
                   description={t("Pi обновляется вместе с приложением. Обновления дополнений доступны во вкладке «Модули».")}
                   value={t("Только вручную")}
                 />
@@ -3031,10 +3031,18 @@ function SettingsPage({
                   {moduleSettingsMessage}
                 </div>
               )}
-              <h2>{t("Обновления встроенных компонентов")}</h2>
+              <h2>Pi Engine</h2>
+              <div className="settings-card">
+                <SettingRow
+                  title={t("Версия встроенного движка")}
+                  description={t("Встроенное ядро. Обновляется вместе с приложением.")}
+                  value={import.meta.env.VITE_PI_ENGINE_VERSION}
+                />
+              </div>
+              <h2>{t("Обновления дополнений")}</h2>
               <div className="module-update-toolbar">
                 <div>
-                  <strong>{t("Pi и установленные дополнения")}</strong>
+                  <strong>{t("Установленные дополнения")}</strong>
                   <span>
                     {updateStatus?.checkedAt
                       ? t("Проверено {0}", new Date(updateStatus.checkedAt).toLocaleString(getLocale()))
@@ -3067,7 +3075,7 @@ function SettingsPage({
               </div>
               <div className="settings-card module-update-list">
                 {updateStatus?.components.length ? (
-                  updateStatus.components.map((component) => (
+                  updateStatus.components.filter((component) => component.id !== "pi-core").map((component) => (
                     <div className="module-update-row" key={component.id}>
                       <div>
                         <strong>{component.name}</strong>
@@ -3286,7 +3294,7 @@ function SettingsPage({
               <div className="settings-card">
                 <SettingRow
                   title="Pi Desktop"
-                  description={t("Портативный настольный интерфейс для Pi.")}
+                  description={t("Самостоятельное приложение на основе Pi.")}
                   value="0.1.0"
                 />
                 <SettingRow
