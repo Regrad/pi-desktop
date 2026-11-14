@@ -1,6 +1,6 @@
 # Pi Desktop
 
-A portable Windows app for the [Pi coding agent](https://github.com/earendil-works/pi). Work with projects and chats, follow tool calls, and generate images, audio, and 3D models through ComfyUI.
+A standalone AI app for Windows, built on [Pi](https://github.com/earendil-works/pi). Work on code and files, organize chats by project, and generate images, audio, and 3D models through ComfyUI. The Pi engine is built from source and integrated into the app.
 
 [Download for Windows x64](https://github.com/Regrad/pi-desktop/releases/download/v0.1.0/Pi-Desktop-0.1.0-win-x64.zip) · [Releases](https://github.com/Regrad/pi-desktop/releases)
 
@@ -8,9 +8,11 @@ A portable Windows app for the [Pi coding agent](https://github.com/earendil-wor
 
 ## Getting started
 
-Extract the ZIP and run `app\Pi Desktop.exe`. Pi is included; there is no separate installation step.
+Extract the ZIP and run `app\Pi Desktop.exe`. No installer or separate Pi installation is needed.
 
-Open **Settings → Models** to add a compatible local model server. You can also configure providers in `data/agent/models.json`. Choose a model and reasoning level in the chat toolbar, then send your first message.
+Connect a model before starting a chat. In **Settings → Models**, add a server with an OpenAI-compatible API, such as llama.cpp. For other providers, configure `data/agent/models.json`; see the [configuration format](vendor/pi/packages/coding-agent/docs/models.md#configure-a-compatible-endpoint). Model weights are not included.
+
+Choose a model in the chat toolbar. If it supports reasoning levels, you can select one there too.
 
 The interface starts in English. Switch to Russian in **Settings → General → Interface language**.
 
@@ -27,15 +29,15 @@ The interface starts in English. Switch to Russian in **Settings → General →
 
 Chats can keep running in the background while you switch between them. Messages sent during a response go into a queue; use **Steer** to send a correction into the current run.
 
-The diff panel tracks changes made through the model's `write` and `edit` tools. It does not capture every side effect of shell commands, and large or binary files may be omitted.
+The diff panel shows text changes made through the model's `write` and `edit` tools. Changes made by shell commands are not tracked. Large files, binary files, and build or dependency folders may be excluded.
 
 ## ComfyUI
 
 Start ComfyUI and enter its address in **Settings → ComfyUI**. It needs the models and custom nodes used by your workflows; model weights are not included with Pi Desktop.
 
-The bundled tools cover Qwen image generation and editing, SAM masks, YuE2 music, voice generation, and 3D generation, texturing, and mesh processing. Results appear in the chat as images, audio players, or interactive GLB models. The 3D viewer has texture, clay, and wireframe modes.
+The tools support image generation and editing with Qwen, object masks with SAM, music with YuE2, voice generation, and 3D generation, texturing, and mesh processing. Results appear in the chat as images, audio players, or interactive GLB models. The 3D viewer has texture, clay, and wireframe modes.
 
-You can import custom workflows exported in ComfyUI's **API format**. Each tool's implementation is in `resources/pi-comfyui/tools/`.
+In **Settings → ComfyUI**, you can replace the listed workflows with your own. Export them in ComfyUI's **API format** and use the parameter placeholders shown in Settings. Each tool's implementation is in `resources/pi-comfyui/tools/`.
 
 ## Storage and updates
 
@@ -52,7 +54,7 @@ Pi Desktop/
 
 | Location | Contents |
 | --- | --- |
-| `data/agent/` | Model providers, Pi settings, MCP connections, and global instructions |
+| `data/agent/` | Model providers, engine settings, MCP connections, and global instructions |
 | `data/chats/<id>/` | A chat's history, attachments, downloads, and generated files |
 | `data/desktop-state.json` | Project and chat lists, plus interface preferences |
 | `data/runtime/` | Updated third-party add-ons |
@@ -63,9 +65,9 @@ Archiving a chat keeps its files. Deleting it moves its own folder to the Window
 
 ## Extensions
 
-Manage built-in modules and custom extensions in **Settings → Modules**. The app includes web tools, MCP support, code analysis, and llama.cpp progress reporting. Pi itself is updated with the app; supported third-party add-ons can be updated separately.
+Manage built-in modules and custom extensions in **Settings → Modules**. The app includes web tools, MCP support, code analysis, and llama.cpp progress reporting. The embedded engine is updated with Pi Desktop. Supported third-party add-ons can be updated separately.
 
-The computer-use MCP server is bundled with Pi Desktop and uses its runtime. Add your own MCP servers in `data/agent/mcp-adapter.json` or Pi's native `data/agent/mcp.json`.
+The app includes a computer-use MCP server. Configure additional MCP servers in `data/agent/mcp-adapter.json` for the adapter, or `data/agent/mcp.json` for the engine's native MCP support.
 
 ## Development
 
@@ -86,9 +88,9 @@ npm run dev
 | `npm run engine:verify` | Check the bundled Pi source and assets |
 | `npm run engine:sync -- --ref vX.Y.Z` | Import an upstream Pi release for integration and testing |
 
-The executable is written to `release/Pi Desktop/app/Pi Desktop.exe`. Full packaging also builds the Windows client helper and requires .NET SDK 10, Visual C++ build tools, and the Windows SDK.
+Packaging writes the executable to `release/Pi Desktop/app/Pi Desktop.exe`. A full package also builds the Windows client helper and requires .NET SDK 10, Visual C++ build tools, and the Windows SDK.
 
-Upstream Pi lives in `vendor/pi/`. Desktop integration stays in `resources/pi-engine/` and the app's extensions, so our changes can be maintained separately when Pi is updated. The engine runs in a worker process managed by the app. See the [integration notes](docs/PI_EMBEDDED_ENGINE_PLAN.md) for the update process.
+Pi's source lives in `vendor/pi/`. Desktop integration stays in `resources/pi-engine/` and the app's extensions to keep upstream updates separate from app changes. The engine runs in a worker process managed by Pi Desktop. See the [integration notes](docs/PI_EMBEDDED_ENGINE_PLAN.md) for the update process.
 
 Tests are in `scripts/`. For example:
 
@@ -106,7 +108,7 @@ The local control API can list projects and chats, start work, read task status,
 
 The API listens only on `127.0.0.1`. Its address and per-launch token are stored in `data/control-api/connection.json`. Treat that file like a password: it gives access to the app's tools.
 
-The optional HTTPS and remote-helper code is included in the source, but web access is currently paused and hidden from Settings.
+Remote access over HTTPS is not available in the current interface. Its implementation remains in the source.
 
 ## License
 

@@ -2,7 +2,7 @@
   "name": "pi-desktop",
   "version": "0.1.0",
   "private": true,
-  "description": "Portable Codex-style desktop client for Pi",
+  "description": "A standalone AI app for Windows, built on Pi",
   "type": "module",
   "main": "dist-electron/electron/main.js",
   "scripts": {
