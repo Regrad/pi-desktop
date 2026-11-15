@@ -72,9 +72,10 @@ test('settling a run releases confirmation before another request can begin', ()
   const start = source.indexOf(anchor, source.indexOf('  private async handleEvent(')) + anchor.length;
   const end = source.indexOf('      await ', start);
   assert.ok(start >= anchor.length && end > start);
-  const settle = new Function('runtime', source.slice(start, end));
+  const settle = new Function('conversationId', 'runtime', source.slice(start, end));
   const runtime = { planWorkingRevision: 4, activeRun: { startedAt: 'same run' }, snapshot: {} };
-  settle(runtime);
+  // The extracted branch reads the open chat to decide the unread marker.
+  settle.call({ store: { snapshot: () => ({ activeConversationId: 'chat' }) } }, 'chat', runtime);
   assert.equal(runtime.planWorkingRevision, undefined);
   const event = invoke.call({ store: { getConversation: () => ({ plan }) } }, runtime, { type: 'agent_start' });
   assert.equal(event.planWorkingRevision, undefined);

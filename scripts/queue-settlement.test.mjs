@@ -124,6 +124,8 @@ function fixture(withWork = true) {
     planningTransitions: new Set(), historyMutations: new Set(),
     runtimes: new Map([["chat", runtime]]), resumingRuns: new Set(), goalLaunching: new Set(), goalContinuationRequested: new Set(["chat"]),
     store: { getConversation: () => chat, getQueuedPrompts: () => queue, async saveConversationRun() {},
+      // Settlement marks a finished run unread unless that chat is the open one.
+      snapshot: () => ({ activeConversationId: "chat" }),
       async removeQueuedPrompt(_id, promptId) { queue = queue.filter(item => item.id !== promptId); return queue; } },
     async updateConversation(_id, patch) { Object.assign(chat, patch); },
     async refreshRuntimeSnapshot() { runtime.snapshot.state.isStreaming = false; },
