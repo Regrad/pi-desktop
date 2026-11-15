@@ -16,7 +16,7 @@ const settle = async () => { for (let i = 0; i < 5; i++) await immediate(); };
 
 function harness(t, slots = () => slot(10), capabilities = {}) {
   t.mock.timers.enable({ apis: ["setTimeout"] });
-  const saved = globalThis.fetch, hooks = new Map(), statuses = [], posts = [], gets = [], streams = [], metadata = [];
+  const saved = globalThis.fetch, hooks = new Map(), statuses = [], posts = [], gets = [], metrics = [], streams = [], metadata = [];
   globalThis.fetch = async (url, init) => {
     if (init?.method !== "POST" && /\/(models|props)$/.test(String(url))) {
       metadata.push({ url: String(url), init });
@@ -24,6 +24,13 @@ function harness(t, slots = () => slot(10), capabilities = {}) {
       return String(url).endsWith("/models")
         ? json({ data: [{ id: "fixture-model", owned_by: capabilities.owner ?? "other" }] })
         : json({ build_info: capabilities.version ?? "0.29.0 (fixture)" });
+    }
+    if (String(url).endsWith("/metrics")) {
+      metrics.push({ url: String(url), init });
+      // Absent by default: stock llama.cpp has no such route and must not be polled.
+      return capabilities.metrics === undefined
+        ? new Response("missing", { status: 404 })
+        : capabilities.metrics(metrics.length, init);
     }
     if (String(url).endsWith("/slots")) {
       gets.push({ url: String(url), init });
@@ -46,7 +53,7 @@ function harness(t, slots = () => slot(10), capabilities = {}) {
     for (const stream of streams) { try { stream.controller.close(); } catch {} }
   });
   return {
-    hooks, ctx, statuses, posts, gets, streams, start, metadata,
+    hooks, ctx, statuses, posts, gets, metrics, streams, start, metadata,
     async open(signal, fields = {}) {
       const response = await fetch("http://server:8181/proxy/v1/chat/completions", { method: "POST", signal,
         headers: { Authorization: "Bearer fixture-secret", "Content-Type": "application/json" },
@@ -61,6 +68,8 @@ function harness(t, slots = () => slot(10), capabilities = {}) {
   };
 }
 const json = value => new Response(JSON.stringify(value), { headers: { "content-type": "application/json" } });
+// Measured on Strata 0.1.59: the active slot carries no next_token counters.
+const bareSlot = [{ id: 0, n_ctx: 262144, is_processing: true, n_prompt_tokens: 63 }];
 
 test("server counts use a sliding time window, including real zero speed", () => {
   const window = new SlotSpeedWindow();
@@ -200,7 +209,11 @@ test("native timings arriving late cancel fallback polling", async t => {
 test("unsupported slots or malformed JSON never fail the generation or retry the POST", async t => {
   const h = harness(t, () => new Response("missing", { status: 404 }));
   const stream = await h.open(); h.emit(stream, chunk("still works")); await settle(); await h.tick(1000);
-  await h.tick(5000); assert.equal(h.gets.length, 1); assert.equal(h.posts.length, 1);
+  await h.tick(5000);
+  assert.deepEqual(h.gets.map(get => new URL(get.url).pathname), ["/proxy/v1/slots", "/slots"],
+    "Forks mount the route at the server root, so both candidates are tried once");
+  assert.equal(h.metrics.length, 2, "The web telemetry probe covers both mounts as well");
+  assert.equal(h.posts.length, 1);
   await h.close(stream);
 });
 
@@ -248,6 +261,72 @@ test("a malformed telemetry body clears stale speed but preserves the generation
   h.emit(stream, final); await h.close(stream);
 });
 
+test("a server publishing web telemetry takes over the status from unreadable slots", async t => {
+  const live = [{ state: "reading", tok_s: null }, { state: "generating", tok_s: 37.5 }, { state: "generating", tok_s: 39.25 }];
+  const h = harness(t, () => json(bareSlot), { metrics: n => json({ live: live[Math.min(n - 1, live.length - 1)] }) });
+  let clock = 1000;
+  t.mock.method(performance, "now", () => clock);
+  t.mock.method(Date, "now", () => 100000 + clock);
+  const stream = await h.open();
+  h.emit(stream, { choices: [{ delta: { role: "assistant" }, finish_reason: null }] });
+  await settle(); await h.tick(1000); await settle();
+  assert.equal(h.metrics.length, 0, "No web telemetry during queue and prefill");
+  h.emit(stream, chunk("Answer")); await settle(); await h.tick(1000); await settle();
+  assert.equal(h.metrics[0].url, "http://server:8181/proxy/v1/metrics");
+  assert.equal(h.metrics[0].init.headers.get("authorization"), "Bearer fixture-secret");
+  assert.equal(h.metrics[0].init.headers.get("content-type"), null);
+  assert.equal(h.metrics[0].init.redirect, "error");
+  assert.ok(!h.statuses.some(s => /TPS: [\d.]+ tok\/s/.test(s.text)), "Prefill reports no decode speed");
+  await h.tick(750); await settle();
+  assert.equal(h.statuses.at(-1).text, "⚡ TPS: 37.5 tok/s");
+  clock = 2000;
+  await h.tick(750); await settle();
+  assert.equal(h.statuses.at(-1).text, "⚡ TPS: 39.3 tok/s");
+  assert.equal(h.gets.length, 1, "The unusable slot route is not polled again");
+  assert.deepEqual(JSON.parse(h.posts[0].init.body).messages, [{ role: "user", content: "unchanged input" }]);
+  assert.equal(JSON.parse(h.posts[0].init.body).logprobs, undefined, "No sampling options were added");
+  h.emit(stream, final); await settle();
+  await h.tick(5000); assert.equal(h.metrics.length, 3);
+  assert.deepEqual(h.metrics.map(entry => new URL(entry.url).pathname), Array(3).fill("/proxy/v1/metrics"),
+    "The mount that answered is reused for every poll");
+  await h.close(stream);
+});
+
+test("a server without web telemetry is probed once and generation stays untouched", async t => {
+  const h = harness(t, () => new Response("missing", { status: 404 }));
+  const one = await h.open();
+  h.emit(one, chunk("still generating")); await settle(); await h.tick(1000); await settle();
+  assert.equal(h.metrics.length, 2, "Capability probed once across both mounts");
+  await h.tick(5000); assert.equal(h.metrics.length, 2, "An absent shape is not repolled");
+  await h.close(one);
+  const two = await h.open();
+  h.emit(two, chunk("second")); await settle(); await h.tick(1000); await settle(); await h.tick(5000);
+  assert.equal(h.metrics.length, 2, "The next response reuses the cached answer");
+  assert.equal(h.posts.length, 2, "Generation was never retried or altered");
+  await h.close(two);
+});
+
+test("native timings keep priority over web telemetry", async t => {
+  const h = harness(t, () => json(bareSlot), { metrics: () => json({ live: { state: "generating", tok_s: 99 } }) });
+  const stream = await h.open();
+  h.emit(stream, chunk("text", { timings: { predicted_n: 10, predicted_ms: 500, predicted_per_second: 20 } }));
+  await settle(); await h.tick(5000);
+  assert.equal(h.metrics.length, 0);
+  assert.equal(h.statuses.at(-1).text, "⚡ TPS: 20.0 tok/s");
+  await h.close(stream);
+});
+
+test("a second concurrent response clears the shared server metric instead of rebinding", async t => {
+  const h = harness(t, () => json(bareSlot), { metrics: () => json({ live: { state: "generating", tok_s: 30 } }) });
+  const one = await h.open();
+  h.emit(one, chunk("one")); await settle(); await h.tick(1000); await settle(); await h.tick(750); await settle();
+  assert.equal(h.statuses.at(-1).text, "⚡ TPS: 30.0 tok/s");
+  const two = await h.open();
+  assert.equal(h.statuses.at(-1).text, "⚡ TPS: —", "A server-wide figure cannot be attributed");
+  await h.tick(5000); assert.equal(h.metrics.length, 2);
+  await h.close(one); await h.close(two);
+});
+
 test("agent end, shutdown and a new run stop pending polling", async t => {
   const h = harness(t, n => json(slot(10 * n)));
   const old = await h.open(); h.emit(old, chunk("old")); await settle(); await h.tick(1000);
@@ -265,7 +344,10 @@ test("a real stalled HTTP telemetry body times out without interrupting SSE", { 
   let answer, telemetryClosed, count = 0;
   const closed = new Promise(resolve => { telemetryClosed = resolve; });
   const server = http.createServer((req, res) => {
-    if (req.url === "/v1/slots") {
+    if (req.url === "/v1/metrics") {
+      res.writeHead(404); // Stock llama.cpp has no web telemetry route.
+      res.end();
+    } else if (req.url === "/v1/slots") {
       count++;
       res.writeHead(200, { "Content-Type": "application/json" });
       res.write("["); // headers arrive, but JSON body never finishes

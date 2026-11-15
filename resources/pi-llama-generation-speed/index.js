@@ -4,6 +4,7 @@ const CURRENT_SPEED_WINDOW_MS = 3_000;
 const SLOT_POLL_MS = 750;
 const FALLBACK_DELAY_MS = 1_000;
 const SLOT_TIMEOUT_MS = 1_500;
+const METRICS_CAPABILITY_TTL_MS = 60_000;
 
 // Counts are supplied by the server, not estimated from characters or SSE chunks.
 // Without a shared request identifier, only a single execution slot is usable.
@@ -40,20 +41,32 @@ export class SlotSpeedWindow {
   }
 }
 
-function slotsRequest(input, init) {
+// Telemetry routes need no body: only authentication is forwarded, never POST
+// length or stream headers. llama.cpp and its forks mount them either next to the
+// completion route (/v1/slots) or at the server root (/slots), so both candidates
+// are offered and the caller keeps whichever one answered.
+function telemetryEndpoints(input, init, route) {
   try {
     const url = new URL(typeof input === "string" || input instanceof URL ? String(input) : input.url);
     if (!/^https?:$/.test(url.protocol) || !url.pathname.endsWith("/chat/completions")) return;
-    url.pathname = url.pathname.slice(0, -"/chat/completions".length) + "/slots";
-    url.search = ""; url.hash = "";
     const headers = new Headers(input instanceof Request ? input.headers : undefined);
     new Headers(init?.headers).forEach((value, name) => headers.set(name, value));
-    // Only authentication is needed. Never forward POST body/length or stream headers.
     const auth = new Headers();
     for (const name of ["authorization", "api-key", "x-api-key"]) if (headers.has(name)) auth.set(name, headers.get(name));
-    return { url: url.href, headers: auth };
+    const base = url.pathname.slice(0, -"/chat/completions".length);
+    const urls = [];
+    for (const pathname of [`${base}/${route}`, `/${route}`]) {
+      const candidate = new URL(url);
+      candidate.pathname = pathname;
+      candidate.search = ""; candidate.hash = "";
+      if (!urls.includes(candidate.href)) urls.push(candidate.href);
+    }
+    return { urls, url: urls[0], headers: auth };
   } catch { return; }
 }
+
+const slotsRequest = (input, init) => telemetryEndpoints(input, init, "slots");
+const metricsRequest = (input, init) => telemetryEndpoints(input, init, "metrics");
 
 function isRecord(value) {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -89,11 +102,11 @@ function serverTokenRecords(chunk) {
 // Gufo 0.29+ exposes standard per-generated-token records without changing MTP
 // or sampling. Other servers retain their existing timings/slot telemetry.
 async function supportsTokenRecords(fetch, endpoint, model, signal) {
-  const models = new URL(endpoint.url), props = new URL(endpoint.url);
-  models.pathname = models.pathname.replace(/\/slots$/, "/models");
-  props.pathname = props.pathname.replace(/(?:\/v1)?\/slots$/, "/props");
   const timeout = AbortSignal.any([AbortSignal.timeout(SLOT_TIMEOUT_MS), ...(signal ? [signal] : [])]);
   try {
+    const models = new URL(endpoint.url), props = new URL(endpoint.url);
+    models.pathname = models.pathname.replace(/\/slots$/, "/models");
+    props.pathname = props.pathname.replace(/(?:\/v1)?\/slots$/, "/props");
     const values = await Promise.all([models, props].map(async url => {
       const response = await fetch(url.href, { headers: endpoint.headers, signal: timeout, redirect: "error" });
       if (!response.ok) { await response.body?.cancel(); return; }
@@ -103,6 +116,16 @@ async function supportsTokenRecords(fetch, endpoint, model, signal) {
     const version = typeof values[1]?.build_info === "string" && values[1].build_info.match(/^(\d+)\.(\d+)\./);
     return entry?.owned_by === "gufo" && Boolean(version && (+version[1] > 0 || +version[2] >= 29));
   } catch { return false; }
+}
+
+// llama.cpp forks that dropped the per-slot counters (Strata reports neither
+// next_token nor per-token timings) still publish the same live figures their own
+// web page uses: GET /metrics -> live.state / live.tok_s. The shape is probed, not
+// guessed from a version string, so an unrelated server keeps its own telemetry.
+function liveTelemetry(body) {
+  const live = body?.live;
+  // tok_s is null while the engine idles, so only the key's presence counts.
+  return isRecord(live) && "tok_s" in live ? live : undefined;
 }
 
 export default function piLlamaGenerationSpeed(pi) {
@@ -122,6 +145,24 @@ export default function piLlamaGenerationSpeed(pi) {
   const responses = new Set();
   const unavailableUntil = new Map();
   const tokenRecordCapabilities = new Map();
+  const metricsCapabilities = new Map();
+  // A route that answered once is tried first afterwards; a missing one is probed
+  // again after this interval, because a restarted server may mount it differently.
+  const routeHealth = new Map();
+  const ROUTE_RETRY_MS = 5 * 60_000;
+  const telemetrySignal = signal => AbortSignal.any([AbortSignal.timeout(SLOT_TIMEOUT_MS), ...(signal ? [signal] : [])]);
+  const fetchTelemetry = async (endpoints, signal) => {
+    const order = [...endpoints.urls]
+      .sort((a, b) => (routeHealth.get(b) === "ok" ? 1 : 0) - (routeHealth.get(a) === "ok" ? 1 : 0));
+    for (const url of order) {
+      const failed = routeHealth.get(url);
+      if (typeof failed === "number" && Date.now() - failed < ROUTE_RETRY_MS) continue;
+      const response = await originalFetch(url, { headers: endpoints.headers, signal, redirect: "error" });
+      if (response.ok) { routeHealth.set(url, "ok"); return { url, response }; }
+      await response.body?.cancel();
+      routeHealth.set(url, Date.now());
+    }
+  };
 
   const observeGeneratedTokens = async (init, state) => {
     if (!state.endpoint || typeof init?.body !== "string") return init;
@@ -153,40 +194,102 @@ export default function piLlamaGenerationSpeed(pi) {
     state.timer = undefined;
     state.pollAbort?.abort();
     state.pollAbort = undefined;
+    clearTimeout(state.metricsTimer);
+    state.metricsTimer = undefined;
+    state.metricsAbort?.abort();
+    state.metricsAbort = undefined;
   };
   const stopResponses = () => {
     for (const state of responses) stopPolling(state);
     responses.clear();
   };
   const clearSlotSpeed = state => {
-    if (!state.slotSpeedDisplayed) return;
+    if (!state.slotSpeedDisplayed && !state.metricsLed) return;
     state.slotSpeedDisplayed = false;
     if (current(state) && !state.native) showIdle();
   };
+  // The server metric describes whichever request it is running, so it may only
+  // be taken when this process holds the single request.
+  const startMetrics = state => {
+    if (!state.metrics || state.metricsStarted || state.metricsOff) return;
+    state.metricsStarted = true;
+    void pollMetrics(state);
+  };
+  const pollMetrics = async state => {
+    state.metricsTimer = undefined;
+    if (!current(state) || state.native || state.tokenRecords || state.final || state.metricsOff || !state.metrics) return;
+    if (responses.size !== 1) { state.metricsOff = true; clearSlotSpeed(state); return; }
+    if ((unavailableUntil.get(state.metrics.url) ?? 0) > Date.now()) return;
+    // Bound to no single response: the shared probe must not inherit one abort.
+    const readMetrics = async signal => {
+      try {
+        const found = await fetchTelemetry(state.metrics, telemetrySignal(signal));
+        if (!found) return;
+        return liveTelemetry(await found.response.json());
+      } catch {
+        // Telemetry must never fail, retry or modify a generation request.
+        return;
+      }
+    };
+    let capability = metricsCapabilities.get(state.metrics.url);
+    if (!capability || Date.now() > capability.expires) {
+      capability = { expires: Date.now() + METRICS_CAPABILITY_TTL_MS, live: readMetrics() };
+      metricsCapabilities.set(state.metrics.url, capability);
+    }
+    let live = await capability.live;
+    if (live === undefined) { state.metricsOff = true; return; }
+    const controller = new AbortController();
+    state.metricsAbort = controller;
+    try {
+      const signal = AbortSignal.any([controller.signal, ...(state.signal ? [state.signal] : [])]);
+      if (capability.probed) live = await readMetrics(signal);
+      capability.probed = true;
+      if (!current(state) || state.native || state.tokenRecords || state.final || responses.size !== 1) return;
+      if (live === undefined) {
+        unavailableUntil.set(state.metrics.url, Date.now() + 60_000);
+        state.metricsOff = true;
+        clearSlotSpeed(state);
+        return;
+      }
+      if (live.state === "generating" && typeof live.tok_s === "number" && live.tok_s > 0) {
+        // Whichever telemetry channel answers first keeps the status field.
+        state.metricsLed = true;
+        state.slotsOff = true;
+        if (Date.now() - lastUiUpdate >= UPDATE_INTERVAL_MS) {
+          lastUiUpdate = Date.now();
+          showSpeed(live.tok_s);
+        }
+      }
+      state.metricsTimer = setTimeout(() => void pollMetrics(state), SLOT_POLL_MS);
+    } finally {
+      if (state.metricsAbort === controller) state.metricsAbort = undefined;
+    }
+  };
   const pollSlots = async state => {
     state.timer = undefined;
-    if (!current(state) || state.native || state.tokenRecords || state.final || state.window.stopped || !state.endpoint) return;
+    if (!current(state) || state.slotsOff || state.native || state.tokenRecords || state.final || !state.endpoint) return;
+    // A route that is missing or exposes no usable counters will not start to work
+    // on a later poll, so hand the status field to /metrics instead of retrying.
+    if (state.window.stopped) { clearSlotSpeed(state); startMetrics(state); return; }
     if (responses.size !== 1) { state.window.stopped = true; clearSlotSpeed(state); return; }
-    if ((unavailableUntil.get(state.endpoint.url) ?? 0) > Date.now()) return;
+    if (state.endpoint.urls.every(url => (unavailableUntil.get(url) ?? 0) > Date.now())) { startMetrics(state); return; }
     const controller = new AbortController();
     state.pollAbort = controller;
     try {
       const signal = AbortSignal.any([controller.signal, AbortSignal.timeout(SLOT_TIMEOUT_MS), ...(state.signal ? [state.signal] : [])]);
       const started = performance.now();
-      const response = await originalFetch(state.endpoint.url, {
-        method: "GET", headers: state.endpoint.headers, signal, redirect: "error",
-      });
-      if (!response.ok) {
-        await response.body?.cancel();
-        unavailableUntil.set(state.endpoint.url, Date.now() + 60_000);
+      const found = await fetchTelemetry(state.endpoint, signal);
+      if (!found) {
+        for (const url of state.endpoint.urls) unavailableUntil.set(url, Date.now() + 60_000);
         clearSlotSpeed(state);
+        startMetrics(state);
         return;
       }
       // Parsing remains under the timeout, including a server that stalls mid-body.
-      const slots = await response.json();
+      const slots = await found.response.json();
       if (!current(state) || state.native || state.tokenRecords || state.final || responses.size !== 1 || signal.aborted) return;
       const tps = state.window.sample(slots, (started + performance.now()) / 2);
-      if (state.window.stopped) { clearSlotSpeed(state); return; }
+      if (state.window.stopped) { clearSlotSpeed(state); startMetrics(state); return; }
       if (tps !== undefined) { showSpeed(tps); state.slotSpeedDisplayed = true; }
       state.timer = setTimeout(() => void pollSlots(state), SLOT_POLL_MS);
     } catch {
@@ -323,6 +426,8 @@ export default function piLlamaGenerationSpeed(pi) {
     const state = { epoch, closed: false, native: false, final: false, sawOutput: false,
       tokenRecords: false, observedTokens: 0, tokenSamples: [],
       finalRecorded: false, samples: [{ tokens: 0, ms: 0 }], window: new SlotSpeedWindow(),
+      slotsOff: false, metrics: metricsRequest(input, init), metricsStarted: false,
+      metricsOff: false, metricsLed: false, metricsTimer: undefined, metricsAbort: undefined,
       endpoint: slotsRequest(input, init), signal: init?.signal ?? (input instanceof Request ? input.signal : undefined) };
     state.onAbort = () => {
       stopPolling(state); state.final = true;
@@ -332,8 +437,8 @@ export default function piLlamaGenerationSpeed(pi) {
       responses.add(state);
       state.signal?.addEventListener("abort", state.onAbort, { once: true });
       if (responses.size > 1) for (const active of responses) {
-        stopPolling(active); active.window.stopped = true; clearSlotSpeed(active);
-        if (active.tokenRecords && !active.native) showIdle();
+        stopPolling(active); active.window.stopped = true; active.metricsOff = true; clearSlotSpeed(active);
+        if ((active.tokenRecords || active.metricsLed) && !active.native) showIdle();
       }
     }
     let response;
