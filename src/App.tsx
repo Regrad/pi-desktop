@@ -4,6 +4,7 @@ import {
   Archive,
   ArchiveRestore,
   ArrowDown,
+  ArrowDownWideNarrow,
   ArrowLeft,
   Bot,
   BookOpen,
@@ -59,6 +60,12 @@ import { PlanPanel } from "./PlanPanel";
 import { NotebookPanel } from "./NotebookPanel";
 import { PlanningPanel } from "./PlanningPanel";
 import { isPlanning } from "../shared/planning";
+import {
+  readProjectSortMode,
+  writeProjectSortMode,
+  sortProjects,
+  type ProjectSortMode,
+} from "./project-sort";
 import { SkillsPanel } from "./SkillsPanel";
 import { ShellTimeout } from "./ShellTimeout";
 import { shellTiming } from "./shell-timeout";
@@ -3411,6 +3418,13 @@ export default function App() {
   useLanguage();
   const [bootstrap, setBootstrap] = useState<BootstrapPayload | null>(null);
   const [projects, setProjects] = useState<ProjectRecord[]>([]);
+  const [projectSort, setProjectSort] = useState<ProjectSortMode>(readProjectSortMode);
+  const [projectSortMenu, setProjectSortMenu] = useState<{ x: number; y: number }>();
+  const chooseProjectSort = (mode: ProjectSortMode) => {
+    setProjectSort(mode);
+    writeProjectSortMode(mode);
+    setProjectSortMenu(undefined);
+  };
   const [notebookOpen, setNotebookOpen] = useState(false);
   const [planningOpen, setPlanningOpen] = useState(false);
   const [skillsOpen, setSkillsOpen] = useState(false);
@@ -5108,9 +5122,15 @@ export default function App() {
   const activeConversation =
     conversations.find((item) => item.id === activeConversationId) ??
     snapshot?.conversation;
+  // The order of project sections is a user preference; chat order inside a
+  // project and the standalone chat list stay by last activity.
+  const sortedProjects = useMemo(
+    () => sortProjects(projects, conversations, projectSort),
+    [projects, conversations, projectSort],
+  );
   const grouped = useMemo(
     () =>
-      projects.map((project) => ({
+      sortedProjects.map((project) => ({
         project,
         chats: conversations
           .filter(
@@ -5120,7 +5140,7 @@ export default function App() {
           )
           .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt)),
       })),
-    [projects, conversations, searchMatches],
+    [sortedProjects, conversations, searchMatches],
   );
   const standaloneChats = useMemo(
     () =>
@@ -5606,12 +5626,31 @@ export default function App() {
                 <div className="project-list">
                   <div className="sidebar-section-title">
                     <span>{t("Проекты")}</span>
-                    <button
-                      title={t("Создать проект")}
-                      onClick={() => setProjectDialogOpen(true)}
-                    >
-                      <Plus size={15} />
-                    </button>
+                    <span className="section-title-actions">
+                      <button
+                        title={t("Сортировка проектов")}
+                        aria-label={t("Сортировка проектов")}
+                        aria-haspopup="menu"
+                        aria-expanded={Boolean(projectSortMenu)}
+                        onClick={(event) => {
+                          const edge = event.currentTarget.getBoundingClientRect();
+                          // The list scrolls, so the menu floats over it instead of
+                          // being clipped by the sidebar.
+                          setProjectSortMenu({
+                            x: Math.max(8, Math.min(edge.right - 220, window.innerWidth - 228)),
+                            y: Math.min(edge.bottom + 4, window.innerHeight - 150),
+                          });
+                        }}
+                      >
+                        <ArrowDownWideNarrow size={15} />
+                      </button>
+                      <button
+                        title={t("Создать проект")}
+                        onClick={() => setProjectDialogOpen(true)}
+                      >
+                        <Plus size={15} />
+                      </button>
+                    </span>
                   </div>
                   {grouped.map(({ project, chats }) => (
                     <section
@@ -6517,6 +6556,33 @@ export default function App() {
               setHistoryMenu(undefined);
               void submit(text);
             }}>{t("Подробнее")}</button>
+          </div>
+        </div>
+      )}
+      {projectSortMenu && (
+        <div className="context-menu-layer" onPointerDown={() => setProjectSortMenu(undefined)}>
+          <div
+            className="conversation-menu project-sort-menu"
+            role="menu"
+            aria-label={t("Сортировка проектов")}
+            style={{ left: projectSortMenu.x, top: projectSortMenu.y }}
+            onPointerDown={(event) => event.stopPropagation()}
+          >
+            {([
+              ["activity", t("Последняя активность")],
+              ["alphabet", t("По алфавиту")],
+              ["created", t("По времени создания")],
+            ] as const).map(([mode, label]) => (
+              <button
+                key={mode}
+                role="menuitemradio"
+                aria-checked={projectSort === mode}
+                onClick={() => chooseProjectSort(mode)}
+              >
+                <span className="project-sort-label">{label}</span>
+                {projectSort === mode && <Check size={15} />}
+              </button>
+            ))}
           </div>
         </div>
       )}
