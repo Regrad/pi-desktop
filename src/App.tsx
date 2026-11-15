@@ -3497,6 +3497,32 @@ export default function App() {
   const glideFrameRef = useRef(0);
   const [showScrollToBottom, setShowScrollToBottom] = useState(false);
   const activeIdRef = useRef<string | undefined>(undefined);
+  // Every conversation owns its unsent composer text. The draft map is the source
+  // of truth: leaving a chat stores what was typed, opening one puts its own draft
+  // back, so a half-written message cannot follow the user into another chat.
+  // Drafts live for the window's lifetime, by design not on disk.
+  const draftsRef = useRef(new Map<string, string>());
+  const inputRef = useRef("");
+  const changeInput = (value: string | ((current: string) => string)) => {
+    const next = typeof value === "function" ? value(inputRef.current) : value;
+    inputRef.current = next;
+    const leaving = activeIdRef.current;
+    if (leaving) draftsRef.current.set(leaving, next);
+    setInput(next);
+  };
+  const parkDraft = () => {
+    const leaving = activeIdRef.current;
+    if (leaving) draftsRef.current.set(leaving, inputRef.current);
+    return inputRef.current;
+  };
+  const restoreDraft = (conversationId: string, untouchedSince: string) => {
+    // Text typed while the chat was loading belongs to the chat being opened and
+    // must not be replaced by the stored draft.
+    if (inputRef.current !== untouchedSince) return;
+    const draft = draftsRef.current.get(conversationId) ?? "";
+    inputRef.current = draft;
+    setInput(draft);
+  };
   const historyRecoveryRef = useRef<string | undefined>(undefined);
   const conversationsRef = useRef<ConversationRecord[]>([]);
   const startedAtRef = useRef<number | undefined>(undefined);
@@ -3737,7 +3763,7 @@ export default function App() {
           return;
         }
         if (request.method === "set_editor_text") {
-          setInput(request.text ?? "");
+          changeInput(request.text ?? "");
           return;
         }
         if (
@@ -4238,6 +4264,7 @@ export default function App() {
 
   const openConversation = async (conversationId: string) => {
     const navigationSequence = ++navigationSequenceRef.current;
+    const parked = parkDraft();
     activeIdRef.current = conversationId;
     setActiveConversationId(conversationId);
     setSnapshot(undefined);
@@ -4269,6 +4296,7 @@ export default function App() {
     try {
       const next = await window.piDesktop.openConversation(conversationId);
       if (navigationSequenceRef.current !== navigationSequence) return;
+      restoreDraft(conversationId, parked);
       setSnapshot(next);
       setActiveProjectId(next.conversation.projectId);
       setMessages(next.messages as JsonObject[]);
@@ -4329,6 +4357,7 @@ export default function App() {
 
   const newChat = async (projectId?: string) => {
     const navigationSequence = ++navigationSequenceRef.current;
+    const parked = parkDraft();
     activeIdRef.current = undefined;
     setSnapshot(undefined);
     setWorking(false);
@@ -4336,6 +4365,7 @@ export default function App() {
     try {
       const next = await window.piDesktop.createConversation(projectId);
       if (navigationSequenceRef.current !== navigationSequence) return;
+      restoreDraft(next.conversation.id, parked);
       setConversations((current) => {
         const found = current.some((item) => item.id === next.conversation.id);
         return found
@@ -4506,6 +4536,7 @@ export default function App() {
         current.filter((item) => item.id !== conversationId),
       );
       clearConversationView(conversationId);
+      draftsRef.current.delete(conversationId);
     } catch (error) {
       addNotice(
         error instanceof Error ? error.message : String(error),
@@ -4627,14 +4658,14 @@ export default function App() {
     if (!text && !quick && primaryAction === "resume") { await resumeExecution(); return; }
     if (!text || !activeConversationId || (!working && pendingRequestIdsRef.current.has(activeConversationId))) return;
     if (!working && (text === "/compact" || text.startsWith("/compact "))) {
-      setInput("");
+      changeInput("");
       await executeCompact(
         text.startsWith("/compact ") ? text.slice(9).trim() : undefined,
       );
       return;
     }
     if (!working && text === "/reload") {
-      setInput("");
+      changeInput("");
       await executeReload();
       return;
     }
@@ -4644,7 +4675,7 @@ export default function App() {
     if (!working && !beginRequest(conversationId)) return;
     autoScrollRef.current = true;
     if (!quick) {
-      setInput("");
+      changeInput("");
       setAttachments([]);
       setHistoryQuotes([]);
       setGoalMode(false);
@@ -4660,7 +4691,7 @@ export default function App() {
         if (activeIdRef.current === conversationId) setQueuedPrompts(queued);
       } catch (error) {
         if (!quick && activeIdRef.current === conversationId) {
-          setInput(originalInput);
+          changeInput(originalInput);
           setAttachments(submittedAttachments);
           setHistoryQuotes(submittedQuotes);
         }
@@ -4711,7 +4742,7 @@ export default function App() {
           current.filter((item) => item.id !== optimistic.id),
         );
         if (!quick) {
-          setInput(originalInput);
+          changeInput(originalInput);
           setAttachments(submittedAttachments);
           setHistoryQuotes(submittedQuotes);
           setGoalMode(submittedAsGoal);
@@ -4763,7 +4794,7 @@ export default function App() {
       );
       if (activeIdRef.current === conversationId) {
         setQueuedPrompts(queued);
-        setInput((current) =>
+        changeInput((current) =>
           current ? `${prompt.message}\n\n${current}` : prompt.message,
         );
         setAttachments((current) => [
@@ -4818,7 +4849,7 @@ export default function App() {
       const queued = await window.piDesktop.clearQueue(activeConversationId);
       const restored = [...queued.steering, ...queued.followUp].join("\n\n");
       if (restored)
-        setInput((current) =>
+        changeInput((current) =>
           current ? `${restored}\n\n${current}` : restored,
         );
       setSteeringMessages([]);
@@ -5028,7 +5059,7 @@ export default function App() {
 
   const insertCommand = (command: string) => {
     setCommandPaletteOpen(false);
-    setInput(`/${command} `);
+    changeInput(`/${command} `);
   };
 
   useEffect(() => {
@@ -5967,7 +5998,7 @@ export default function App() {
                       {slashCommands.map((command) => (
                         <button
                           key={`${command.source}-${command.name}`}
-                          onClick={() => setInput(`/${command.name} `)}
+                          onClick={() => changeInput(`/${command.name} `)}
                         >
                           <span>
                             <strong>/{command.name}</strong>
@@ -6132,7 +6163,7 @@ export default function App() {
                     <textarea
                       ref={composerInputRef}
                       value={input}
-                      onChange={(event) => setInput(event.target.value)}
+                      onChange={(event) => changeInput(event.target.value)}
                       onPaste={(event) => {
                         const imageFiles = [
                           ...event.clipboardData.files,
