@@ -1,5 +1,5 @@
 import { app, BrowserWindow, dialog, ipcMain, Menu, nativeImage, Notification, shell, protocol } from "electron";
-import { appendFile, mkdir, realpath, rename, stat } from "node:fs/promises";
+import { appendFile, mkdir, rename, stat } from "node:fs/promises";
 import path from "node:path";
 import { portableDataDirectory } from "./portable-paths.js";
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -582,14 +582,48 @@ process.on("uncaughtException", (error) => {
 process.on("unhandledRejection", (error) => void writeDiagnostic("unhandledRejection", error));
 
 app.on("window-all-closed", () => app.quit());
+const SHUTDOWN_DEADLINE_MS = 10_000;
+const SHUTDOWN_LOG_BUDGET_MS = 250;
 app.on("before-quit", (event) => {
   if (!piManager) return;
   event.preventDefault();
   if (shuttingDown) return;
   shuttingDown = true;
   startupAbort.abort();
-  void Promise.all([startupTasks.close(), piManager.shutdown(), browserManager?.dispose()]).finally(() => remoteRuntime?.close()).finally(() => {
+  const finish = () => {
+    // SAFETY: every consumer reads piManager only through handlers that the exit()
+    // below makes unreachable, and the original code already cleared it this way.
     piManager = undefined as unknown as PiManager;
     app.exit(0);
-  });
+  };
+  // Closing the last window must always end the process. Neither Promise.all nor
+  // Promise.allSettled settles while one cleanup hangs (a wedged Pi child, a busy
+  // session-read worker, a stalled cookies flush), and a surviving main process
+  // keeps the portable application directory locked forever. The deadline reports
+  // what stayed pending and exits anyway.
+  const pending = new Set(["startup tasks", "pi runtimes", "browser session", "remote runtime"]);
+  const track = async (name: string, task: Promise<unknown>): Promise<void> => {
+    try { await task; } catch {
+      // A failed cleanup is still a finished cleanup.
+    } finally { pending.delete(name); }
+  };
+  const deadline = setTimeout(() => {
+    void Promise.race([
+      writeDiagnostic("shutdown deadline", new Error(
+        `Очистка не завершилась за ${SHUTDOWN_DEADLINE_MS} мс, процесс закрывается принудительно. Ещё не завершилось: ${[...pending].join(", ") || "нет данных"}`,
+      )),
+      new Promise<void>((resolve) => { setTimeout(resolve, SHUTDOWN_LOG_BUDGET_MS).unref(); }),
+    ]).finally(finish);
+  }, SHUTDOWN_DEADLINE_MS);
+  deadline.unref();
+  void Promise.allSettled([
+    track("startup tasks", startupTasks.close()),
+    track("pi runtimes", piManager.shutdown()),
+    track("browser session", browserManager?.dispose()),
+  ]).then(async () => { if (remoteRuntime) await track("remote runtime", remoteRuntime.close()); else pending.delete("remote runtime"); })
+    .finally(() => {
+      clearTimeout(deadline);
+      pending.clear();
+      finish();
+    });
 });
