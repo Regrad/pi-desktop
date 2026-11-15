@@ -27,9 +27,13 @@ function fixture({ working = false, goalMode = false, primaryAction = "send", in
     setPendingRequests: update => { pending = update(pending); },
     activeConversationId: "a", activeIdRef, working, input, attachments,
     historyQuotes: [], goalMode, planMode: false, primaryAction,
+    // The composer stays closed while a chat is still being opened, and slash
+    // commands need their handlers before the prompt is sent.
+    loading: false, t: value => value, executeCompact: async () => {}, executeReload: async () => {},
     autoScrollRef: { current: false },
     quotedHistoryPrompt: text => text,
     setInput: value => { draft = value; },
+    changeInput: value => { draft = typeof value === "function" ? value(draft) : value; },
     setAttachments: noop, setHistoryQuotes: noop, setGoalMode: noop, setPlanMode: noop,
     setMessages: update => { messages = update(messages); },
     setQueuedPrompts: noop,
@@ -123,7 +127,7 @@ test("queueing during a real run does not start or clear preparation", async () 
 
 test("preparation UI is separate from real model work, timing and plan activity", () => {
   assert.match(app, /!working && requestPending && \(/);
-  assert.match(app, /<WorkingIndicator \/>\s*<span className="working-message">Подготовка запроса…<\/span>/);
+  assert.match(app, /<WorkingIndicator \/>\s*<span className="working-message">\{t\("Подготовка запроса…"\)\}<\/span>/);
   assert.match(app, /!working && !requestPending && lastDuration !== undefined/);
   assert.match(app, /Boolean\(activeConversationId && pendingRequests\[activeConversationId\]\)/);
   assert.match(app, /disabled=\{requestPending \|\|/);

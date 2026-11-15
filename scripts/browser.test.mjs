@@ -162,7 +162,8 @@ test("browser is wired through the real chat controller and desktop-only preload
   assert.match(main, /browserManager\.request\(id, params\)/);
   assert.match(manager, /browserExtensionPath: !remote && this.browserRequest/);
   const rpc = readFileSync(new URL("../electron/pi-rpc-process.ts", import.meta.url), "utf8");
-  assert.match(rpc, /args.push\("--extension", this.options.browserExtensionPath\)/);
+  const extensionBlock = rpc.slice(rpc.indexOf("const extensions = ["), rpc.indexOf("].filter", rpc.indexOf("const extensions = [")));
+  assert.ok(extensionBlock.includes("this.options.browserExtensionPath"));
   const panel = readFileSync(new URL("../src/BrowserPanel.tsx", import.meta.url), "utf8");
   assert.match(panel, /!window.piDesktop.webClient/);
   assert.doesNotMatch(panel, /onKeyDown=|onPointerDown=|Управляю я|state.frame/); assert.match(panel, /ResizeObserver/);

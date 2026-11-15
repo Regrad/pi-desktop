@@ -220,7 +220,11 @@ test("catalog never reaches the forced leading prompt, tool schema remains defer
   try { const tool = routeTool(host.tools[0], "skills-extension"); assert.equal(tool.exposure, "deferred"); assert.equal(tool.namespace.name, "Skills"); }
   finally { if (previous === undefined) delete process.env.PI_DESKTOP_TOOL_ROUTING; else process.env.PI_DESKTOP_TOOL_ROUTING = previous; }
   const rpcSource = await readFile(path.join(root, "electron/pi-rpc-process.ts"), "utf8");
-  assert.ok(rpcSource.indexOf('args.push("--extension", this.options.skillsExtensionPath)') < rpcSource.indexOf('"builtin:codemode"'));
+  // Extensions load in array order, so skills must stay ahead of the desktop
+  // prompt handlers that would otherwise take the leading prompt.
+  const block = rpcSource.slice(rpcSource.indexOf("const extensions = ["), rpcSource.indexOf("].filter", rpcSource.indexOf("const extensions = [")));
+  const skills = block.indexOf("this.options.skillsExtensionPath");
+  assert.ok(skills >= 0 && block.indexOf("'builtin:codemode'") >= 0 && skills < block.indexOf("'builtin:codemode'"));
 });
 
 test("skills tool returns catalog/documents directly, without JSON text envelopes in codemode", async () => {

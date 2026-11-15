@@ -42,9 +42,14 @@ test("four views condition both geometry and texture without example-sheet crops
   assert.deepEqual([338, 341, 342, 345].map(id => g[`mv_${id}`].inputs.image), images);
   assert.equal(g.mv_324.class_type, "Pixal3DMultiViewConditioning");
   assert.deepEqual(g[325].inputs.mesh, ["mv_92", 0]);
-  assert.deepEqual(g[375].inputs.reference_back, ["mv_342", 0]);
-  assert.deepEqual(g[375].inputs.reference_character_left_side, ["mv_341", 0]);
-  assert.deepEqual(g[375].inputs.reference_character_right_side, ["mv_345", 0]);
+  // Fitted side/back pixels are held only when they align with the mesh.
+  assert.equal(g[375].inputs.reference_back, undefined);
+  assert.equal(g[375].inputs.reference_character_left_side, undefined);
+  assert.equal(g[375].inputs.reference_character_right_side, undefined);
+  const withReferences = make("model3d_multiview", { seed: 42, texture_options: { use_view_references: true } });
+  assert.deepEqual(withReferences[375].inputs.reference_back, ["mv_342", 0]);
+  assert.deepEqual(withReferences[375].inputs.reference_character_left_side, ["mv_341", 0]);
+  assert.deepEqual(withReferences[375].inputs.reference_character_right_side, ["mv_345", 0]);
   assert.deepEqual(g[374].inputs.mesh, ["pi_orient", 0]);
   assert.deepEqual(g[384].inputs.mesh, ["pi_orient", 0]);
   assert.equal(g.pi_orient.inputs["mode.angle_y"], 180);

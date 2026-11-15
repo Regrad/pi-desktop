@@ -6,6 +6,9 @@ import os from "node:os";
 import { existsSync } from "node:fs";
 import { registerHooks } from "node:module";
 import { collectAnswerMedia, answerCanPublishMedia } from "../src/comfy-images.ts";
+// Generated music lives in the running chat's folder when the desktop launches
+// the add-on; these fixtures describe a data directory without a chat owner.
+delete process.env.PI_DESKTOP_CONVERSATION_ID;
 registerHooks({ resolve(specifier, context, next) {
   if (specifier.startsWith(".") && specifier.endsWith(".js") && context.parentURL) {
     const file = new URL(specifier.replace(/\.js$/, ".ts"), context.parentURL);

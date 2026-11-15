@@ -4,13 +4,13 @@ import { readFileSync } from "node:fs";
 import { stripTypeScriptTypes } from "node:module";
 
 const source = readFileSync(new URL("../electron/pi-manager.ts", import.meta.url), "utf8");
-function method(name, args, result) {
+function method(name, args, result, bindings = {}) {
   const start = source.indexOf(`\n  async ${name}(`);
   const signature = `): Promise<${result}> {`;
   const begin = source.indexOf(signature, start) + signature.length;
   const end = source.indexOf("\n  }", begin);
   assert.ok(start >= 0 && begin > start && end > begin);
-  return new Function(`${stripTypeScriptTypes(`async function invoke(${args}) {${source.slice(begin, end)}\n}`)}; return invoke;`)();
+  return new Function(...Object.keys(bindings), `${stripTypeScriptTypes(`async function invoke(${args}) {${source.slice(begin, end)}\n}`)}; return invoke;`)(...Object.values(bindings));
 }
 
 test("empty sends fail before runtime startup or service-context injection", async () => {
@@ -21,8 +21,10 @@ test("empty sends fail before runtime startup or service-context injection", asy
 });
 
 test("empty queued messages cannot persist a future service-only request", async () => {
-  const queue = method("queuePrompt", "conversationId, message, attachments, requestPlan", "QueuedPrompt[]");
-  const host = { store: { queuePrompt() { throw Error("Must not write empty input"); } } };
+  // Attachments are moved into the chat folder before they are queued.
+  const storeChatAttachments = async (_dataDir, _conversationId, items) => items;
+  const queue = method("queuePrompt", "conversationId, message, attachments, requestPlan", "QueuedPrompt[]", { storeChatAttachments });
+  const host = { store: { getConversation: id => ({ id }), dataDir: "C:/fixture", queuePrompt() { throw Error("Must not write empty input"); } } };
   await assert.rejects(queue.call(host, "chat", "  ", []), /Сообщение не может быть пустым/);
   let captured;
   host.store.queuePrompt = async (...args) => { captured = args; return []; };

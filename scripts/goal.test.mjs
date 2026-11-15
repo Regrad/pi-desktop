@@ -195,10 +195,19 @@ test("state loader selects the right conversation and fails closed for unavailab
     { id: "other", goal: { ...goal(), updatedAt: "now" } },
     { id: "target", goal: { ...goal(), status: "paused", updatedAt: "now" } },
   ] }), "utf8");
-  assert.equal(readDesktopGoal(folder, "target").status, "paused");
-  assert.equal(readDesktopGoal(folder, "missing"), undefined);
-  writeFileSync(file, "broken", "utf8");
-  assert.equal(readDesktopGoal(folder, "target"), undefined);
+  // The loader must fall back to <dataDir>/desktop-state.json; a state file of
+  // the surrounding session would silently win over it.
+  const stateFile = process.env.PI_DESKTOP_GOAL_STATE_FILE;
+  delete process.env.PI_DESKTOP_GOAL_STATE_FILE;
+  try {
+    assert.equal(readDesktopGoal(folder, "target").status, "paused");
+    assert.equal(readDesktopGoal(folder, "missing"), undefined);
+    writeFileSync(file, "broken", "utf8");
+    assert.equal(readDesktopGoal(folder, "target"), undefined);
+  } finally {
+    if (stateFile === undefined) delete process.env.PI_DESKTOP_GOAL_STATE_FILE;
+    else process.env.PI_DESKTOP_GOAL_STATE_FILE = stateFile;
+  }
 });
 
 test("historical service continuations retain their original positions after goal changes", () => {

@@ -90,6 +90,6 @@ test("Enter with an empty composer uses the same continuation action as the butt
   const submit = new Function(...Object.keys(bindings), `${body}; return submit;`)(...Object.values(bindings));
   await submit();
   assert.equal(resumes, 1);
-  assert.match(app, /aria-label=\{primaryAction === "resume" \? "Продолжить" : "Отправить"\}/);
-  assert.match(app, /<span>Продолжить<\/span>/);
+  assert.match(app, /aria-label=\{primaryAction === "resume" \? t\("Продолжить"\) : t\("Отправить"\)\}/);
+  assert.match(app, /<span>\{t\("Продолжить"\)\}<\/span>/);
 });

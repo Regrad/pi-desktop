@@ -1,6 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
+import { existsSync } from "node:fs";
 import path from "node:path";
 import { spawnSync } from "node:child_process";
 import { resolveAsarExecutable } from "../resources/pi-lens/executable-path.mjs";
@@ -16,12 +17,24 @@ test("ASAR executable mapping never fabricates paths or rewrites JavaScript", ()
 });
 
 test("installed physical ast-grep binary actually runs after path resolution", () => {
-  const archived = path.resolve("release/Pi Desktop/resources/app.asar/node_modules/@ast-grep/cli-win32-x64-msvc/ast-grep.exe");
-  const executable = resolveAsarExecutable(archived);
-  assert.notEqual(executable, archived);
-  const result = spawnSync(executable, ["--version"], { windowsHide: true, encoding: "utf8", timeout: 5000 });
-  assert.equal(result.status, 0, JSON.stringify({ error: result.error?.code, stderr: result.stderr }));
-  assert.match(result.stdout, /ast-grep/);
+  const relative = path.join("node_modules", "@ast-grep", "cli-win32-x64-msvc", "ast-grep.exe");
+  const installed = [
+    path.resolve("release/Pi Desktop/app/resources/app", relative),
+    path.resolve("release/Pi Desktop_Work/app/resources/app", relative),
+    path.resolve(relative),
+  ].filter(candidate => existsSync(candidate));
+  assert.ok(installed.length, "ast-grep binary is not installed");
+  for (const physical of installed) {
+    // An archive layout reports the .asar path; the portable folder reports
+    // the file itself, so the mapping has to leave it alone.
+    const archived = physical.replace(`app${path.sep}node_modules${path.sep}`, `app.asar${path.sep}node_modules${path.sep}`);
+    const reported = existsSync(archived.replace(".asar", ".asar.unpacked")) ? archived : physical;
+    const executable = resolveAsarExecutable(reported);
+    assert.ok(existsSync(executable), `${executable} is missing after path resolution`);
+    const result = spawnSync(executable, ["--version"], { windowsHide: true, encoding: "utf8", timeout: 5000 });
+    assert.equal(result.status, 0, JSON.stringify({ error: result.error?.code, stderr: result.stderr }));
+    assert.match(result.stdout, /ast-grep/);
+  }
 });
 
 test("both installed launchers retain the fix without stall instrumentation", async () => {

@@ -8,6 +8,10 @@ import path from "node:path";
 import os from "node:os";
 import http from "node:http";
 
+// Media folders follow the running chat when the desktop launches the add-on.
+// These fixtures describe a portable data directory without a chat owner.
+delete process.env.PI_DESKTOP_CONVERSATION_ID;
+
 // Test TypeScript sources directly with Node's built-in type stripping, without a build.
 registerHooks({ resolve(specifier, context, next) {
   if (specifier.startsWith(".") && specifier.endsWith(".js") && context.parentURL) {

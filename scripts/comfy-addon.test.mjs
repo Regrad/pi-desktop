@@ -8,6 +8,10 @@ import os from "node:os";
 import http from "node:http";
 import { fileURLToPath } from "node:url";
 
+// Media folders follow the running chat when the desktop launches the add-on;
+// these fixtures describe a data directory without a chat owner.
+delete process.env.PI_DESKTOP_CONVERSATION_ID;
+
 registerHooks({ resolve(specifier, context, next) {
   if (specifier.startsWith(".") && specifier.endsWith(".js") && context.parentURL) {
     const source = new URL(specifier.slice(0, -3) + ".ts", context.parentURL);
