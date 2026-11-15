@@ -4,7 +4,6 @@ import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { patchToolResultImages } from "./tool-result-images-patch.mjs";
 import { patchMcpIndex, patchMcpProxy, patchMcpOnDemandInit, patchMcpOnDemandManager } from "./mcp-config-patch.mjs";
-import { patchLlamaStatsCancellation, patchLlamaStatsPrefillReset } from "./llama-stats-patch.mjs";
 import { patchToolRouting } from "./tool-routing-patch.mjs";
 import { applyContextCompatibility, applyRequestDiagnosticsCompatibility } from "../resources/pi-rpc-bridge/compatibility.js";
 import { applyPiLensGrammarCache } from "../resources/pi-lens/grammar-cache-patch.mjs";
@@ -78,14 +77,5 @@ for (const [name, patch] of [["index.ts", patchMcpIndex], ["proxy-modes.ts", pat
 await copyFile(path.join(root, "resources", "pi-mcp", "desktop-config.js"), path.join(adapterDir, "desktop-config.js"));
 process.stdout.write("Pi Desktop MCP configuration bridge applied.\n");
 
-const statsDir = path.join(root, "node_modules", "pi-llama-cpp-stats");
-const statsPackage = await readPackage(path.join(statsDir, "package.json"));
-if (statsPackage.version !== "0.1.6") throw new Error(`Statistics cancellation bridge targets pi-llama-cpp-stats 0.1.6, found ${statsPackage.version}`);
-const statsPath = path.join(statsDir, "index.ts");
-const statsSource = new TextDecoder("utf-8", { fatal: true }).decode(await readFile(statsPath));
-const patchedStats = patchLlamaStatsCancellation(statsSource);
-const patchedStatsPrefill = patchLlamaStatsPrefillReset(patchedStats);
-if (patchedStatsPrefill !== statsSource) await writeFile(statsPath, patchedStatsPrefill, "utf8");
-process.stdout.write("Pi Desktop statistics cancellation compatibility bridge applied.\n");
 await applyPiLensGrammarCache(path.join(root, "node_modules", "pi-lens"));
 process.stdout.write("Pi Desktop Pi Lens portable grammar cache applied.\n");

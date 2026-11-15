@@ -29,7 +29,6 @@ const BRIDGE_SCRIPTS = new Set([
   "scripts/build-pi-engine.mjs",
   "scripts/pi-upstream-state.mjs",
   "scripts/pi-upstream.mjs",
-  "scripts/llama-stats-patch.mjs",
   "scripts/mcp-config-patch.mjs",
   "scripts/service-context-patch.mjs",
   "scripts/tool-result-images-patch.mjs",

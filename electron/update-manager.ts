@@ -25,7 +25,6 @@ interface ComponentDefinition {
 const COMPONENTS: ComponentDefinition[] = [
   { id: "pi-web-access", packageName: "pi-web-access", name: "Web Access", description: "Поиск и чтение веб-страниц." },
   { id: "pi-tool-repair", packageName: "pi-tool-repair", name: "Tool Repair", description: "Исправление некорректных вызовов инструментов." },
-  { id: "pi-llama-cpp-stats", packageName: "pi-llama-cpp-stats", name: "llama.cpp Stats", description: "Статистика prompt processing и генерации." },
   { id: "pi-mcp-adapter", packageName: "pi-mcp-adapter", name: "MCP Adapter", description: "Подключение MCP-серверов и их инструментов." },
   { id: "pi-lens", packageName: "pi-lens", name: "Pi Lens", description: "Динамический набор и отображение инструментов." },
 ];
@@ -177,7 +176,7 @@ export class UpdateManager {
   }
 
   private async applyAddonCompatibility(name: string): Promise<void> {
-    if (!["pi-mcp-adapter", "pi-llama-cpp-stats"].includes(name)) return;
+    if (name !== "pi-mcp-adapter") return;
     const compatibility = path.join(this.appRoot, "resources", "pi-rpc-bridge", "compatibility.js");
     const { applyAddonRequestCompatibility } = await import(pathToFileURL(compatibility).href);
     await applyAddonRequestCompatibility(name, this.store.getEffectivePackagePath(name));

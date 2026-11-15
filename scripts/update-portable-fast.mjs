@@ -196,7 +196,6 @@ async function syncBridgeOutputs() {
 
   for (const [name, files] of [
     ["pi-mcp-adapter", ["index.ts", "proxy-modes.ts", "init.ts", "server-manager.ts", "desktop-config.js"]],
-    ["pi-llama-cpp-stats", ["index.ts"]],
   ]) {
     await syncChangedFiles(files, await findPackage(projectRoot, name), await findPackage(appDir, name));
   }

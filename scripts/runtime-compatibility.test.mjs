@@ -66,23 +66,18 @@ test("embedded build installs request, summary and media bridges idempotently", 
   await assert.rejects(applyCoreRequestCompatibility(target), /requires.*1\.5\.2/);
 });
 
-test("addon updates retain MCP configuration and statistics display fixes", async t => {
+test("addon updates retain the MCP configuration bridge", async t => {
   const directory = await fixture(t);
-  for (const [name, version, files] of [["pi-mcp-adapter", "5.1.0", ["index.ts", "proxy-modes.ts", "init.ts", "server-manager.ts"]],
-    ["pi-llama-cpp-stats", "0.1.6", ["index.ts"]]]) {
-    const target = path.join(directory, name);
-    await put(target, "package.json", JSON.stringify({ name, version }));
-    for (const file of files) await put(target, file, await readFile(path.join(root, "node_modules", name, file), "utf8"));
-    await applyAddonRequestCompatibility(name, target);
-    const before = await Promise.all(files.map(file => readFile(path.join(target, file), "utf8")));
-    await applyAddonRequestCompatibility(name, target);
-    assert.deepEqual(await Promise.all(files.map(file => readFile(path.join(target, file), "utf8"))), before);
-    if (name === "pi-mcp-adapter") await access(path.join(target, "desktop-config.js"));
-    else {
-      assert.match(before[0], /return reader\.cancel\(reason\)/);
-      assert.match(before[0], /if \(hasGeneratedOutput\(chunk\)\) finishPrefilling\(\);/);
-    }
-  }
+  const name = "pi-mcp-adapter", version = "5.1.0";
+  const files = ["index.ts", "proxy-modes.ts", "init.ts", "server-manager.ts"];
+  const target = path.join(directory, name);
+  await put(target, "package.json", JSON.stringify({ name, version }));
+  for (const file of files) await put(target, file, await readFile(path.join(root, "node_modules", name, file), "utf8"));
+  await applyAddonRequestCompatibility(name, target);
+  const before = await Promise.all(files.map(file => readFile(path.join(target, file), "utf8")));
+  await applyAddonRequestCompatibility(name, target);
+  assert.deepEqual(await Promise.all(files.map(file => readFile(path.join(target, file), "utf8"))), before);
+  await access(path.join(target, "desktop-config.js"));
 });
 
 test("updater reapplies request compatibility on installation and rollback", () => {

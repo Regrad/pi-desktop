@@ -4,7 +4,6 @@ import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { patchServiceMessages, patchDesktopCompaction } from "./context-patch.js";
 import { patchToolResultImages } from "./tool-result-images-patch.js";
-import { patchLlamaStatsCancellation, patchLlamaStatsPrefillReset } from "./llama-stats-patch.js";
 import { patchMcpIndex, patchMcpProxy, patchMcpOnDemandInit, patchMcpOnDemandManager } from "../pi-mcp/config-patch.js";
 import { patchCodemodeDiscoveryDescription, patchCodemodePlanning } from "../tool-routing/patch.js";
 import { patchDesktopContinuation } from "./continuation-patch.js";
@@ -63,11 +62,7 @@ export async function applyRequestDiagnosticsCompatibility(coreRoot) {
 }
 
 export async function applyAddonRequestCompatibility(name, root) {
-  if (name === "pi-llama-cpp-stats") {
-    await requireVersion(root, "0.1.6");
-    await patchFile(path.join(root, "index.ts"), patchLlamaStatsCancellation);
-    await patchFile(path.join(root, "index.ts"), patchLlamaStatsPrefillReset);
-  } else if (name === "pi-mcp-adapter") {
+  if (name === "pi-mcp-adapter") {
     await requireVersion(root, "5.1.0");
     await patchFile(path.join(root, "index.ts"), patchMcpIndex);
     await patchFile(path.join(root, "init.ts"), patchMcpOnDemandInit);

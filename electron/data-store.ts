@@ -91,11 +91,10 @@ const THINKING_LEVELS: ThinkingLevel[] = [
 const MANAGED_PACKAGE_NAMES = [
   "pi-web-access",
   "pi-tool-repair",
-  "pi-llama-cpp-stats",
   "pi-mcp-adapter",
   "pi-lens",
 ] as const;
-const RETIRED_PACKAGE_NAMES = ["pi-token-speed", "pi-loop-police"];
+const RETIRED_PACKAGE_NAMES = ["pi-token-speed", "pi-loop-police", "pi-llama-cpp-stats"];
 const MANAGED_RESOURCE_NAMES = [
   "pi-single-slot-guard",
   "pi-llama-generation-speed",
@@ -124,12 +123,6 @@ const BUILTIN_MODULES: Array<{
     kind: "package",
   },
   {
-    id: "pi-llama-cpp-stats",
-    name: "llama.cpp Stats",
-    description: "Прогресс обработки промпта llama.cpp.",
-    kind: "package",
-  },
-  {
     id: "pi-mcp-adapter",
     name: "MCP Adapter",
     description: "Подключение MCP-серверов и их инструментов.",
@@ -151,7 +144,7 @@ const BUILTIN_MODULES: Array<{
   {
     id: "pi-llama-generation-speed",
     name: "Generation Speed",
-    description: "Текущая и средняя скорость генерации llama.cpp.",
+    description: "Прогресс обработки промпта и скорость генерации llama.cpp.",
     kind: "resource",
   },
   {
