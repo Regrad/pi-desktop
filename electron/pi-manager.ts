@@ -244,6 +244,9 @@ export class PiManager {
     this.openingPreview = controller;
     await this.store.activateConversation(conversationId);
     controller.signal.throwIfAborted();
+    // Opening a chat is what acknowledges the work it reported earlier.
+    if (this.store.getConversation(conversationId).resultUnseen)
+      await this.updateConversation(conversationId, { resultUnseen: undefined });
     const running = this.runtimes.get(conversationId);
     if (running?.snapshot) {
       if (running.snapshot.state.isStreaming)
@@ -1728,7 +1731,12 @@ export class PiManager {
       await this.updateConversation(conversationId, { status: "working" });
     } else if (event.type === "agent_settled") {
       runtime.planWorkingRevision = undefined;
-      await this.updateConversation(conversationId, { status: "idle" });
+      // A finished run stays marked until the chat is opened again: whoever is
+      // reading another chat needs to see which one reported back.
+      const unreadResult = this.store.snapshot().activeConversationId === conversationId
+        ? undefined
+        : new Date().toISOString();
+      await this.updateConversation(conversationId, { status: "idle", resultUnseen: unreadResult });
       const messagePatch = await this.refreshRuntimeSnapshot(runtime);
       // Трекер переиспользуется между запусками: не закрываем и не сбрасываем.
       const tracker = runtime.diffTracker;

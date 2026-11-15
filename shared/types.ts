@@ -34,6 +34,8 @@ export interface ConversationRecord {
   thinkingLevel?: ThinkingLevel;
   archived?: boolean;
   status: "idle" | "starting" | "working" | "error";
+  /** When set, the chat finished a run that the user has not opened since. */
+  resultUnseen?: string;
 }
 
 export interface PlanStep {

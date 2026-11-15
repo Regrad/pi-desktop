@@ -314,6 +314,10 @@ button:not(:disabled) {
 .status-dot.starting {
   background: #888;
 }
+.status-dot.done {
+  background: var(--tool-success);
+  box-shadow: 0 0 0 2px var(--tool-success-bg);
+}
 .sidebar-footer {
   width: 100%;
   height: 48px;

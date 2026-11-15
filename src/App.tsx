@@ -203,6 +203,15 @@ const THINKING_LABELS: Record<ThinkingLevel, string> = {
   max: "Максимальная",
 };
 
+// The sidebar dot: work in progress wins over everything, a failure keeps its red,
+// and a chat that reported back while it stayed closed gets a green mark until it
+// is opened again.
+function chatDotClass(chat: ConversationRecord): string {
+  if (chat.status === "working" || chat.status === "starting" || chat.status === "error")
+    return chat.status;
+  return chat.resultUnseen ? "done" : "idle";
+}
+
 function messageKey(message: JsonObject, index: number): string {
   // Several tool results can share a timestamp. Position in this session is
   // part of the identity, not just a fallback for messages without a timestamp.
@@ -5651,7 +5660,7 @@ export default function App() {
                               className={`chat-row ${chat.id === activeConversationId ? "selected" : ""}`}
                               onClick={() => void openConversation(chat.id)}
                             >
-                              <span className={`status-dot ${chat.status}`} />
+                              <span className={`status-dot ${chatDotClass(chat)}`} />
                               <span>{conversationTitle(chat)}</span>
                             </button>
                             <button
@@ -5690,7 +5699,7 @@ export default function App() {
                           className={`chat-row ${chat.id === activeConversationId ? "selected" : ""}`}
                           onClick={() => void openConversation(chat.id)}
                         >
-                          <span className={`status-dot ${chat.status}`} />
+                          <span className={`status-dot ${chatDotClass(chat)}`} />
                           <span>{conversationTitle(chat)}</span>
                         </button>
                         <button
