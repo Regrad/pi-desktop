@@ -2,12 +2,12 @@ import { BrowserWindow, WebContentsView, session, dialog, shell } from "electron
 import path from "node:path";
 import { chatDirectory } from "../resources/pi-comfyui/lib/chat-storage.js";
 import { randomUUID } from "node:crypto";
-import { mkdirSync, statSync } from "node:fs";
+import { mkdirSync, statSync, readFileSync, writeFileSync, rmSync } from "node:fs";
 import { BrowserAutomation, type BrowserLocator } from "./browser-automation.js";
 import { BrowserSiteTools, webMcpBootstrap } from "./browser-site-tools.js";
 import type { BrowserState, BrowserUiCommand, BrowserTab, BrowserDownload } from "../shared/browser.js";
 
-type Tab = { record: BrowserTab; view: WebContentsView; queue: Promise<unknown>; initialized: Promise<void>; started: boolean; epoch: number; fileNode?: number; requests: Set<string>; activity: number; automation?: BrowserAutomation; siteTools?: BrowserSiteTools; logs: { level: string; message: string; source?: string; line?: number; timestamp: number }[] };
+type Tab = { record: BrowserTab; view: WebContentsView; queue: Promise<unknown>; initialized: Promise<void>; started: boolean; sleeping: boolean; epoch: number; fileNode?: number; requests: Set<string>; activity: number; automation?: BrowserAutomation; siteTools?: BrowserSiteTools; logs: { level: string; message: string; source?: string; line?: number; timestamp: number }[] };
 function inputOptions(params: Record<string, unknown>): { button: "left" | "right" | "middle"; modifiers: number; clickCount: number } {
   const button = params.button ?? "left", modifiers = params.modifiers ?? 0, clickCount = params.clickCount ?? 1;
   if (!["left", "right", "middle"].includes(String(button)) || !Number.isInteger(modifiers) || Number(modifiers) < 0 || Number(modifiers) > 15 || !Number.isInteger(clickCount) || Number(clickCount) < 1 || Number(clickCount) > 3) throw new Error("Неверная кнопка или модификаторы ввода.");
@@ -26,7 +26,9 @@ function browserKey(key: unknown): { key: string; windowsVirtualKeyCode: number 
 }
 export function browserUrl(value: unknown): string {
   if (typeof value !== "string" || value.length > 8192) throw new Error("Нужен адрес HTTP или HTTPS.");
-  const url = new URL(value);
+  let url: URL;
+  // A malformed address is refused exactly like a forbidden scheme.
+  try { url = new URL(value); } catch { throw new Error("Разрешены только HTTP/HTTPS без пароля в адресе."); }
   if (!["http:", "https:"].includes(url.protocol) || url.username || url.password) throw new Error("Разрешены только HTTP/HTTPS без пароля в адресе.");
   return url.href;
 }
@@ -51,9 +53,15 @@ export class BrowserManager {
   private changed: (state: BrowserState) => void;
   private browserSession: Electron.Session;
   private downloads = new Map<string, BrowserDownload>();
+  // A chat reads its saved tab list once per application run, and only the
+  // chats the user actually opens.
+  private dataDir: string;
+  private restoredChats = new Set<string>();
+  private savedActive = new Map<string, string>();
+  private writeTimers = new Map<string, NodeJS.Timeout>();
 
   constructor(dataDir: string, getWindow: () => BrowserWindow | null, changed: (state: BrowserState) => void) {
-    this.getWindow = getWindow; this.changed = changed;
+    this.getWindow = getWindow; this.changed = changed; this.dataDir = dataDir;
     const directory = path.join(dataDir, "browser"); mkdirSync(directory, { recursive: true });
     this.browserSession = session.fromPath(directory);
     this.browserSession.setPermissionRequestHandler((_contents, _permission, callback) => callback(false));
@@ -93,6 +101,9 @@ export class BrowserManager {
     const win = this.getWindow();
     if (!win || win.isDestroyed()) return;
     for (const tab of this.tabs.values()) {
+      // Restored tabs hold no renderer until they are shown or touched, so
+      // there is nothing to place yet.
+      if (tab.sleeping) continue;
       const displayed = this.visible && this.viewportReady && tab.record.id === this.activeTabId && tab.record.conversationId === this.conversationId;
       if (!win.contentView.children.includes(tab.view)) win.contentView.addChildView(tab.view);
       // Keep hidden tabs rendered outside the window's clipped content area.
@@ -110,12 +121,68 @@ export class BrowserManager {
     if (!tab || (owner && tab.record.conversationId !== owner)) throw new Error("Вкладка не найдена в этом чате. Используйте browser list.");
     return tab;
   }
+  /** Tabs of one chat live beside its browser downloads. */
+  private tabsFile(owner: string): string { return path.join(chatDirectory(this.dataDir, owner), "browser-tabs.json"); }
+  private ensureRestored(owner?: string): void {
+    if (!owner || this.restoredChats.has(owner)) return;
+    this.restoredChats.add(owner);
+    let saved: { activeUrl?: unknown; tabs?: unknown };
+    try { saved = JSON.parse(readFileSync(this.tabsFile(owner), "utf8")) as { activeUrl?: unknown; tabs?: unknown }; }
+    catch { return; }
+    const entries = Array.isArray(saved.tabs) ? saved.tabs : [];
+    const created: Tab[] = [];
+    for (const entry of entries.slice(0, Math.max(0, 20 - this.tabs.size))) {
+      const item = entry as { url?: unknown; title?: unknown };
+      let url: string;
+      try { url = browserUrl(item.url); } catch { continue; }
+      created.push(this.createTab(owner, url, { title: typeof item.title === "string" && item.title.trim() ? item.title.trim().slice(0, 200) : "Восстановленная вкладка" }));
+    }
+    if (!created.length) return;
+    const active = typeof saved.activeUrl === "string" ? created.find(tab => tab.record.url === saved.activeUrl) : undefined;
+    this.savedActive.set(owner, (active || created[0]).record.id);
+    if (this.conversationId === owner) this.activeTabId = this.savedActive.get(owner);
+    this.layout(); this.publish();
+  }
+  private persist(owner?: string): void {
+    if (!owner || !this.restoredChats.has(owner)) return;
+    const pending = this.writeTimers.get(owner);
+    if (pending) clearTimeout(pending);
+    const timer = setTimeout(() => { this.writeTimers.delete(owner); this.writeTabs(owner); }, 800);
+    timer.unref?.();
+    this.writeTimers.set(owner, timer);
+  }
+  private writeTabs(owner: string): void {
+    const own = [...this.tabs.values()].filter(tab => tab.record.conversationId === owner);
+    const tabs = own.map(tab => ({ url: tab.record.url, title: tab.record.title }));
+    const activeIndex = own.findIndex(tab => tab.record.id === this.activeTabId);
+    try {
+      mkdirSync(chatDirectory(this.dataDir, owner), { recursive: true });
+      writeFileSync(this.tabsFile(owner), JSON.stringify({ version: 1, tabs,
+        activeUrl: activeIndex >= 0 ? tabs[activeIndex].url : undefined }), "utf8");
+    } catch { /* A full or locked disk must not break browsing. */ }
+  }
+  private flushWrites(): void {
+    for (const owner of [...this.writeTimers.keys()]) {
+      const pending = this.writeTimers.get(owner);
+      if (pending) clearTimeout(pending);
+      this.writeTimers.delete(owner);
+      this.writeTabs(owner);
+    }
+  }
   private open(owner: string, url: string): Tab {
+    const tab = this.createTab(owner, url);
+    this.startTab(tab);
+    return tab;
+  }
+  /** A restored tab is created without a renderer and loads only when it is used. */
+  private createTab(owner: string, url: string, restored?: { title: string }): Tab {
     if (this.tabs.size >= 20) throw new Error("Закройте лишние вкладки (максимум 20).");
     const view = new WebContentsView({ webPreferences: { session: this.browserSession, sandbox: true,
       nodeIntegration: false, contextIsolation: true, webSecurity: true, enableBlinkFeatures: "WebMCP" } });
     view.setVisible(false);
-    const tab: Tab = { record: { id: randomUUID(), conversationId: owner, title: "Новая вкладка", url, loading: true }, view, queue: Promise.resolve(), initialized: Promise.resolve(), started: false, epoch: 0, requests: new Set(), activity: Date.now(), logs: [] };
+    const tab: Tab = { record: { id: randomUUID(), conversationId: owner, title: restored?.title || "Новая вкладка", url,
+      loading: !restored, sleeping: restored ? true : undefined },
+      view, queue: Promise.resolve(), initialized: Promise.resolve(), started: false, sleeping: Boolean(restored), epoch: 0, requests: new Set(), activity: Date.now(), logs: [] };
     this.tabs.set(tab.record.id, tab);
     if (owner === this.conversationId) this.activeTabId = tab.record.id;
     const wc = view.webContents;
@@ -124,6 +191,7 @@ export class BrowserManager {
       tab.record.title = wc.getTitle() || "Новая вкладка"; tab.record.url = wc.getURL() || url;
       tab.record.loading = wc.isLoading();
       tab.record.canGoBack = wc.navigationHistory.canGoBack(); tab.record.canGoForward = wc.navigationHistory.canGoForward();
+      this.persist(tab.record.conversationId);
       this.publish();
     };
     wc.on("did-start-loading", refresh); wc.on("did-stop-loading", refresh); wc.on("page-title-updated", refresh); wc.on("did-navigate-in-page", refresh);
@@ -153,6 +221,12 @@ export class BrowserManager {
       else if (method === "Page.javascriptDialogClosed") { tab.record.dialog = undefined; this.publish(); }
       else if (method === "Page.fileChooserOpened") { tab.fileNode = params.backendNodeId; tab.record.fileChooser = { multiple: params.mode === "selectMultiple" }; this.publish(); }
     });
+    this.persist(owner);
+    this.layout(); this.publish();
+    return tab;
+  }
+  private startTab(tab: Tab): void {
+    const wc = tab.view.webContents;
     wc.debugger.attach("1.3");
     void wc.debugger.sendCommand("Network.enable").catch(error => { tab.record.error = String(error); this.publish(); });
     wc.setBackgroundThrottling(false);
@@ -160,11 +234,16 @@ export class BrowserManager {
       .then(() => wc.debugger.sendCommand("Page.enable"))
       .then(() => wc.debugger.sendCommand("Page.setInterceptFileChooserDialog", { enabled: true }))
       .then(() => wc.debugger.sendCommand("Page.addScriptToEvaluateOnNewDocument", { source: webMcpBootstrap }))
-      .then(() => { tab.started = true; void wc.loadURL(url).catch(error => { tab.record.error = String(error); this.publish(); }); this.layout(); })
+      .then(() => { tab.started = true; void wc.loadURL(tab.record.url).catch(error => { tab.record.error = String(error); this.publish(); }); this.layout(); })
       .catch(error => { tab.record.error = String(error); this.publish(); throw error; });
     void tab.initialized.catch(() => undefined);
     this.layout(); this.publish();
-    return tab;
+  }
+  /** Wakes one restored tab: only now does it get a renderer and a page load. */
+  private wake(tab: Tab): void {
+    if (!tab.sleeping) return;
+    tab.sleeping = false; tab.record.sleeping = undefined; tab.record.loading = true;
+    this.startTab(tab);
   }
   private close(tab: Tab): void {
     tab.automation?.disconnect();
@@ -173,13 +252,19 @@ export class BrowserManager {
     this.getWindow()?.contentView.removeChildView(tab.view);
     if (!tab.view.webContents.isDestroyed()) tab.view.webContents.close();
     if (this.activeTabId === tab.record.id) this.activeTabId = [...this.tabs.values()].find(item => item.record.conversationId === this.conversationId)?.record.id;
+    this.persist(tab.record.conversationId);
     this.layout(); this.publish();
   }
   async ui(command: BrowserUiCommand): Promise<BrowserState> {
+    this.ensureRestored(command.conversationId);
     if (command.action === "select-chat") {
       if (this.conversationId !== command.conversationId) this.viewportReady = false;
       this.conversationId = command.conversationId;
-      this.activeTabId = [...this.tabs.values()].find(tab => tab.record.conversationId === this.conversationId)?.record.id;
+      const remembered = command.conversationId ? this.savedActive.get(command.conversationId) : undefined;
+      this.activeTabId = (remembered && this.tabs.has(remembered) ? remembered : undefined)
+        || [...this.tabs.values()].find(tab => tab.record.conversationId === this.conversationId)?.record.id;
+      if (command.conversationId) this.savedActive.delete(command.conversationId);
+      this.layout();
     } else if (command.action === "show" || command.action === "hide") this.visible = command.action === "show";
     else if (command.action === "bounds") {
       const b = command.bounds, win = this.getWindow();
@@ -198,6 +283,7 @@ export class BrowserManager {
       shell.showItemInFolder(item.path);
     } else {
       const tab = this.tab(command.tabId);
+      this.wake(tab);
       if (command.action === "select") this.activeTabId = tab.record.id;
       else if (command.action === "choose-files") {
         const win = this.getWindow(); if (!win) throw new Error("Окно приложения закрыто.");
@@ -225,10 +311,12 @@ export class BrowserManager {
   }
   async request(owner: string, params: Record<string, unknown>): Promise<Record<string, unknown>> {
     const action = params.action;
+    this.ensureRestored(owner);
     if (action === "list") return { tabs: [...this.tabs.values()].filter(tab => tab.record.conversationId === owner).map(tab => this.metadata(tab)) };
     if (action === "open") return { tab: this.metadata(this.open(owner, browserUrl(params.url))) };
     if (action === "downloads") return { downloads: [...this.downloads.values()].filter(item => item.conversationId === owner).map(item => ({ ...item })) };
     const tab = this.tab(params.tabId, owner);
+    this.wake(tab);
     const epoch = tab.epoch;
     if (action === "show" || action === "hide" || action === "select" || action === "handoff") {
       if (action === "handoff") this.cancelTab(tab, true);
@@ -542,8 +630,17 @@ export class BrowserManager {
   }
   private cancelTab(tab: Tab, keepManual = false): void { tab.epoch++; tab.automation?.disconnect(); tab.automation = undefined; tab.siteTools?.cancel(keepManual); }
   cancel(owner: string): void { for (const tab of this.tabs.values()) if (tab.record.conversationId === owner) this.cancelTab(tab); }
-  closeConversation(owner: string): void { for (const tab of [...this.tabs.values()]) if (tab.record.conversationId === owner) this.close(tab); }
+  closeConversation(owner: string): void {
+    for (const tab of [...this.tabs.values()]) if (tab.record.conversationId === owner) this.close(tab);
+    const pending = this.writeTimers.get(owner);
+    if (pending) clearTimeout(pending);
+    this.writeTimers.delete(owner);
+    this.restoredChats.delete(owner);
+    this.savedActive.delete(owner);
+    try { rmSync(this.tabsFile(owner), { force: true }); } catch { /* nothing was saved */ }
+  }
   async dispose(): Promise<void> {
+    this.flushWrites();
     this.browserSession.flushStorageData();
     await this.browserSession.cookies.flushStore();
     for (const tab of [...this.tabs.values()]) this.close(tab);

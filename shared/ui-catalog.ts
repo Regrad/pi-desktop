@@ -442,6 +442,7 @@ export const englishUi: Readonly<Record<string, string>> = {
   "Встроенный браузер": "Built-in browser",
   "Закрыть вкладку": "Close tab",
   "Новая вкладка": "New tab",
+  "Вкладка из прошлого запуска загрузится при открытии": "A tab from the previous session loads when opened",
   "Скрыть без закрытия вкладок": "Hide without closing tabs",
   "Назад": "Back",
   "Вперёд": "Forward",

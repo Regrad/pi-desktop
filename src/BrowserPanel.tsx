@@ -44,7 +44,7 @@ export function BrowserPanel({ conversationId }: { conversationId?: string }) {
     {state.visible && <section className="browser-panel" aria-label={t("Встроенный браузер")}>
       <div className="browser-tabs">
         {tabs.map(item => <div className={`browser-tab${item.id === tab?.id ? " selected" : ""}`} key={item.id}>
-          <button onClick={() => void command({ action: "select", tabId: item.id })} title={item.url}>{item.loading ? t("Загрузка…") : item.title}</button>
+          <button onClick={() => void command({ action: "select", tabId: item.id })} title={item.sleeping ? t("Вкладка из прошлого запуска загрузится при открытии") : item.url}>{item.loading ? t("Загрузка…") : item.title}</button>
           <button title={t("Закрыть вкладку")} onClick={() => void command({ action: "close", tabId: item.id })}><X size={13} /></button>
         </div>)}
         <button className="icon-button" title={t("Новая вкладка")} onClick={() => void command({ action: "open", conversationId, url: "https://www.google.com" })}><Plus size={16} /></button>

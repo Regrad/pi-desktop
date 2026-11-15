@@ -1,13 +1,16 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { readFileSync, writeFileSync, mkdirSync, mkdtempSync, rmSync, existsSync } from "node:fs";
 import { stripTypeScriptTypes, registerHooks } from "node:module";
 import { EventEmitter } from "node:events";
 import path from "node:path";
+import os from "node:os";
 
 const source = readFileSync(new URL("../electron/browser-manager.ts", import.meta.url), "utf8");
 const code = stripTypeScriptTypes(source).replace(/^import .*;\s*$/gm, "").replace(/^export /gm, "");
-function fixture() {
+// Every fixture is one application run, so it starts from its own empty data
+// directory unless a test deliberately reuses a previous run's directory.
+function fixture(dataDir = mkdtempSync(path.join(os.tmpdir(), "pi-browser-run-"))) {
   let id = 0, captures = 0, descriptions = 0;
   const commands = [], views = [];
   class View {
@@ -29,11 +32,11 @@ function fixture() {
   }
   const sessionEvents = new EventEmitter();
   const session = { fromPath(directory) { this.directory = directory; return Object.assign(sessionEvents, { setPermissionRequestHandler() {}, setPermissionCheckHandler() {}, flushStorageData() {}, cookies: { async flushStore() {} } }); } };
-  const { BrowserManager, browserUrl } = new Function("BrowserWindow", "WebContentsView", "session", "dialog", "shell", "path", "randomUUID", "mkdirSync", "statSync", "webMcpBootstrap", "chatDirectory", `${code};return {BrowserManager,browserUrl};`)(View, View, session, { async showOpenDialog() { return { canceled: true, filePaths: [] }; } }, { showItemInFolder() {} }, path, () => `tab-${++id}`, () => {}, () => ({ isFile: () => true }), "/* site tools bootstrap */", (root, id) => path.join(root, "chats", id));
+  const { BrowserManager, browserUrl } = new Function("BrowserWindow", "WebContentsView", "session", "dialog", "shell", "path", "randomUUID", "mkdirSync", "statSync", "readFileSync", "writeFileSync", "rmSync", "webMcpBootstrap", "chatDirectory", `${code};return {BrowserManager,browserUrl};`)(View, View, session, { async showOpenDialog() { return { canceled: true, filePaths: [] }; } }, { showItemInFolder() {} }, path, () => `tab-${++id}`, mkdirSync, () => ({ isFile: () => true }), readFileSync, writeFileSync, rmSync, "/* site tools bootstrap */", (root, id) => path.join(root, "chats", id));
   const children = [], win = { isDestroyed: () => false, getContentSize: () => [1400, 1000], contentView: { children,
     addChildView(view) { children.push(view); }, removeChildView(view) { const i = children.indexOf(view); if (i >= 0) children.splice(i, 1); } } };
-  const manager = new BrowserManager("C:/test-data", () => win, () => {});
-  return { manager, browserUrl, views, commands, session, sessionEvents, win, counts: () => ({ captures, descriptions }) };
+  const manager = new BrowserManager(dataDir, () => win, () => {});
+  return { manager, browserUrl, views, commands, session, sessionEvents, win, dataDir, counts: () => ({ captures, descriptions }) };
 }
 test("image models get screenshots only; text models get descriptions only, with no raw form values", async () => {
   const f = fixture(), tab = (await f.manager.request("chat", { action: "open", url: "https://example.com" })).tab;
@@ -226,7 +229,7 @@ test("downloads are attributed to a chat, report progress and never auto-launch 
   item.emit("updated", {}, "progressing");
   const downloads = (await f.manager.request("one", { action: "downloads" })).downloads;
   assert.equal(downloads.length, 1); assert.equal(downloads[0].tabId, tab.id); assert.equal(downloads[0].receivedBytes, 512);
-  assert.equal(path.dirname(downloads[0].path), path.join("C:/test-data", "chats", "one", "downloads"));
+  assert.equal(path.dirname(downloads[0].path), path.join(f.dataDir, "chats", "one", "downloads"));
   assert.deepEqual((await f.manager.request("two", { action: "downloads" })).downloads, []);
   item.emit("done", {}, "completed"); assert.equal((await f.manager.request("one", { action: "downloads" })).downloads[0].state, "completed");
   let blocked = false; f.sessionEvents.emit("will-download", { preventDefault() { blocked = true; } }, item, {}); assert.equal(blocked, true);
@@ -314,4 +317,64 @@ test("DOMContentLoaded and network idle have distinct readiness conditions", asy
   assert.equal((await f.manager.request("chat", { action: "wait", tabId: tab.id, waitUntil: "networkidle", timeoutMs: 10 })).timedOut, true);
   wc.debugger.emit("message", {}, "Network.loadingFinished", { requestId: "pending" });
   assert.equal((await f.manager.request("chat", { action: "wait", tabId: tab.id, waitUntil: "networkidle", timeoutMs: 1500 })).ready, true);
+});
+
+test("tabs of a chat survive closing the app and wake only when they are used", async () => {
+  const directory = mkdtempSync(path.join(os.tmpdir(), "pi-browser-tabs-"));
+  const file = path.join(directory, "chats", "chat", "browser-tabs.json");
+  try {
+    const first = fixture(directory);
+    const a = (await first.manager.request("chat", { action: "open", url: "https://example.com/a" })).tab;
+    await first.manager.request("chat", { action: "open", url: "https://example.com/b" });
+    await first.manager.ui({ action: "select", tabId: a.id, conversationId: "chat" });
+    await first.manager.dispose();
+    const saved = JSON.parse(readFileSync(file, "utf8"));
+    assert.deepEqual(saved.tabs.map(item => item.url), ["https://example.com/a", "https://example.com/b"]);
+    assert.equal(saved.activeUrl, "https://example.com/a");
+
+    const second = fixture(directory);
+    const restored = (await second.manager.request("chat", { action: "list" })).tabs;
+    assert.deepEqual(restored.map(tab => tab.url), ["https://example.com/a", "https://example.com/b"]);
+    assert.equal(restored.filter(tab => tab.sleeping).length, 2);
+    assert.deepEqual(second.views.map(view => view.webContents.url), [undefined, undefined]);
+    await second.manager.request("chat", { action: "state", tabId: restored[1].id, vision: false });
+    assert.equal(second.views[1].webContents.url, "https://example.com/b");
+    assert.equal(second.views[0].webContents.url, undefined);
+    const shown = await second.manager.ui({ action: "select-chat", conversationId: "chat" });
+    assert.equal(shown.activeTabId, restored[0].id);
+  } finally { rmSync(directory, { recursive: true, force: true }); }
+});
+
+test("closing every tab of a chat is remembered as an empty list", async () => {
+  const directory = mkdtempSync(path.join(os.tmpdir(), "pi-browser-empty-"));
+  const file = path.join(directory, "chats", "chat", "browser-tabs.json");
+  try {
+    const first = fixture(directory);
+    const tab = (await first.manager.request("chat", { action: "open", url: "https://example.com/a" })).tab;
+    await first.manager.ui({ action: "close", tabId: tab.id, conversationId: "chat" });
+    await first.manager.dispose();
+    assert.deepEqual(JSON.parse(readFileSync(file, "utf8")).tabs, []);
+    const second = fixture(directory);
+    assert.deepEqual((await second.manager.request("chat", { action: "list" })).tabs, []);
+    assert.equal(second.views.length, 0);
+  } finally { rmSync(directory, { recursive: true, force: true }); }
+});
+
+test("saved tabs stay in their own chat, unsafe addresses are dropped and deleting the chat removes the file", async () => {
+  const directory = mkdtempSync(path.join(os.tmpdir(), "pi-browser-isolate-"));
+  const file = path.join(directory, "chats", "chat", "browser-tabs.json");
+  try {
+    mkdirSync(path.dirname(file), { recursive: true });
+    writeFileSync(file, JSON.stringify({ version: 1, tabs: [
+      { url: "https://example.com/ok", title: "OK" }, { url: "file:///C:/secret.txt" },
+      { url: "https://user:pass@example.com" }, { url: 42 }, { url: "https://broken" , title: null }] }), "utf8");
+    const f = fixture(directory);
+    const tabs = (await f.manager.request("chat", { action: "list" })).tabs;
+    assert.deepEqual(tabs.map(tab => tab.url), ["https://example.com/ok", "https://broken/"]);
+    assert.equal(tabs[0].title, "OK");
+    assert.equal(tabs[1].title, "Восстановленная вкладка");
+    assert.deepEqual((await f.manager.request("other", { action: "list" })).tabs, []);
+    f.manager.closeConversation("chat");
+    assert.equal(existsSync(file), false);
+  } finally { rmSync(directory, { recursive: true, force: true }); }
 });
