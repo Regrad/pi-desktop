@@ -17,6 +17,7 @@ import { randomUUID } from "node:crypto";
 import type { RemoteRuntime } from "./remote-runtime.js";
 import { StartupTasks } from "./startup-tasks.js";
 import { installImageContextMenu } from "./image-context-menu.js";
+import { installEditorContextMenu } from "./editor-context-menu.js";
 import { translateUi, type InterfaceLanguage } from "../shared/interface-language.js";
 import type { WebAccessSettings } from "../shared/web-access.js";
 
@@ -103,6 +104,7 @@ async function createWindow(): Promise<void> {
     },
   });
   installImageContextMenu(mainWindow, () => store?.getInterfaceLanguage() ?? "en");
+  installEditorContextMenu(mainWindow, () => store?.getInterfaceLanguage() ?? "en");
   const shown = new Promise<void>(resolve => {
     mainWindow!.once("ready-to-show", () => { mainWindow?.show(); resolve(); });
     mainWindow!.once("closed", resolve);
