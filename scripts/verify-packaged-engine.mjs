@@ -6,6 +6,10 @@ import { fileURLToPath } from "node:url";
 const root = fileURLToPath(new URL("..", import.meta.url));
 export async function verifyPackagedEngine(binaryDirectory) {
   const app = path.join(binaryDirectory, "resources/app");
+  // A Windows temp folder can arrive in 8.3 form (ENGARD~1) while realpath returns
+  // the long name for nested paths, so the containment check has to compare two
+  // resolved paths or a correct build looks like it escapes the application.
+  const appRoot = await realpath(app);
   const upstream = JSON.parse(await readFile(path.join(root, "vendor/pi.upstream.json"), "utf8"));
   const bundled = JSON.parse(await readFile(path.join(app, "resources/pi-engine/upstream.json"), "utf8"));
   if (bundled.commit !== upstream.commit) throw new Error("Packaged engine source revision mismatch");
@@ -13,7 +17,7 @@ export async function verifyPackagedEngine(binaryDirectory) {
   for (const name of upstream.packages) {
     const source = JSON.parse(await readFile(path.join(root, "vendor/pi/packages", name, "package.json"), "utf8"));
     const installed = path.join(app, "node_modules", source.name);
-    if (!(await realpath(installed)).startsWith(path.resolve(app) + path.sep)) throw new Error(`Packaged engine points outside the application: ${name}`);
+    if (!(await realpath(installed)).startsWith(appRoot + path.sep)) throw new Error(`Packaged engine points outside the application: ${name}`);
     if (JSON.parse(await readFile(path.join(installed, "package.json"), "utf8")).version !== upstream.version) throw new Error(`Packaged engine version mismatch: ${name}`);
   }
   // Same real protocol/tools/media/cancellation contract as development, but

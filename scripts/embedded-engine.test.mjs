@@ -26,12 +26,15 @@ async function put(root, relative, text) {
 
 test("built upstream source remains pristine and all eight packages resolve to the same revision", async () => {
   assert.equal((await verifyUpstream(root)).version, "1.5.2");
+  // Resolve both sides: a Windows temp folder can arrive in 8.3 form while nested
+  // realpath results carry the long name.
+  const appRoot = await realpath(app);
   for (const name of upstream.packages) {
     const sourcePackage = JSON.parse(await readFile(path.join(root, "vendor/pi/packages", name, "package.json"), "utf8"));
     const installed = path.join(app, "node_modules", sourcePackage.name);
     assert.equal(JSON.parse(await readFile(path.join(installed, "package.json"), "utf8")).version, upstream.version);
     const actual = await realpath(installed);
-    assert.ok(actual.startsWith(path.resolve(app) + path.sep), `Package escapes application: ${actual}`);
+    assert.ok(actual.startsWith(appRoot + path.sep), `Package escapes application: ${actual}`);
   }
   if (process.env.PI_TEST_APP_ROOT) {
     assert.match(await readFile(path.join(app, "resources/pi-engine/LICENSE"), "utf8"), /MIT License/);
