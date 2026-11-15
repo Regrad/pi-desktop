@@ -5,6 +5,7 @@ const SLOT_POLL_MS = 750;
 const FALLBACK_DELAY_MS = 1_000;
 const SLOT_TIMEOUT_MS = 1_500;
 const METRICS_CAPABILITY_TTL_MS = 60_000;
+const PREFILL_BAR_WIDTH = 20;
 
 // Counts are supplied by the server, not estimated from characters or SSE chunks.
 // Without a shared request identifier, only a single execution slot is usable.
@@ -77,12 +78,63 @@ function isChatCompletionRequest(input) {
   return typeof url === "string" && url.includes("/chat/completions");
 }
 
-function enablePerTokenTimings(init) {
+function countValue(value) {
+  return Number.isSafeInteger(value) && value >= 0 ? value : undefined;
+}
+
+function formatPrefillDuration(seconds) {
+  if (!Number.isFinite(seconds) || seconds < 1) return "";
+  if (seconds < 60) return `${Math.round(seconds)}s`;
+  return `${Math.floor(seconds / 60)}m ${Math.round(seconds % 60)}s`;
+}
+
+// One layout for every source, so the line keeps its shape when prompt_progress,
+// web telemetry or a proxy is what produced the numbers.
+function prefillProgressLine({ total, processed, elapsedMs, rateTps }) {
+  const done = countValue(processed) ?? 0;
+  const hasTotal = Number.isFinite(total) && total > 0;
+  if (!hasTotal) {
+    const parts = [`${done} tokens`];
+    const duration = formatPrefillDuration(elapsedMs / 1000);
+    if (duration) parts.push(duration);
+    return `Prefilling... ${parts.join(" · ")}`;
+  }
+  const ratio = Math.min(1, done / total);
+  const filled = Math.round(ratio * PREFILL_BAR_WIDTH);
+  const rate = finitePositive(rateTps);
+  const suffix = [];
+  if (rate) {
+    const duration = formatPrefillDuration((total - done) / rate);
+    if (duration) suffix.push(duration);
+    suffix.push(`${rate.toFixed(1)} tok/s`);
+  } else {
+    const duration = formatPrefillDuration(elapsedMs / 1000);
+    if (duration) suffix.push(duration);
+  }
+  const bar = "█".repeat(filled) + "░".repeat(PREFILL_BAR_WIDTH - filled);
+  return `Prefilling... ${bar} ${(ratio * 100).toFixed(0).padStart(3)}%${suffix.length ? ` · ${suffix.join(" · ")}` : ""}`;
+}
+
+function prefillPhaseLine(phase, elapsedMs) {
+  const label = typeof phase === "string" && phase.trim() ? phase.trim() : "reading the prompt";
+  const duration = formatPrefillDuration(elapsedMs / 1000);
+  return `Prefilling... ${label}${duration ? ` · ${duration}` : ""}`;
+}
+
+// The retired llama.cpp Stats add-on sent these alongside stream:true: without
+// return_progress llama.cpp hides prompt_progress, and include_usage keeps the
+// final accounting chunk arriving. Taking over the flags preserves what servers
+// were asked for before this telemetry moved here.
+function enableStreamTelemetry(init) {
   if (!init || typeof init.body !== "string") return init;
   try {
     const body = JSON.parse(init.body);
     if (!isRecord(body) || body.stream !== true) return init;
     body.timings_per_token = true;
+    if (body.return_progress === undefined) body.return_progress = true;
+    const options = isRecord(body.stream_options) ? body.stream_options : {};
+    if (options.include_usage === undefined) options.include_usage = true;
+    body.stream_options = options;
     return { ...init, body: JSON.stringify(body) };
   } catch {
     return init;
@@ -124,8 +176,10 @@ async function supportsTokenRecords(fetch, endpoint, model, signal) {
 // guessed from a version string, so an unrelated server keeps its own telemetry.
 function liveTelemetry(body) {
   const live = body?.live;
-  // tok_s is null while the engine idles, so only the key's presence counts.
-  return isRecord(live) && "tok_s" in live ? live : undefined;
+  // tok_s is null while the engine idles and absent while it reads a prompt, so the
+  // phase field counts as a second proof that this is the live section.
+  if (!isRecord(live)) return;
+  return "tok_s" in live || typeof live.state === "string" ? live : undefined;
 }
 
 export default function piLlamaGenerationSpeed(pi) {
@@ -208,6 +262,53 @@ export default function piLlamaGenerationSpeed(pi) {
     state.slotSpeedDisplayed = false;
     if (current(state) && !state.native) showIdle();
   };
+  const clearWorking = () => { if (ui && hasUi) ui.setWorkingMessage(); };
+  const showPrefillLine = (state, line) => {
+    if (!current(state) || !ui || !hasUi) return;
+    state.prefill.shown = true;
+    ui.setWorkingMessage(line);
+  };
+  // The bar belongs to prefill only. As soon as this request produces anything, the
+  // default working line owns the field again - that is what kept the bar from
+  // sticking to generation.
+  const clearPrefill = state => {
+    if (!state.prefill.shown) return;
+    state.prefill.shown = false;
+    if (current(state)) clearWorking();
+  };
+  const reportStreamPrefill = (state, progress) => {
+    const prefill = state.prefill;
+    const total = countValue(progress.total) ?? prefill.total;
+    const processed = countValue(progress.processed) ?? prefill.processed;
+    const timeMs = countValue(progress.time_ms) ?? prefill.timeMs;
+    const deltaTokens = processed - prefill.processed;
+    const deltaMs = timeMs - prefill.timeMs;
+    const measured = deltaTokens > 0 && deltaMs > 0 ? (deltaTokens / deltaMs) * 1_000 : prefill.rateTps;
+    prefill.total = total;
+    prefill.processed = processed;
+    prefill.timeMs = timeMs;
+    prefill.rateTps = Number.isFinite(measured) && measured > 0 ? measured : prefill.rateTps;
+    prefill.fromStream = true;
+    showPrefillLine(state, prefillProgressLine({
+      total, processed, elapsedMs: timeMs, rateTps: prefill.rateTps,
+    }));
+  };
+  // Web telemetry describes whichever request the server is running, so it speaks
+  // only while the stream itself stayed silent about prefill.
+  const reportLivePrefill = (state, live) => {
+    const elapsedMs = (finitePositive(live.elapsed_s) ?? 0) * 1_000;
+    const total = countValue(live.prompt_total) ?? countValue(live.prompt_tokens);
+    const read = countValue(live.prompt_read);
+    if (read !== undefined && total !== undefined) {
+      state.prefill.total = total;
+      state.prefill.processed = read;
+      showPrefillLine(state, prefillProgressLine({
+        total, processed: read, elapsedMs, rateTps: finitePositive(live.prefill_tok_s_mean),
+      }));
+    } else {
+      showPrefillLine(state, prefillPhaseLine(live.phase, elapsedMs));
+    }
+  };
   // The server metric describes whichever request it is running, so it may only
   // be taken when this process holds the single request.
   const startMetrics = state => {
@@ -251,6 +352,7 @@ export default function piLlamaGenerationSpeed(pi) {
         clearSlotSpeed(state);
         return;
       }
+      if (live.state === "reading" && !state.sawOutput && !state.prefill.fromStream) reportLivePrefill(state, live);
       if (live.state === "generating" && typeof live.tok_s === "number" && live.tok_s > 0) {
         // Whichever telemetry channel answers first keeps the status field.
         state.metricsLed = true;
@@ -302,10 +404,11 @@ export default function piLlamaGenerationSpeed(pi) {
 
   const acceptChunk = (chunk, responseState) => {
     if (!isRecord(chunk) || !current(responseState)) return;
+    if (isRecord(chunk.prompt_progress) && !responseState.sawOutput) reportStreamPrefill(responseState, chunk.prompt_progress);
     const choices = Array.isArray(chunk.choices) ? chunk.choices : [];
     const isFinal = isRecord(chunk.usage)
       || choices.some((choice) => isRecord(choice) && choice.finish_reason != null);
-    if (isFinal) { responseState.final = true; stopPolling(responseState); }
+    if (isFinal) { responseState.final = true; clearPrefill(responseState); stopPolling(responseState); }
     const hasOutput = choices.some(choice => isRecord(choice?.delta) && (
       (typeof choice.delta.content === "string" && choice.delta.content.length > 0)
       || (typeof choice.delta.reasoning_content === "string" && choice.delta.reasoning_content.length > 0)
@@ -328,6 +431,7 @@ export default function piLlamaGenerationSpeed(pi) {
     }
     if (hasOutput && !responseState.sawOutput) {
       responseState.sawOutput = true;
+      clearPrefill(responseState);
       if (!responseState.native && !responseState.tokenRecords && !responseState.final && responseState.endpoint) responseState.timer = setTimeout(() => void pollSlots(responseState), FALLBACK_DELAY_MS);
     }
     if (!isRecord(chunk.timings)) return;
@@ -373,6 +477,10 @@ export default function piLlamaGenerationSpeed(pi) {
     let buffer = "";
     const finish = () => {
       const owned = current(responseState);
+      if (responseState.prefill.shown) {
+        responseState.prefill.shown = false;
+        if (owned) clearWorking();
+      }
       responseState.closed = true;
       stopPolling(responseState);
       responses.delete(responseState);
@@ -428,9 +536,17 @@ export default function piLlamaGenerationSpeed(pi) {
       finalRecorded: false, samples: [{ tokens: 0, ms: 0 }], window: new SlotSpeedWindow(),
       slotsOff: false, metrics: metricsRequest(input, init), metricsStarted: false,
       metricsOff: false, metricsLed: false, metricsTimer: undefined, metricsAbort: undefined,
-      endpoint: slotsRequest(input, init), signal: init?.signal ?? (input instanceof Request ? input.signal : undefined) };
+      endpoint: slotsRequest(input, init), signal: init?.signal ?? (input instanceof Request ? input.signal : undefined),
+      prefill: { total: 0, processed: 0, timeMs: 0, rateTps: 0, shown: false, fromStream: false } };
     state.onAbort = () => {
       stopPolling(state); state.final = true;
+      // Aborted requests never emit their first token, so the bar is dropped here
+      // instead of waiting for output that will not arrive. Only this epoch may
+      // touch the field, to keep an old run from wiping a new run's line.
+      if (state.prefill.shown && state.epoch === epoch && agentRunning) {
+        state.prefill.shown = false;
+        clearWorking();
+      }
       if (state.epoch === epoch && agentRunning && responses.size === 1) showIdle();
     };
     if (current(state)) {
@@ -442,7 +558,7 @@ export default function piLlamaGenerationSpeed(pi) {
       }
     }
     let response;
-    try { response = await originalFetch(input, await observeGeneratedTokens(enablePerTokenTimings(init), state)); }
+    try { response = await originalFetch(input, await observeGeneratedTokens(enableStreamTelemetry(init), state)); }
     catch (error) {
       responses.delete(state); state.closed = true;
       state.signal?.removeEventListener("abort", state.onAbort);
@@ -453,6 +569,7 @@ export default function piLlamaGenerationSpeed(pi) {
       state.signal?.removeEventListener("abort", state.onAbort);
       return response;
     }
+    if (current(state) && state.metrics) startMetrics(state);
     return new Response(captureTimings(response.body, state), {
       status: response.status,
       statusText: response.statusText,
@@ -476,7 +593,16 @@ export default function piLlamaGenerationSpeed(pi) {
     generatedTokens = 0;
     generationMs = 0;
     lastUiUpdate = 0;
+    // A new run starts from the default working line even if the previous one ended
+    // mid-prefill (aborted request, server error).
+    clearWorking();
     showIdle();
+  });
+
+  pi.on("turn_end", (_event, ctx) => {
+    ui = ctx.ui;
+    hasUi = ctx.hasUI;
+    for (const state of responses) clearPrefill(state);
   });
 
   pi.on("agent_end", (_event, ctx) => {
@@ -484,6 +610,7 @@ export default function piLlamaGenerationSpeed(pi) {
     ui = ctx.ui;
     hasUi = ctx.hasUI;
     agentRunning = false;
+    clearWorking();
     if (generatedTokens > 0 && generationMs > 0) {
       showSpeed(generatedTokens / (generationMs / 1000), "⚡ Средний TPS:");
     } else {

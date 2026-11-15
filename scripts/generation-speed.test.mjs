@@ -16,7 +16,7 @@ const settle = async () => { for (let i = 0; i < 5; i++) await immediate(); };
 
 function harness(t, slots = () => slot(10), capabilities = {}) {
   t.mock.timers.enable({ apis: ["setTimeout"] });
-  const saved = globalThis.fetch, hooks = new Map(), statuses = [], posts = [], gets = [], metrics = [], streams = [], metadata = [];
+  const saved = globalThis.fetch, hooks = new Map(), statuses = [], working = [], posts = [], gets = [], metrics = [], streams = [], metadata = [];
   globalThis.fetch = async (url, init) => {
     if (init?.method !== "POST" && /\/(models|props)$/.test(String(url))) {
       metadata.push({ url: String(url), init });
@@ -43,7 +43,10 @@ function harness(t, slots = () => slot(10), capabilities = {}) {
   };
   const mockFetch = globalThis.fetch;
   speedAddon({ on: (name, fn) => hooks.set(name, fn) });
-  const ctx = { hasUI: true, ui: { setStatus: (key, text) => statuses.push({ key, text }) } };
+  const ctx = { hasUI: true, ui: {
+    setStatus: (key, text) => statuses.push({ key, text }),
+    setWorkingMessage: text => working.push(text),
+  } };
   const start = () => hooks.get("before_agent_start")({}, ctx);
   hooks.get("session_start")({}, ctx); start();
   t.after(() => {
@@ -53,7 +56,7 @@ function harness(t, slots = () => slot(10), capabilities = {}) {
     for (const stream of streams) { try { stream.controller.close(); } catch {} }
   });
   return {
-    hooks, ctx, statuses, posts, gets, metrics, streams, start, metadata,
+    hooks, ctx, statuses, working, posts, gets, metrics, streams, start, metadata,
     async open(signal, fields = {}) {
       const response = await fetch("http://server:8181/proxy/v1/chat/completions", { method: "POST", signal,
         headers: { Authorization: "Bearer fixture-secret", "Content-Type": "application/json" },
@@ -262,16 +265,22 @@ test("a malformed telemetry body clears stale speed but preserves the generation
 });
 
 test("a server publishing web telemetry takes over the status from unreadable slots", async t => {
-  const live = [{ state: "reading", tok_s: null }, { state: "generating", tok_s: 37.5 }, { state: "generating", tok_s: 39.25 }];
+  const live = [
+    { state: "reading", tok_s: null }, { state: "reading", tok_s: null }, { state: "reading", tok_s: null },
+    { state: "generating", tok_s: 37.5 }, { state: "generating", tok_s: 39.25 },
+  ];
   const h = harness(t, () => json(bareSlot), { metrics: n => json({ live: live[Math.min(n - 1, live.length - 1)] }) });
   let clock = 1000;
   t.mock.method(performance, "now", () => clock);
   t.mock.method(Date, "now", () => 100000 + clock);
   const stream = await h.open();
   h.emit(stream, { choices: [{ delta: { role: "assistant" }, finish_reason: null }] });
-  await settle(); await h.tick(1000); await settle();
-  assert.equal(h.metrics.length, 0, "No web telemetry during queue and prefill");
+  await settle();
+  assert.equal(h.metrics.length, 1, "The web counters only exist during prefill, so polling starts there");
+  assert.equal(h.working.at(-1), "Prefilling... reading the prompt");
+  await h.tick(1000); await settle();
   h.emit(stream, chunk("Answer")); await settle(); await h.tick(1000); await settle();
+  assert.equal(h.working.at(-1), undefined, "The first output token hands the working line back");
   assert.equal(h.metrics[0].url, "http://server:8181/proxy/v1/metrics");
   assert.equal(h.metrics[0].init.headers.get("authorization"), "Bearer fixture-secret");
   assert.equal(h.metrics[0].init.headers.get("content-type"), null);
@@ -285,9 +294,11 @@ test("a server publishing web telemetry takes over the status from unreadable sl
   assert.equal(h.gets.length, 1, "The unusable slot route is not polled again");
   assert.deepEqual(JSON.parse(h.posts[0].init.body).messages, [{ role: "user", content: "unchanged input" }]);
   assert.equal(JSON.parse(h.posts[0].init.body).logprobs, undefined, "No sampling options were added");
+  const reads = h.metrics.length;
   h.emit(stream, final); await settle();
-  await h.tick(5000); assert.equal(h.metrics.length, 3);
-  assert.deepEqual(h.metrics.map(entry => new URL(entry.url).pathname), Array(3).fill("/proxy/v1/metrics"),
+  await h.tick(5000); assert.equal(h.metrics.length, reads, "The final chunk stops polling");
+  assert.ok(reads >= 4, "Polling ran while the response streamed");
+  assert.deepEqual(h.metrics.map(entry => new URL(entry.url).pathname), Array(reads).fill("/proxy/v1/metrics"),
     "The mount that answered is reused for every poll");
   await h.close(stream);
 });
@@ -311,7 +322,7 @@ test("native timings keep priority over web telemetry", async t => {
   const stream = await h.open();
   h.emit(stream, chunk("text", { timings: { predicted_n: 10, predicted_ms: 500, predicted_per_second: 20 } }));
   await settle(); await h.tick(5000);
-  assert.equal(h.metrics.length, 0);
+  assert.equal(h.metrics.length, 1, "One probe, then native timings own the status field");
   assert.equal(h.statuses.at(-1).text, "⚡ TPS: 20.0 tok/s");
   await h.close(stream);
 });
@@ -323,7 +334,9 @@ test("a second concurrent response clears the shared server metric instead of re
   assert.equal(h.statuses.at(-1).text, "⚡ TPS: 30.0 tok/s");
   const two = await h.open();
   assert.equal(h.statuses.at(-1).text, "⚡ TPS: —", "A server-wide figure cannot be attributed");
-  await h.tick(5000); assert.equal(h.metrics.length, 2);
+  const reads = h.metrics.length;
+  await h.tick(5000);
+  assert.equal(h.metrics.length, reads, "Neither response keeps polling a shared server metric");
   await h.close(one); await h.close(two);
 });
 
@@ -344,8 +357,8 @@ test("a real stalled HTTP telemetry body times out without interrupting SSE", { 
   let answer, telemetryClosed, count = 0;
   const closed = new Promise(resolve => { telemetryClosed = resolve; });
   const server = http.createServer((req, res) => {
-    if (req.url === "/v1/metrics") {
-      res.writeHead(404); // Stock llama.cpp has no web telemetry route.
+    if (req.url.endsWith("/metrics")) {
+      res.writeHead(404); // Stock llama.cpp has no web telemetry route on either mount.
       res.end();
     } else if (req.url === "/v1/slots") {
       count++;
@@ -365,7 +378,7 @@ test("a real stalled HTTP telemetry body times out without interrupting SSE", { 
     answer?.destroy(); server.closeAllConnections();
     await new Promise(resolve => server.close(resolve));
   });
-  const ctx = { hasUI: true, ui: { setStatus: (_key, text) => statuses.push(text) } };
+  const ctx = { hasUI: true, ui: { setStatus: (_key, text) => statuses.push(text), setWorkingMessage: () => {} } };
   hooks.get("before_agent_start")({}, ctx);
   const response = await fetch(`http://127.0.0.1:${server.address().port}/v1/chat/completions`, {
     method: "POST", body: JSON.stringify({ stream: true, messages: [{ role: "user", content: "fixture" }] }),
@@ -380,4 +393,66 @@ test("a real stalled HTTP telemetry body times out without interrupting SSE", { 
   assert.equal(await output, wire(chunk("still generating")) + wire(final) + "data: [DONE]\n\n");
   hooks.get("agent_end")({}, ctx);
   assert.equal(statuses.at(-1), "⚡ Средний TPS: 50.0 tok/s");
+});
+
+const shownLines = working => working.filter(line => line !== undefined);
+
+test("prompt_progress from the stream draws the bar and hands the field back on the first token", async t => {
+  const h = harness(t, () => { throw Error("No slot polling for a stream that reports its own progress"); },
+    { metrics: () => json({ live: { state: "reading", phase: "reading the prompt" } }) });
+  const stream = await h.open();
+  const sent = JSON.parse(h.posts[0].init.body);
+  assert.equal(sent.return_progress, true, "Servers hide prompt progress without this flag");
+  assert.equal(sent.stream_options.include_usage, true, "The final usage chunk must keep arriving");
+  assert.deepEqual(sent.messages, [{ role: "user", content: "unchanged input" }], "User content is untouched");
+  h.emit(stream, { prompt_progress: { total: 1000, processed: 250, time_ms: 500, cache: 0 } });
+  await settle();
+  assert.match(h.working.at(-1), /^Prefilling\.\.\. [█░]+\s+25% · \d+s · 500\.0 tok\/s$/);
+  h.emit(stream, { prompt_progress: { total: 1000, processed: 750, time_ms: 1000, cache: 0 } });
+  await settle();
+  assert.match(h.working.at(-1), /\s75% · 1000\.0 tok\/s$/);
+  h.emit(stream, chunk("Ответ")); await settle();
+  assert.equal(h.working.at(-1), undefined, "Generation owns the working line again");
+  await h.close(stream);
+});
+
+test("web telemetry counters draw the same bar while the stream stays silent about prefill", async t => {
+  const h = harness(t, () => { throw Error("No slot polling before output"); },
+    { metrics: () => json({ live: { state: "reading", prompt_read: 2000, prompt_total: 8000, prefill_tok_s_mean: 1500, elapsed_s: 1.3 } }) });
+  const stream = await h.open();
+  await settle();
+  assert.match(h.working.at(-1), /^Prefilling\.\.\. [█░]+\s+25% · 4s · 1500\.0 tok\/s$/);
+  h.emit(stream, chunk("Ответ")); await settle();
+  assert.equal(h.working.at(-1), undefined, "The first token ends the prefill reading");
+  await h.close(stream);
+});
+
+test("a server reporting another phase invents no prefill progress", async t => {
+  const h = harness(t, () => { throw Error("No slot polling during queue"); },
+    { metrics: () => json({ live: { state: "idle", tok_s: null } }) });
+  const stream = await h.open();
+  await settle(); await h.tick(1000); await settle();
+  assert.equal(shownLines(h.working).length, 0, "Queue and idle states stay silent");
+  h.emit(stream, chunk("text")); await settle(); await h.close(stream);
+});
+
+test("stream progress wins over the shared server metric", async t => {
+  const h = harness(t, () => { throw Error("unused"); },
+    { metrics: () => json({ live: { state: "reading", prompt_read: 100, prompt_total: 1000, elapsed_s: 1 } }) });
+  const stream = await h.open();
+  h.emit(stream, { prompt_progress: { total: 900, processed: 900, time_ms: 300 } });
+  await settle(); await h.tick(750); await settle();
+  assert.match(h.working.at(-1), /\s100%/);
+  h.emit(stream, chunk("x")); await settle(); await h.close(stream);
+});
+
+test("an aborted request cannot leave the bar on the screen", async t => {
+  const h = harness(t, () => { throw Error("unused"); }, { metrics: () => json({ live: { state: "reading" } }) });
+  const controller = new AbortController(), stream = await h.open(controller.signal);
+  stream.read?.catch(() => {});
+  h.emit(stream, { prompt_progress: { total: 100, processed: 10, time_ms: 100 } });
+  await settle();
+  assert.match(h.working.at(-1), /Prefilling/);
+  controller.abort(); await settle();
+  assert.equal(h.working.at(-1), undefined, "Abort drops the bar instead of leaving it until the next run");
 });
