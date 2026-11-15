@@ -66,7 +66,7 @@ test("embedded build installs request, summary and media bridges idempotently", 
   await assert.rejects(applyCoreRequestCompatibility(target), /requires.*1\.5\.2/);
 });
 
-test("addon updates retain MCP configuration and statistics cancellation fixes", async t => {
+test("addon updates retain MCP configuration and statistics display fixes", async t => {
   const directory = await fixture(t);
   for (const [name, version, files] of [["pi-mcp-adapter", "5.1.0", ["index.ts", "proxy-modes.ts", "init.ts", "server-manager.ts"]],
     ["pi-llama-cpp-stats", "0.1.6", ["index.ts"]]]) {
@@ -78,7 +78,10 @@ test("addon updates retain MCP configuration and statistics cancellation fixes",
     await applyAddonRequestCompatibility(name, target);
     assert.deepEqual(await Promise.all(files.map(file => readFile(path.join(target, file), "utf8"))), before);
     if (name === "pi-mcp-adapter") await access(path.join(target, "desktop-config.js"));
-    else assert.match(before[0], /return reader\.cancel\(reason\)/);
+    else {
+      assert.match(before[0], /return reader\.cancel\(reason\)/);
+      assert.match(before[0], /if \(hasGeneratedOutput\(chunk\)\) finishPrefilling\(\);/);
+    }
   }
 });
 

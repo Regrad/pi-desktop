@@ -4,13 +4,23 @@ import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { patchToolResultImages } from "./tool-result-images-patch.mjs";
 import { patchMcpIndex, patchMcpProxy, patchMcpOnDemandInit, patchMcpOnDemandManager } from "./mcp-config-patch.mjs";
-import { patchLlamaStatsCancellation } from "./llama-stats-patch.mjs";
+import { patchLlamaStatsCancellation, patchLlamaStatsPrefillReset } from "./llama-stats-patch.mjs";
 import { patchToolRouting } from "./tool-routing-patch.mjs";
 import { applyContextCompatibility, applyRequestDiagnosticsCompatibility } from "../resources/pi-rpc-bridge/compatibility.js";
 import { applyPiLensGrammarCache } from "../resources/pi-lens/grammar-cache-patch.mjs";
 import { SUPPORTED_PI_VERSION } from "../resources/pi-engine/version.js";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
+
+async function readPackage(file) {
+  try {
+    return JSON.parse(await readFile(file, "utf8"));
+  } catch (error) {
+    // Still fails closed: a missing or malformed manifest must stop the bridge.
+    throw new Error(`Cannot read ${file}: ${error instanceof Error ? error.message : String(error)}`);
+  }
+}
+
 const corePackagePath = path.join(
   root,
   "node_modules",
@@ -18,7 +28,7 @@ const corePackagePath = path.join(
   "pi-coding-agent",
   "package.json",
 );
-const corePackage = JSON.parse(await readFile(corePackagePath, "utf8"));
+const corePackage = await readPackage(corePackagePath);
 
 if (corePackage.version !== SUPPORTED_PI_VERSION) {
   throw new Error(
@@ -45,7 +55,7 @@ process.stdout.write("Pi Desktop native tool-exposure policy applied.\n");
 // Resolve from the agent package: development has nested dependencies whereas
 // electron-builder hoists the same provider into the portable runtime.
 const providerRoot = path.dirname(findPackageJSON("@earendil-works/pi-ai", pathToFileURL(corePackagePath).href));
-const providerPackage = JSON.parse(await readFile(path.join(providerRoot, "package.json"), "utf8"));
+const providerPackage = await readPackage(path.join(providerRoot, "package.json"));
 if (providerPackage.version !== SUPPORTED_PI_VERSION) {
   throw new Error(`Tool image bridge targets pi-ai ${SUPPORTED_PI_VERSION}, found ${providerPackage.version}.`);
 }
@@ -57,7 +67,7 @@ if (patchedProvider !== providerSource) await writeFile(providerPath, patchedPro
 process.stdout.write("Pi Desktop multimodal tool-result compatibility bridge applied.\n");
 
 const adapterDir = path.join(root, "node_modules", "pi-mcp-adapter");
-const adapterPackage = JSON.parse(await readFile(path.join(adapterDir, "package.json"), "utf8"));
+const adapterPackage = await readPackage(path.join(adapterDir, "package.json"));
 if (adapterPackage.version !== "5.1.0") throw new Error(`MCP configuration bridge targets pi-mcp-adapter 5.1.0, found ${adapterPackage.version}`);
 for (const [name, patch] of [["index.ts", patchMcpIndex], ["proxy-modes.ts", patchMcpProxy], ["init.ts", patchMcpOnDemandInit], ["server-manager.ts", patchMcpOnDemandManager]]) {
   const file = path.join(adapterDir, name);
@@ -69,12 +79,13 @@ await copyFile(path.join(root, "resources", "pi-mcp", "desktop-config.js"), path
 process.stdout.write("Pi Desktop MCP configuration bridge applied.\n");
 
 const statsDir = path.join(root, "node_modules", "pi-llama-cpp-stats");
-const statsPackage = JSON.parse(await readFile(path.join(statsDir, "package.json"), "utf8"));
+const statsPackage = await readPackage(path.join(statsDir, "package.json"));
 if (statsPackage.version !== "0.1.6") throw new Error(`Statistics cancellation bridge targets pi-llama-cpp-stats 0.1.6, found ${statsPackage.version}`);
 const statsPath = path.join(statsDir, "index.ts");
 const statsSource = new TextDecoder("utf-8", { fatal: true }).decode(await readFile(statsPath));
 const patchedStats = patchLlamaStatsCancellation(statsSource);
-if (patchedStats !== statsSource) await writeFile(statsPath, patchedStats, "utf8");
+const patchedStatsPrefill = patchLlamaStatsPrefillReset(patchedStats);
+if (patchedStatsPrefill !== statsSource) await writeFile(statsPath, patchedStatsPrefill, "utf8");
 process.stdout.write("Pi Desktop statistics cancellation compatibility bridge applied.\n");
 await applyPiLensGrammarCache(path.join(root, "node_modules", "pi-lens"));
 process.stdout.write("Pi Desktop Pi Lens portable grammar cache applied.\n");

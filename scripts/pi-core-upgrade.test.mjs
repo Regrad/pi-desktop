@@ -7,7 +7,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import http from "node:http";
 import { fileURLToPath } from "node:url";
-import { patchLlamaStatsCancellation } from "./llama-stats-patch.mjs";
+import { patchLlamaStatsCancellation, patchLlamaStatsPrefillReset } from "./llama-stats-patch.mjs";
 
 const root = process.env.PI_TEST_APP_ROOT || fileURLToPath(new URL("..", import.meta.url));
 
@@ -18,6 +18,21 @@ test("statistics cancellation patch is idempotent and fails closed on unknown so
   const original = source.replace("return reader.cancel(reason);", "reader.cancel(reason);");
   assert.equal(patchLlamaStatsCancellation(original), source);
   assert.throws(() => patchLlamaStatsCancellation("unknown source"), /no longer matches/);
+});
+
+test("statistics prefill reset patch is idempotent and fails closed on unknown source", async () => {
+  const source = await readFile(path.join(root, "node_modules/pi-llama-cpp-stats/index.ts"), "utf8");
+  assert.match(source, /function resetPrefilling\(\): void \{/);
+  assert.match(source, /if \(hasGeneratedOutput\(chunk\)\) finishPrefilling\(\);/);
+  assert.equal(patchLlamaStatsPrefillReset(source), source);
+  // A server may stop progress below 100%, so output must end the prefill bar.
+  const original = source.replace(
+    "\t\t\t\t\t\tif (hasGeneratedOutput(chunk)) finishPrefilling();\n\t\t\t\t\t\telse updateWorkingMessage();",
+    "\t\t\t\t\t\tupdateWorkingMessage();",
+  );
+  assert.notEqual(original, source);
+  assert.equal(patchLlamaStatsPrefillReset(original), source);
+  assert.throws(() => patchLlamaStatsPrefillReset("unknown source"), /no longer matches/);
 });
 
 test("Pi 1.5.2 embedded SDK engine loads add-ons, preserves user input, runs tools and aborts", { timeout: 60000 }, async t => {
