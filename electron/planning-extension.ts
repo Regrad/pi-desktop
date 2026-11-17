@@ -52,7 +52,7 @@ export default function planningExtension(pi: ExtensionAPI, read = readDesktopPl
       (event.input as Record<string, unknown>).mode = "raw";
     if (!planningToolAllowed(event.toolName, event.input)) return {
       block: true,
-      reason: "PLAN mode: action blocked. Read-only investigation and updates to the planning document are allowed; implementation requires user approval.",
+      reason: "Plan mode: action blocked. Read-only investigation and updates to the planning document are allowed; implementation requires user approval.",
     };
   });
   pi.on("user_bash", () => {
@@ -60,7 +60,7 @@ export default function planningExtension(pi: ExtensionAPI, read = readDesktopPl
   });
   pi.registerTool({
     name: "update_implementation_plan", label: "План реализации",
-    description: "Read or revise the detailed task specification, separate from the working checklist. Call {} to read the full document; writes confirm revision and phase without repeating its text. Available in both normal and PLAN modes; create or revise a plan whenever useful. Choose one edit: content replaces the document, append adds text, old_text + new_text replaces one unique literal fragment (empty new_text deletes it). In PLAN mode set ready=true when ready for user review, then wait for approval. In normal mode writing a plan or setting ready=true does not switch modes or require approval; continue work already authorized by the user. After implementing a working or approved plan and verifying the whole result, call {complete:true} to mark the document completed. Completion is separate from checklist marks; any existing checklist must be finished. Do not combine completion with edits. Read again after a revision conflict.",
+    description: "Read or revise the detailed task specification, separate from the working checklist. Call {} to read the full document; writes confirm revision and phase without repeating its text. Available in both normal and PLAN modes; create or revise a plan whenever useful. Choose one edit: content replaces the document, append adds text, old_text + new_text replaces one unique literal fragment (empty new_text deletes it). In Plan mode set ready=true when ready for user review, then wait for approval. In normal mode writing a plan or setting ready=true does not switch modes or require approval; continue work already authorized by the user. After implementing a working or approved plan and verifying the whole result, call {complete:true} to mark the document completed. Completion is separate from checklist marks; any existing checklist must be finished. Do not combine completion with edits. Read again after a revision conflict.",
     parameters: Type.Object({ content: Type.Optional(Type.String({ maxLength: planningLimit })), append: Type.Optional(Type.String({ maxLength: planningLimit })),
       old_text: Type.Optional(Type.String()), new_text: Type.Optional(Type.String()), ready: Type.Optional(Type.Boolean()), complete: Type.Optional(Type.Boolean()) }),
     async execute(_id, params, signal) {

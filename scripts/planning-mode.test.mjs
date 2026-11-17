@@ -4,7 +4,7 @@ import { readFileSync, existsSync, mkdirSync, mkdtempSync, writeFileSync, unlink
 import path from "node:path";
 import http from "node:http";
 import { registerHooks, stripTypeScriptTypes } from "node:module";
-import { isPlanning, approvedPlanning, completePlanning, controlPlanningState, revisePlanning, planningToolAllowed, planningContext, planningTick, normalPlanningContext, planningLimit } from "../shared/planning.ts";
+import { isPlanning, approvedPlanning, completePlanning, controlPlanningState, revisePlanning, planningToolAllowed, planningContext, planningTick, normalPlanningContext, planningPolicy, planningLimit } from "../shared/planning.ts";
 import { updatedPlan, canContinuePlan } from "../shared/plan.ts";
 import { desktopPlanningLocked, assertPlanningModelAccess, guardExtensionHandler } from "../resources/tool-routing/desktop-planning-permissions.js";
 import { discardDelayedStateSnapshots, projectDesktopServiceContext } from "../resources/pi-rpc-bridge/service-context.js";
@@ -120,7 +120,7 @@ test("a prose specification is completed explicitly, independently of checklist 
   assert.equal(done.phase, "completed"); assert.equal(done.content, prose);
   assert.equal(isPlanning(done), false); assert.equal(approvedPlanning(done), false);
   assert.match(planningContext(done), /completed and retained for reference/);
-  assert.doesNotMatch(planningContext(done), /PLAN mode: implementation is forbidden/);
+  assert.doesNotMatch(planningContext(done), /Plan mode: implementation is forbidden/);
   assert.equal(completePlanning({ complete: true, expectedRevision: done.revision }, done), done);
   assert.equal(controlPlanningState("revise", done.revision, done).phase, "draft");
   assert.equal(completePlanning({ complete: true, expectedRevision: state.revision }, state).phase, "completed", "a checklist is optional");
@@ -301,7 +301,7 @@ test("live state survives restart, fails closed, and guards hidden model APIs an
     const save = () => writeFileSync(file, JSON.stringify({ conversations: [{ id: "other", planning: { content: "wrong" } }, { id: "chat", planning }] }));
     save(); process.env.PI_DESKTOP_GOAL_STATE_FILE = file; process.env.PI_DESKTOP_CONVERSATION_ID = "chat";
     assert.deepEqual(readDesktopPlanning(), planning); assert.equal(desktopPlanningLocked(), true);
-    assert.throws(() => assertPlanningModelAccess(), /PLAN mode/);
+    assert.throws(() => assertPlanningModelAccess(), /Plan mode/);
     let mutations = 0;
     const guarded = guardExtensionHandler("agent_settled", () => mutations++, "C:/app/node_modules/pi-lens/dist/index.js");
     guarded(); assert.equal(mutations, 0);
@@ -392,7 +392,7 @@ registerHooks({resolve(s,c,n){return n(s.endsWith("desktop-tool-routing.js")?${J
     assert.equal(existsSync(unsafe), false); assert.equal(existsSync(canary), false);
     assert.equal(state.conversations[0].planning.phase, "review");
     assert.deepEqual(hostRequests, ["update_implementation_plan"]);
-    assert.ok(captured[2].messages.filter(message => message.role === "tool").some(message => JSON.stringify(message.content).includes("PLAN mode")), "runtime permissions rejected unsafe tools");
+    assert.ok(captured[2].messages.filter(message => message.role === "tool").some(message => JSON.stringify(message.content).includes("Plan mode")), "runtime permissions rejected unsafe tools");
     const modelCall = captured[2].messages.find(message => message.tool_call_id === "call-2-3");
     assert.match(JSON.stringify(modelCall?.content), /additional model generation is unavailable/, "hidden model API reaches the same runtime permission check");
     state.conversations[0].planning = approve(state.conversations[0].planning); save();
@@ -450,4 +450,56 @@ test("the mode line is explicit in every phase, whether or not a document exists
   const done = completePlanning({ complete: true, expectedRevision: working.revision }, working);
   assert.match(planningContext(done), /Plan mode is OFF/);
   assert.match(normalPlanningContext(), /Plan mode is OFF/);
+});
+
+test("each phase of a document is told the rule of its own moment", () => {
+  const draft = controlPlanningState("start", 0), ready = review(draft), active = approve(ready);
+  assert.match(planningTick(draft), /Plan mode is ON \(read only\)\. Prepare the document, then submit ready=true\./);
+  assert.match(planningTick(ready), /read only: awaiting approval[\s\S]*do not submit it again/);
+  assert.doesNotMatch(planningTick(ready), /then submit ready=true/);
+  assert.match(planningTick(active), /Plan mode is OFF \(full access\)[\s\S]*Work from the approved document/);
+  const orphan = { content: "", phase: "implementation", revision: 3, approvedRevision: 2, updatedAt: new Date().toISOString() };
+  assert.equal(isPlanning(orphan), true);
+  assert.match(planningTick(orphan), /Plan mode is ON again \(read only: approval was lost\)[\s\S]*Ask the user to approve/);
+  assert.match(planningContext(orphan), /Plan mode is ON again/);
+});
+
+test("each mode is described by its own rules, never borrowed from the other", () => {
+  const gated = planningContext(controlPlanningState("start", 0));
+  assert.match(gated, /Plan mode is ON for this chat: read only/);
+  assert.match(gated, /working checklist and the notebook stay read-only/);
+  assert.match(gated, /a blocked write answers with the reason instead of a missing tool/);
+  const free = normalPlanningContext();
+  assert.match(free, /Plan mode is OFF for this chat: full access/);
+  assert.match(free, /Only the user switches Plan mode/);
+  assert.match(free, /govern approval, not this mode/);
+  assert.doesNotMatch(free, /read only|forbidden/);
+});
+
+test("the standing policy describes both modes and names the state message as the only source", () => {
+  assert.match(planningPolicy, /two access modes/);
+  assert.match(planningPolicy, /План · только чтение/);
+  assert.match(planningPolicy, /Полный доступ/);
+  assert.match(planningPolicy, /only source of this fact/);
+  assert.match(planningPolicy, /working checklist of update_plan/);
+});
+
+test("the executed gate and the instructions agree on what counts as Plan mode", () => {
+  const folder = mkdtempSync("C:/AI_Temp/pi-plan-parity-"), file = path.join(folder, "state.json");
+  const previous = [process.env.PI_DESKTOP_GOAL_STATE_FILE, process.env.PI_DESKTOP_CONVERSATION_ID];
+  try {
+    const ready = review(), active = approve(ready);
+    const states = [undefined, controlPlanningState("start", 0), ready, active,
+      controlPlanningState("cancel", ready.revision, ready),
+      completePlanning({ complete: true, expectedRevision: active.revision }, active),
+      { content: "", phase: "implementation", revision: 3, approvedRevision: 2, updatedAt: new Date().toISOString() }];
+    process.env.PI_DESKTOP_CONVERSATION_ID = "chat"; process.env.PI_DESKTOP_GOAL_STATE_FILE = file;
+    for (const planning of states) {
+      writeFileSync(file, JSON.stringify({ conversations: [{ id: "chat", planning }] }));
+      assert.equal(desktopPlanningLocked(), isPlanning(planning), `phase ${planning?.phase ?? "none"}`);
+    }
+  } finally {
+    [process.env.PI_DESKTOP_GOAL_STATE_FILE, process.env.PI_DESKTOP_CONVERSATION_ID] = previous;
+    rmSync(folder, { recursive: true, force: true });
+  }
 });

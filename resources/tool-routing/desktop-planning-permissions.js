@@ -20,7 +20,7 @@ export function desktopPlanningLocked() {
 }
 
 export function assertPlanningModelAccess() {
-  if (desktopPlanningLocked()) throw new Error("PLAN mode: additional model generation is unavailable until user approval.");
+  if (desktopPlanningLocked()) throw new Error("Plan mode: additional model generation is unavailable until user approval.");
 }
 
 /** Pi Lens can mutate files from these hooks without calling an edit tool. */
