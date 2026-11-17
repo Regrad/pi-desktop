@@ -4,7 +4,7 @@ import { createHash } from "node:crypto";
 /** Append-only snapshots and short reminders. Writes acknowledge revisions without repeating full state. */
 export function stateContext(pi: ExtensionAPI, customType: string, toolNames: string[], stateField?: string) {
   return (messages: any[], state: unknown, content: string | undefined, key: (state: any) => string, reminder = false, reminderContent?: string,
-    options: { refreshTurns?: number; changeContent?: string } = {}) => {
+    options: { refreshTurns?: number; changeContent?: string; announceEmpty?: boolean } = {}) => {
     const identifyUser = (count: number, message: unknown) => createHash("sha256").update(JSON.stringify([count, message])).digest("hex");
     const user = messages.filter(message => message.role === "user");
     const userKey = user.length ? identifyUser(user.length, user.at(-1)) : undefined;
@@ -54,7 +54,9 @@ export function stateContext(pi: ExtensionAPI, customType: string, toolNames: st
     const current = key(state);
     const refresh = reminder && ((userKey && lastReminder !== userKey)
       || (options.refreshTurns && toolTurns >= options.refreshTurns));
-    if (!content || (previous === current && !refresh && hasSnapshot) || (!hadState && state === undefined)) return messages;
+    // announceEmpty keeps a chat without any state informed that nothing is gated, instead of
+    // leaving the model to infer a mode from vocabulary alone.
+    if (!content || (previous === current && !refresh && hasSnapshot) || (!hadState && state === undefined && !options.announceEmpty)) return messages;
     const summary = hasSnapshot && (previous === current ? reminderContent : options.changeContent);
     const message = { role: "custom", customType, display: false,
       content: summary || content,

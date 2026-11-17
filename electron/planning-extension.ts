@@ -5,7 +5,7 @@ import { createRequire } from "node:module";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import type { ConversationPlanning } from "../shared/types.js";
-import { isPlanning, planningContext, planningTick, planningLimit, planningPolicy, planningToolAllowed } from "../shared/planning.js";
+import { isPlanning, normalPlanningContext, planningContext, planningTick, planningLimit, planningPolicy, planningToolAllowed } from "../shared/planning.js";
 import { requestGoal } from "./goal-extension.js";
 import { stateContext } from "./state-context.js";
 
@@ -35,9 +35,12 @@ export default function planningExtension(pi: ExtensionAPI, read = readDesktopPl
   pi.on("context", event => {
     const state = read();
     observedRevision = state?.revision ?? 0;
-    return { messages: project(event.messages, state, state ? planningContext(state) : undefined, value => String(value?.revision ?? 0),
+    return { messages: project(event.messages, state, state ? planningContext(state) : normalPlanningContext(),
+      // A closed or absent document must not read as revision 0: the guard against deferred
+      // older snapshots would then drop the message that clears the previous mode.
+      value => value ? String(value.revision) : "none",
       Boolean(state && !["inactive", "completed"].includes(state.phase)), state ? planningTick(state) : undefined,
-      { changeContent: state && state.phase !== "implementation" ? planningTick(state) : undefined }) };
+      { changeContent: state && state.phase !== "implementation" ? planningTick(state) : undefined, announceEmpty: true }) };
   });
   pi.on("tool_call", event => {
     if (!locked()) return;

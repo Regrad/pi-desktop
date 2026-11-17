@@ -4,7 +4,7 @@ import { readFileSync, existsSync, mkdirSync, mkdtempSync, writeFileSync, unlink
 import path from "node:path";
 import http from "node:http";
 import { registerHooks, stripTypeScriptTypes } from "node:module";
-import { isPlanning, approvedPlanning, completePlanning, controlPlanningState, revisePlanning, planningToolAllowed, planningContext, planningLimit } from "../shared/planning.ts";
+import { isPlanning, approvedPlanning, completePlanning, controlPlanningState, revisePlanning, planningToolAllowed, planningContext, planningTick, normalPlanningContext, planningLimit } from "../shared/planning.ts";
 import { updatedPlan, canContinuePlan } from "../shared/plan.ts";
 import { desktopPlanningLocked, assertPlanningModelAccess, guardExtensionHandler } from "../resources/tool-routing/desktop-planning-permissions.js";
 import { discardDelayedStateSnapshots, projectDesktopServiceContext } from "../resources/pi-rpc-bridge/service-context.js";
@@ -411,4 +411,43 @@ registerHooks({resolve(s,c,n){return n(s.endsWith("desktop-tool-routing.js")?${J
     assert.deepEqual(captured[3].messages.slice(0, captured[2].messages.length), captured[2].messages, "approval preserves the PLAN request prefix");
     assert.equal(events.filter(event => event.type === "extension_error").length, 0, JSON.stringify(events.filter(event => event.type === "extension_error")));
   } finally { await rpc.stop(); server.closeAllConnections(); await new Promise(resolve => server.close(resolve)); removeTemporary(folder); }
+});
+
+test("a chat without a planning document is told Plan mode is off, and only once", () => {
+  const f = fixture(); f.state = undefined;
+  const context = messages => f.handlers.get("context")({ messages }).messages;
+  const first = context([{ role: "user", content: "Fix the bug" }]);
+  assert.match(first.at(-1).content, /Plan mode is OFF[\s\S]*full access/);
+  assert.match(first.at(-1).content, /No planning document in this chat/);
+  assert.equal(f.messages.length, 1);
+  assert.equal(context(first).length, first.length);
+  assert.equal(f.messages.length, 1);
+});
+
+test("removing the document clears the read-only statement instead of leaving it behind", () => {
+  const f = fixture(); f.state = review();
+  const context = messages => f.handlers.get("context")({ messages }).messages;
+  const gated = context([{ role: "user", content: "Plan it" }]);
+  assert.match(gated.at(-1).content, /Plan mode is ON[\s\S]*read only/);
+  assert.match(gated.at(-1).content, /"revision":2/);
+  f.state = undefined;
+  const cleared = context(gated);
+  assert.match(cleared.at(-1).content, /Plan mode is OFF/);
+  assert.match(cleared.at(-1).content, /no longer restricts work/);
+  assert.equal(f.messages.length, 2);
+  assert.equal(context(cleared).length, cleared.length);
+});
+
+test("the mode line is explicit in every phase, whether or not a document exists", () => {
+  const working = revisePlanning({ content: "Specification", expectedRevision: 0 }, undefined);
+  assert.equal(working.phase, "working");
+  assert.match(planningContext(working), /Plan mode is OFF/);
+  assert.match(planningTick(working), /Plan mode is OFF/);
+  assert.doesNotMatch(planningContext(working), /Plan mode is ON/);
+  const draft = controlPlanningState("start", 0);
+  assert.match(planningContext(draft), /Plan mode is ON/);
+  assert.match(planningTick(draft), /Plan mode is ON/);
+  const done = completePlanning({ complete: true, expectedRevision: working.revision }, working);
+  assert.match(planningContext(done), /Plan mode is OFF/);
+  assert.match(normalPlanningContext(), /Plan mode is OFF/);
 });
