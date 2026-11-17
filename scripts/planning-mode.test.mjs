@@ -4,7 +4,7 @@ import { readFileSync, existsSync, mkdirSync, mkdtempSync, writeFileSync, unlink
 import path from "node:path";
 import http from "node:http";
 import { registerHooks, stripTypeScriptTypes } from "node:module";
-import { isPlanning, approvedPlanning, completePlanning, controlPlanningState, revisePlanning, planningToolAllowed, planningContext, planningTick, normalPlanningContext, planningPolicy, planningLimit } from "../shared/planning.ts";
+import { isPlanning, approvedPlanning, completePlanning, controlPlanningState, revisePlanning, planningToolAllowed, planningContext, planningTick, normalPlanningContext, planImplementationPrompt, planningPolicy, planningLimit } from "../shared/planning.ts";
 import { updatedPlan, canContinuePlan } from "../shared/plan.ts";
 import { desktopPlanningLocked, assertPlanningModelAccess, guardExtensionHandler } from "../resources/tool-routing/desktop-planning-permissions.js";
 import { discardDelayedStateSnapshots, projectDesktopServiceContext } from "../resources/pi-rpc-bridge/service-context.js";
@@ -232,7 +232,7 @@ test("planning uses short phase reminders and write acknowledgements, restoring 
 });
 
 test("review/approval is version-checked and never stops or replaces the Pi process", async () => {
-  const control = hostMethod("  async controlPlanning(", "async function run(conversationId, action, expectedRevision)", { controlPlanningState, updatedPlan });
+  const control = hostMethod("  async controlPlanning(", "async function run(conversationId, action, expectedRevision)", { controlPlanningState, updatedPlan, planImplementationPrompt });
   const chat = { status: "idle", planning: review(), goal: { status: "active" }, plan: updatedPlan({ plan: [{ step: "Old", status: "pending" }], execution: "active" }) };
   const events = [], runtime = { snapshot: { state: { isStreaming: true } }, eventQueue: Promise.resolve() }; let queue = [];
   const host = { planningTransitions: new Set(), planningWrites: new Set(), goalContinuationRequested: new Set(), startingRuntimes: new Map(), runtimes: new Map([["chat", runtime]]),
@@ -455,7 +455,7 @@ test("the mode line is explicit in every phase, whether or not a document exists
 test("each phase of a document is told the rule of its own moment", () => {
   const draft = controlPlanningState("start", 0), ready = review(draft), active = approve(ready);
   assert.match(planningTick(draft), /Plan mode is ON \(read only\)\. Prepare the document, then submit ready=true\./);
-  assert.match(planningTick(ready), /read only: awaiting approval[\s\S]*do not submit it again/);
+  assert.match(planningTick(ready), /read only: awaiting approval[\s\S]*«Начать реализацию»[\s\S]*end the turn/);
   assert.doesNotMatch(planningTick(ready), /then submit ready=true/);
   assert.match(planningTick(active), /Plan mode is OFF \(full access\)[\s\S]*Work from the approved document/);
   const orphan = { content: "", phase: "implementation", revision: 3, approvedRevision: 2, updatedAt: new Date().toISOString() };
@@ -502,4 +502,33 @@ test("the executed gate and the instructions agree on what counts as Plan mode",
     [process.env.PI_DESKTOP_GOAL_STATE_FILE, process.env.PI_DESKTOP_CONVERSATION_ID] = previous;
     rmSync(folder, { recursive: true, force: true });
   }
+});
+
+test("approval starts the work as an application step, never as a message from the user", () => {
+  assert.doesNotMatch(source, /sendPrompt\(conversationId, "Реализуй/);
+  assert.match(source, /planImplementationPrompt\(approved\), \[\], "implement"/);
+  assert.match(source, /rpc\.request\("desktop_plan_implement"/);
+  const bridge = readFileSync(new URL("../resources/pi-engine/protocol.js", import.meta.url), "utf8");
+  const from = bridge.indexOf('case "desktop_plan_implement"');
+  const block = bridge.slice(from, from + 1600);
+  assert.match(block, /desktop_plan_implement: "desktop_plan_implementation"/);
+  assert.match(block, /customType: continuationType/);
+  assert.match(block, /display: false/);
+  assert.match(block, /triggerTurn: true/);
+  const message = planImplementationPrompt(approve(review()));
+  assert.ok(message.startsWith('<pi_desktop_service_context source="implementation-plan">'));
+  assert.match(message, /revision \d+/);
+  assert.match(message, /update_plan[\s\S]{0,200}execution/);
+  assert.match(message, /not a new request from the user/);
+  assert.doesNotMatch(message, /goal controller/);
+});
+
+test("the plan is approved with the interface control, not with a word in the chat", () => {
+  const ready = review();
+  assert.match(planningContext(ready), /Начать реализацию/);
+  assert.match(planningContext(ready), /a word in the chat is not approval/);
+  assert.match(planningTick(ready), /Начать реализацию/);
+  assert.match(planningTick(ready), /a word in chat does not approve it/);
+  assert.match(planningPolicy, /«Начать реализацию»/);
+  assert.match(planningPolicy, /never treat one as approval/);
 });

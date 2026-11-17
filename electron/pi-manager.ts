@@ -5,7 +5,7 @@ import { fileURLToPath } from "node:url";
 import { applyGoalReport, goalPrompt, settleGoal } from "../shared/goal.js";
 import { updatedPlan, planRequestSuffix, canContinuePlan } from "../shared/plan.js";
 import { confirmedPlanRevision } from "../shared/plan-activity.js";
-import { approvedPlanning, completePlanning, controlPlanningState, isPlanning, planningToolAllowed, revisePlanning } from "../shared/planning.js";
+import { approvedPlanning, completePlanning, controlPlanningState, isPlanning, planImplementationPrompt, planningToolAllowed, revisePlanning } from "../shared/planning.js";
 import { canResumeRun } from "../shared/run-state.js";
 import { selectConfiguredModel } from "../shared/model-selection.js";
 import { notebookUsage, updatedNotebook } from "../shared/notebook.js";
@@ -296,7 +296,7 @@ export class PiManager {
     conversationId: string,
     message: string,
     attachments: Attachment[],
-    behavior?: "steer" | "followUp" | "resume",
+    behavior?: "steer" | "followUp" | "resume" | "implement",
     expectedGoalId?: string,
     historyEdit = false,
     requestPlan = false,
@@ -455,7 +455,7 @@ export class PiManager {
       if (this.runtimes.get(conversationId) !== runtime || this.planningTransitions.has(conversationId))
         throw new Error("Режим или процесс чата изменился. Повторите отправку после переключения.");
       if (conversation.title === "Новый чат" && !runtime.snapshot?.messages.some(item => (item as JsonObject)?.role === "user")
-        && !isGoalContinuation && expectedPlanRevision === undefined && behavior !== "resume") {
+        && !isGoalContinuation && expectedPlanRevision === undefined && behavior !== "resume" && behavior !== "implement") {
         await this.nameConversation(conversationId, runtime, message || `Вложения: ${attachments.map(item => item.name).join(", ")}`);
       }
       if (runtime.runAborted) throw new Error("Отправка отменена пользователем.");
@@ -482,6 +482,7 @@ export class PiManager {
       else if (isGoalContinuation) await runtime.rpc.request("desktop_goal_continue", {
         message: `<pi_desktop_service_context source="goal">Continue authorized work on the current goal. Call get_goal first; historical directives may be obsolete.</pi_desktop_service_context>`, goalId: expectedGoalId,
       });
+      else if (behavior === "implement") await runtime.rpc.request("desktop_plan_implement", { message: preparedMessage, planRevision: conversation.planning?.revision });
       else if (behavior === "resume") {
         if (runtime.runAborted) throw new Error("Продолжение отменено пользователем.");
         runtime.pendingPlanStartRevision = conversation.plan?.execution === "active" ? conversation.plan.revision : undefined;
@@ -785,7 +786,11 @@ export class PiManager {
       await this.updateConversation(conversationId, changes);
       implement = action === "approve";
     } finally { this.planningTransitions.delete(conversationId); }
-    if (implement) await this.sendPrompt(conversationId, "Реализуй согласованный план. Используй документ плана как основу, а рабочий чеклист — для отслеживания выполнения.", []);
+    if (implement) {
+      // The approved document is the work order, and the engine gets it as a service message.
+      const approved = this.store.getConversation(conversationId).planning;
+      if (approved) await this.sendPrompt(conversationId, planImplementationPrompt(approved), [], "implement");
+    }
   }
 
   async controlPlan(conversationId: string, action: "pause" | "resume"): Promise<void> {
