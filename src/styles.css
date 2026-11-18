@@ -3328,11 +3328,14 @@ button.secondary.large {
 .plan-step.in_progress { font-weight: 600; }
 .plan-step.in_progress .plan-step-icon { color: #63836c; }
 .plan-explanation { margin: 10px 0 0; padding-top: 8px; border-top: 1px solid var(--line); font-size: 11px; line-height: 1.5; color: var(--muted); white-space: pre-wrap; overflow-wrap: anywhere; }
-.plan-spinner { animation: plan-spin 1.4s linear infinite; }
+/* The rotation sits on an HTML wrapper, not on the inline <svg>: the compositor keeps it
+   turning while the main thread is busy rendering streamed output. */
+.plan-spinner { display: inline-flex; will-change: transform; animation: plan-spin 1.4s linear infinite; }
 .plan-step.is-working { padding: 7px 8px; margin: 0 -8px; border-radius: 8px; background: #edf4ee; animation: plan-pulse 2s ease-in-out infinite; }
 .plan-step-text { min-width: 0; flex: 1; }
 .plan-step-status { flex-shrink: 0; font-size: 10px; font-weight: 500; color: #63836c; margin-top: 2px; }
 @keyframes plan-pulse { 50% { background: #e0ede3; } }
+.plan-marker-running { color: #4f7d5b; }
 @keyframes plan-spin { to { transform: rotate(360deg); } }
 @media (prefers-reduced-motion: reduce) { .plan-spinner, .plan-step.is-working { animation: none; } .plan-progress span { transition: none; } }
 .goal-panel {

@@ -1,7 +1,11 @@
 import { t } from "./i18n";
-import { Check, ChevronDown, Circle, ListChecks, LoaderCircle, X } from "lucide-react";
+import { Check, ChevronDown, Circle, CircleDashed, ListChecks, LoaderCircle, X } from "lucide-react";
 import { useState } from "react";
 import type { ConversationPlan } from "../shared/types";
+
+// With system "reduce motion" the rotation is off by CSS, and a static loader ring again looks
+// broken, so the same dashed marker is used and the row highlight carries the "running" signal.
+const prefersReducedMotion = () => Boolean(window.matchMedia?.("(prefers-reduced-motion: reduce)").matches);
 
 export function PlanPanel({ conversationId, plan, working }: { conversationId: string; plan?: ConversationPlan; working: boolean }) {
   const [expanded, setExpanded] = useState(true);
@@ -11,6 +15,9 @@ export function PlanPanel({ conversationId, plan, working }: { conversationId: s
   if (!plan?.steps.length) return null;
   const done = plan.steps.filter(step => step.status === "completed").length;
   const current = plan.steps.find(step => step.status === "in_progress");
+  // A step that is marked current but not executing needs its own look: an unanimated
+  // loader ring reads as a broken spinner.
+  const stepLabel = (executing: boolean) => executing ? t("Выполняется") : plan.execution === "active" ? t("Ждёт продолжения") : t("На паузе");
   const complete = done === plan.steps.length;
   const busy = removing || controlling;
   async function control(action: "pause" | "resume") {
@@ -40,10 +47,12 @@ export function PlanPanel({ conversationId, plan, working }: { conversationId: s
     {expanded && <div className="plan-body">
       {!complete && <p className="plan-explanation">{plan.execution === "active" ? t("Автопродолжение включено") : t("Автопродолжение на паузе")}</p>}
       <ol>{plan.steps.map((item, index) => <li key={index} className={`plan-step ${item.status}${item.status === "in_progress" && working ? " is-working" : ""}`}>
-        <span className="plan-step-icon" aria-label={item.status === "completed" ? t("Готово") : item.status === "in_progress" ? working ? t("Выполняется") : t("Текущий шаг") : t("Ожидает")}>
-          {item.status === "completed" ? <Check size={15} /> : item.status === "in_progress" ? <LoaderCircle size={15} className={working ? "plan-spinner" : ""} /> : <Circle size={12} />}
+        <span className="plan-step-icon" aria-label={item.status === "completed" ? t("Готово") : item.status === "in_progress" ? stepLabel(working) : t("Ожидает")}>
+          {item.status === "completed" ? <Check size={15} /> : item.status === "in_progress" ? working && !prefersReducedMotion()
+            ? <span className="plan-spinner"><LoaderCircle size={15} /></span>
+            : <CircleDashed size={15} className={working ? "plan-marker-running" : ""} /> : <Circle size={12} />}
         </span><span className="plan-step-text">{item.step}</span>
-        {item.status === "in_progress" && <span className="plan-step-status">{working ? t("Выполняется") : t("Текущий шаг")}</span>}
+        {item.status === "in_progress" && <span className="plan-step-status">{stepLabel(working)}</span>}
       </li>)}</ol>
       {plan.explanation && <p className="plan-explanation">{plan.explanation}</p>}
     </div>}

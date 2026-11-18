@@ -54,6 +54,14 @@ app.whenReady().then(async () => {
     await new Promise(resolve => setTimeout(resolve, 250));
     const nextRotation = await window.webContents.executeJavaScript("getComputedStyle(document.querySelector('.plan-spinner')).transform");
     assert.notEqual(firstRotation, nextRotation, "Current step indicator actually rotates");
+    // Without a live confirmation the step must read as waiting, never as a frozen loader ring.
+    window.webContents.send("pi:event", { conversationId: conversation.id, event: { type: "desktop_plan_activity", revision: undefined } });
+    await waitFor("!document.querySelector('.plan-spinner') && document.querySelector('.plan-step-icon svg.lucide-circle-dashed')");
+    assert.equal(await window.webContents.executeJavaScript("document.querySelector('.plan-step-status').textContent"), "Ждёт продолжения");
+    assert.equal(await window.webContents.executeJavaScript("document.querySelectorAll('.plan-step.is-working').length"), 0);
+    window.webContents.send("pi:event", { conversationId: conversation.id, event: { type: "desktop_plan_activity", revision: 1 } });
+    await waitFor("document.querySelector('.plan-spinner')");
+    assert.equal(await window.webContents.executeJavaScript("document.querySelector('.plan-step-status').textContent"), "Выполняется");
     window.webContents.send("pi:event", { conversationId: conversation.id, event: { type: "desktop_persistence_error", error: "Smoke: temporary save failure" } });
     await new Promise(resolve => setTimeout(resolve, 100));
     assert.equal(await window.webContents.executeJavaScript("document.querySelector('.plan-step-status').textContent"), "Выполняется");

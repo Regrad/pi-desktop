@@ -620,6 +620,8 @@ export const englishUi: Readonly<Record<string, string>> = {
   "Автопродолжение включено": "Automatic continuation enabled",
   "Автопродолжение на паузе": "Automatic continuation paused",
   "Выполняется": "In progress",
+  "Ждёт продолжения": "Waiting to continue",
+  "На паузе": "Paused",
   "Текущий шаг": "Current step",
   "Ожидает": "Pending",
   "{0} с": "{0} s",

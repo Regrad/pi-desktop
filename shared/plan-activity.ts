@@ -11,7 +11,11 @@ export function confirmedPlanRevision(
     ? plan.revision : undefined;
 }
 
+// The acknowledgement belongs to the live run, not to one checklist revision. The manager stamps it
+// from the plan it just wrote, while the patched checklist reaches the renderer as a separate event;
+// demanding equal revisions there stopped the indicator every time a step was ticked. Stale
+// acknowledgements are released by the manager (run settled, paused, removed), not here.
 export function planIsWorking(plan: ConversationPlan | undefined, streaming: boolean, confirmedRevision?: number): boolean {
-  return Boolean(streaming && plan?.execution === "active" && confirmedRevision !== undefined
-    && plan.revision === confirmedRevision && plan.steps.some(step => step.status === "in_progress"));
+  return Boolean(streaming && confirmedRevision !== undefined
+    && plan?.steps.some(step => step.status === "in_progress"));
 }

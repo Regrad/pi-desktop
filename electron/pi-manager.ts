@@ -88,6 +88,9 @@ interface RuntimeRecord {
   liveTools: Record<string, LiveToolActivity>;
   planWorkingRevision?: number;
   pendingPlanStartRevision?: number;
+  // Set when a checklist continuation was submitted: the previous turn can tick a step while the
+  // continuation is still queued, so the next run must confirm the live checklist by intent.
+  planContinuationQueued?: boolean;
   pendingInstructionsRevision?: number;
   modelsRevision?: string;
 }
@@ -472,10 +475,12 @@ export class PiManager {
         if (current.plan?.revision !== expectedPlanRevision || !canContinuePlan(current.plan, approvedPlanning(current.planning) ? undefined : current.goal)
           || runtime.snapshot?.state.isStreaming || (!resumeBeforeQueue && this.store.getQueuedPrompts(conversationId).length)) return;
         runtime.pendingPlanStartRevision = expectedPlanRevision;
+        runtime.planContinuationQueued = true;
         try {
           await runtime.rpc.request("desktop_plan_continue", { message: `<pi_desktop_service_context source="plan">Continue the next unfinished step of the current authorized checklist. If user input or approval is needed, set execution=paused, explain the reason and ask.</pi_desktop_service_context>`, });
         } catch (error) {
           runtime.pendingPlanStartRevision = undefined;
+          runtime.planContinuationQueued = undefined;
           throw error;
         }
       }
@@ -486,6 +491,7 @@ export class PiManager {
       else if (behavior === "resume") {
         if (runtime.runAborted) throw new Error("Продолжение отменено пользователем.");
         runtime.pendingPlanStartRevision = conversation.plan?.execution === "active" ? conversation.plan.revision : undefined;
+        runtime.planContinuationQueued = conversation.plan?.execution === "active";
         await runtime.rpc.request("desktop_run_resume");
       }
       else if (behavior === "steer") await runtime.rpc.request("steer", payload);
@@ -661,6 +667,7 @@ export class PiManager {
         if (runtime) {
           runtime.activeRun = restored;
           runtime.pendingPlanStartRevision = undefined;
+          runtime.planContinuationQueued = undefined;
           if (runtime.snapshot) runtime.snapshot.run = structuredClone(restored);
         }
         await this.store.saveConversationRun(conversationId, restored);
@@ -1716,9 +1723,14 @@ export class PiManager {
       // Its confirmed checklist stays current until agent_settled or a revision change.
       const continuingPlan = runtime.activeRun && !runtime.activeRun.completedAt
         && plan?.revision === runtime.planWorkingRevision;
-      runtime.planWorkingRevision = plan && (plan.revision === runtime.pendingPlanStartRevision || continuingPlan)
+      // A queued continuation can meet a newer revision (the turn before it ticked a step), so the
+      // queued intent confirms whichever step is open now.
+      const intendedContinuation = Boolean(runtime.planContinuationQueued)
+        && plan?.steps.some(step => step.status === "in_progress");
+      runtime.planWorkingRevision = plan && (plan.revision === runtime.pendingPlanStartRevision || continuingPlan || intendedContinuation)
         ? confirmedPlanRevision({ execution: "active" }, plan, true) : undefined;
       runtime.pendingPlanStartRevision = undefined;
+      runtime.planContinuationQueued = undefined;
       if (runtime.snapshot) runtime.snapshot.planWorkingRevision = runtime.planWorkingRevision;
       event = { ...event, planWorkingRevision: runtime.planWorkingRevision };
       runtime.liveMessage = undefined;

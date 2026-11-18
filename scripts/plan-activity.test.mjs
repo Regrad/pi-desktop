@@ -81,24 +81,47 @@ test('settling a run releases confirmation before another request can begin', ()
   assert.equal(event.planWorkingRevision, undefined);
 });
 
+test('a continuation queued before a step tick still confirms the step it resumes', () => {
+  const { invoke } = startHandler();
+  const ticked = { ...plan, revision: 5 };
+  const runtime = { pendingPlanStartRevision: 4, planContinuationQueued: true, snapshot: {} };
+  invoke.call({ store: { getConversation: () => ({ plan: ticked }) } }, runtime, { type: 'agent_start' });
+  assert.equal(runtime.planWorkingRevision, 5);
+  assert.equal(runtime.planContinuationQueued, undefined);
+  assert.equal(planIsWorking(ticked, true, runtime.planWorkingRevision), true);
+});
+
+test('an ordinary turn cannot reuse a queued continuation confirmation', () => {
+  const { invoke } = startHandler();
+  const runtime = { snapshot: {} };
+  invoke.call({ store: { getConversation: () => ({ plan }) } }, runtime, { type: 'agent_start' });
+  assert.equal(runtime.planWorkingRevision, undefined);
+  assert.equal(planIsWorking(plan, true, runtime.planWorkingRevision), false);
+});
+
 test('restored current step and context loading do not start animation', () => {
   assert.equal(planIsWorking(plan, true), false);
   assert.equal(confirmedPlanRevision({}, plan, true), undefined);
 });
-test('model confirmation enables animation only in its live run and revision', () => {
+test('model confirmation animates the live run and survives a step tick', () => {
   const revision = confirmedPlanRevision({ execution: 'active' }, plan, true);
   assert.equal(planIsWorking(plan, true, revision), true);
   assert.equal(planIsWorking(plan, false, revision), false);
-  assert.equal(planIsWorking({ ...plan, revision: 5 }, true, revision), false);
+  // The ticked checklist reaches the renderer apart from its confirmation; a newer revision must
+  // not stop the indicator, or it freezes in the middle of real work.
+  assert.equal(planIsWorking({ ...plan, revision: 5 }, true, revision), true);
   assert.equal(confirmedPlanRevision({ plan: plan.steps }, plan, true), 4);
   assert.equal(confirmedPlanRevision({ execution: 'active' }, plan, false), undefined);
 });
-test('paused, completed, cleared and stopped plans never animate', () => {
-  for (const changed of [{ ...plan, execution: 'paused' }, { ...plan, steps: [] },
+test('cleared and completed plans never animate and a paused plan cannot confirm one', () => {
+  assert.equal(confirmedPlanRevision({ execution: 'active' }, { ...plan, execution: 'paused' }, true), undefined);
+  for (const changed of [{ ...plan, steps: [] },
     { ...plan, steps: [{ step: 'Work', status: 'completed' }] }]) {
     assert.equal(confirmedPlanRevision({ execution: 'active' }, changed, true), undefined);
     assert.equal(planIsWorking(changed, true, 4), false);
   }
+  // Releasing the confirmation (pause, settle) stops the indicator even while output streams.
+  assert.equal(planIsWorking({ ...plan, execution: 'paused' }, true, undefined), false);
 });
 
 function manualControl() {
