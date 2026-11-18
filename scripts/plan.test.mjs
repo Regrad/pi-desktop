@@ -46,14 +46,15 @@ test("pause is the only inactive mode exposed to the model; legacy waiting plans
   const tools = [];
   planExtension({ on() {}, registerTool(tool) { tools.push(tool); } }, () => legacy);
   assert.deepEqual(tools[0].parameters.properties.execution.anyOf.map(value => value.const), ["active", "paused"]);
-  assert.match(tools[0].description, /set execution=paused.*reason in explanation/);
+  // The rules the tool enforces are stated where the model reads them, and kept short.
+  assert.match(tools[0].description, /set execution=paused with the reason in explanation/);
+  assert.match(tools[0].description, /\{mark: N, status:"skipped", reason:"why"\}/);
+  assert.match(tools[0].description, /\{mark: N, status:"waiting"\}[\s\S]{0,200}ask one consolidated question/);
+  assert.match(tools[0].description, /nothing above in_progress may stay pending/);
+  assert.match(tools[0].description, /completed or skipped, and a skipped step never reads as completed/);
   assert.match(tools[0].description, /New plans default to paused unless execution="active" is explicitly supplied/);
   assert.match(tools[0].description, /A paused plan does not imply that work was interrupted/);
-  assert.match(tools[0].description, /Pausing disables automatic continuation, not the current response/);
-  assert.match(tools[0].description, /Ending a normal response does not pause an active plan/);
-  assert.match(tools[0].description, /omit plan to keep the steps unchanged/);
-  assert.match(tools[0].description, /If execution is omitted, revisions preserve the current mode/);
-  assert.match(tools[0].description, /do not resend unchanged steps/);
+  assert.ok(tools[0].description.length < 1800, `checklist description must stay compact, got ${tools[0].description.length}`);
 
   const directory = mkdtempSync(path.join(tmpdir(), "pi-plan-legacy-"));
   const file = path.join(directory, "desktop-state.json");
@@ -443,7 +444,10 @@ test("mark-only writes keep the revision guard and confirm working state like pl
   assert.deepEqual(tools[0].parameters.properties.mark.anyOf, undefined);
   assert.equal(tools[0].parameters.properties.mark.minimum, 1);
   assert.deepEqual(tools[0].parameters.properties.status.anyOf.map(value => value.const), ["pending", "in_progress", "waiting", "skipped", "completed"]);
-  assert.match(tools[0].description, /\{mark: N, status\} where N is the 1-based position/);
+  for (const [field, phrase] of [["mark", /cannot be combined with plan/], ["status", /skipped needs reason; completed means verified/],
+    ["reason", /Required for skipped/], ["plan", /execution order/]]) {
+    assert.match(tools[0].parameters.properties[field].description, phrase, `${field} explains itself at the point of use`);
+  }
   const source = readFileSync(new URL("../electron/pi-manager.ts", import.meta.url), "utf8");
   assert.match(source, /params\?\.explanation === undefined && params\?\.mark === undefined && params\?\.status === undefined\) return \{ plan: current \?\? null \}/);
   assert.equal(confirmedPlanRevision({ mark: 1, status: "completed" }, updatedPlan({ plan: [step("Work", "in_progress")], execution: "active" }), true), 1);
