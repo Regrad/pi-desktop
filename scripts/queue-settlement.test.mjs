@@ -4,7 +4,7 @@ import { readFileSync } from "node:fs";
 import { stripTypeScriptTypes } from "node:module";
 import { setImmediate as nextTick } from "node:timers/promises";
 import { randomUUID } from "node:crypto";
-import { updatedPlan, canContinuePlan } from "../shared/plan.ts";
+import { updatedPlan, canContinuePlan, isPlanComplete } from "../shared/plan.ts";
 import { confirmedPlanRevision } from "../shared/plan-activity.ts";
 import { settleGoal, goalPrompt } from "../shared/goal.ts";
 import { canResumeRun } from "../shared/run-state.ts";
@@ -18,7 +18,7 @@ function method(name, parameters, privateMethod = false) {
   const end = source.indexOf("\n  }", begin);
   assert.ok(start >= 0 && begin > start && end > begin, name);
   const body = stripTypeScriptTypes(`async function invoke(${parameters}) {${source.slice(begin, end)}\n}`);
-  return new Function("updatedPlan", "confirmedPlanRevision", "settleGoal", "randomUUID", "canContinuePlan", "goalPrompt", "imageAttachmentPrompt", "canResumeRun", "isPlanning", "approvedPlanning", "planningToolAllowed", `${body}; return invoke;`)(updatedPlan, confirmedPlanRevision, settleGoal, randomUUID, canContinuePlan, goalPrompt, () => "", canResumeRun, isPlanning, approvedPlanning, planningToolAllowed);
+  return new Function("updatedPlan", "isPlanComplete", "confirmedPlanRevision", "settleGoal", "randomUUID", "canContinuePlan", "goalPrompt", "imageAttachmentPrompt", "canResumeRun", "isPlanning", "approvedPlanning", "planningToolAllowed", `${body}; return invoke;`)(updatedPlan, isPlanComplete, confirmedPlanRevision, settleGoal, randomUUID, canContinuePlan, goalPrompt, () => "", canResumeRun, isPlanning, approvedPlanning, planningToolAllowed);
 }
 const handle = method("handleEvent", "conversationId, event", true);
 const launchStart = source.indexOf("\n  private launchGoal(");

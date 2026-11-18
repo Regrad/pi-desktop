@@ -165,7 +165,7 @@ test("Pi 1.5.2 embedded SDK engine loads add-ons, preserves user input, runs too
   assert.equal(unusedConnections, 0, "Starting Pi must not connect an unused HTTP server");
   assert.equal(existsSync(coldMarker), false, "Starting Pi must not spawn an unused stdio server");
   const inventory = await request("get_extension_state");
-  for (const name of ["get_goal", "update_plan", "update_notebook", "browser", "mcp", "media_generate_image", "media_generate_music", "media_texture_3d"]) {
+  for (const name of ["get_goal", "update_checklist", "update_notebook", "browser", "mcp", "media_generate_image", "media_generate_music", "media_texture_3d"]) {
     assert.ok(inventory.tools.some(tool => tool.name === name), `Missing ${name}: ${stderr}`);
   }
   assert.doesNotMatch(stderr, /Failed to load extension|TypeError|SyntaxError/);
@@ -188,7 +188,7 @@ test("Pi 1.5.2 embedded SDK engine loads add-ons, preserves user input, runs too
   await writeFile(modelsFile, JSON.stringify(initialModels), "utf8");
   await request("desktop_refresh_models", { provider: "upgrade-test", modelId: "upgrade" });
   const retired=new Set(["tool_search","pi_lens_activate_tools","mcpScript","codemode"]);
-  const core=new Set(["read","bash","powershell","edit","write","grep","find","ls","get_goal","create_goal","update_goal","desktop_goal_report","update_plan","update_notebook"]);
+  const core=new Set(["read","bash","powershell","edit","write","grep","find","ls","get_goal","create_goal","update_goal","desktop_goal_report","update_checklist","update_notebook"]);
   for(const tool of inventory.tools) if(!core.has(tool.name)&&!retired.has(tool.name)) assert.equal(tool.active,false,`Eager addon tool ${tool.name}`);
   const initialHistory = await request("get_messages");
   const firstPromptEventIndex = events.length;

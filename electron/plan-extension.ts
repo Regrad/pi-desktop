@@ -3,7 +3,7 @@ import { Type } from "typebox";
 import { readFileSync } from "node:fs";
 import path from "node:path";
 import type { ConversationPlan } from "../shared/types.js";
-import { planContext, planPolicy, planExecutionPolicy, planTick, requestedPlanContext } from "../shared/plan.js";
+import { isPlanOpen, planContext, planPolicy, planExecutionPolicy, planStatuses, planTick, requestedPlanContext } from "../shared/plan.js";
 import { requestGoal } from "./goal-extension.js";
 import { stateFreshnessPolicy } from "../shared/goal.js";
 import { stateContext } from "./state-context.js";
@@ -21,7 +21,8 @@ export function readDesktopPlan(): ConversationPlan | undefined {
 
 export default function planExtension(pi: ExtensionAPI, readPlan = readDesktopPlan, request = requestGoal) {
   let observedRevision = readPlan()?.revision ?? 0;
-  const projectState = stateContext(pi, "desktop_plan_state", ["update_plan"]);
+  // The old tool name still appears in sessions written before the checklist rename.
+  const projectState = stateContext(pi, "desktop_plan_state", ["update_checklist", "update_plan"]);
   pi.on("before_agent_start", event => ({ systemPrompt: `${event.systemPrompt}\n\n${planPolicy}\n${planExecutionPolicy}\n${event.systemPrompt.includes(stateFreshnessPolicy) ? "" : stateFreshnessPolicy}` }));
   pi.on("context", event => {
     const plan = readPlan();
@@ -29,21 +30,23 @@ export default function planExtension(pi: ExtensionAPI, readPlan = readDesktopPl
     const projection = requestedPlanContext(event.messages);
     return { messages: projectState(projection.messages, plan,
       plan ? planContext(plan) : "<pi_desktop_service_context source=\"plan\">Checklist removed. Ignore historical checklist versions.</pi_desktop_service_context>",
-      value => String(value?.revision ?? 0), Boolean(plan?.steps.some(step => step.status !== "completed")),
+      value => String(value?.revision ?? 0), isPlanOpen(plan),
       plan ? planTick(plan) : undefined, { refreshTurns: plan?.execution === "active" ? 3 : 0 }) };
   });
   pi.registerTool({
-    name: "update_plan", label: "Рабочий план", description: `Read or revise the flexible working checklist. Follow the planning and execution rules in the system prompt. Call {} to read the full list; writes confirm revision, execution and progress without repeating steps. Submit the full revised plan only when changing steps; omit plan to keep the steps unchanged. To start or resume authorized work, call {execution:"active"}; do not resend unchanged steps. When beginning checklist work in a new run, explicitly confirm execution="active"; restored state alone does not mark a step as currently executing. Before asking for input or approval, set execution=paused and state the reason in explanation. A question or an offered choice ends the response immediately: after it, no further tool calls, step marks or checklist work in the same response, because the plan cannot pass an answer that has not arrived. Never offer options and then continue the checklist, decide on the user's behalf, or assume an answer; if the answer is not really needed, decide and continue without asking. New plans default to paused unless execution="active" is explicitly supplied. If execution is omitted, revisions preserve the current mode; completing all steps or clearing the list stops automatic continuation. A paused plan does not imply that work was interrupted. Pausing disables automatic continuation, not the current response. Ending a normal response does not pause an active plan. plan: [] clears the checklist. Mark one step without resending the list: {mark: N, status} where N is the 1-based position in the current checklist; mark and plan cannot be combined, and status needs mark. A checklist tick in a later turn only reports progress: mark what you already finished instead of leaving statuses behind.`,
-    parameters: Type.Object({ execution: Type.Optional(Type.Union([Type.Literal("active"), Type.Literal("paused")])), explanation: Type.Optional(Type.String({ maxLength: 2000 })), mark: Type.Optional(Type.Number({ minimum: 1, maximum: 40 })), status: Type.Optional(Type.Union([Type.Literal("pending"), Type.Literal("in_progress"), Type.Literal("completed")])), plan: Type.Optional(Type.Array(Type.Object({
-      step: Type.String({ minLength: 1, maxLength: 300 }), status: Type.Union([Type.Literal("pending"), Type.Literal("in_progress"), Type.Literal("completed")]),
+    name: "update_checklist", label: "Чеклист", description: `Read or revise the flexible working checklist. Statuses: ${planStatuses.join(", ")}. Skipped needs a short reason the user sees; a waiting step freezes the checklist and continuation; nothing above the in_progress step may stay pending; the checklist closes only when every step is completed or skipped. Follow the planning and execution rules in the system prompt. Call {} to read the full list; writes confirm revision, execution and progress without repeating steps. Submit the full revised plan only when changing steps; omit plan to keep the steps unchanged. To start or resume authorized work, call {execution:"active"}; do not resend unchanged steps. When beginning checklist work in a new run, explicitly confirm execution="active"; restored state alone does not mark a step as currently executing. Before asking for input or approval, set execution=paused and state the reason in explanation. A question or an offered choice ends the response immediately: after it, no further tool calls, step marks or checklist work in the same response, because the plan cannot pass an answer that has not arrived. Never offer options and then continue the checklist, decide on the user's behalf, or assume an answer; if the answer is not really needed, decide and continue without asking. New plans default to paused unless execution="active" is explicitly supplied. If execution is omitted, revisions preserve the current mode; completing all steps or clearing the list stops automatic continuation. A paused plan does not imply that work was interrupted. Pausing disables automatic continuation, not the current response. Ending a normal response does not pause an active plan. plan: [] clears the checklist. Mark one step without resending the list: {mark: N, status} where N is the 1-based position in the current checklist; mark and plan cannot be combined, and status needs mark. A checklist tick in a later turn only reports progress: mark what you already finished instead of leaving statuses behind.`,
+    parameters: Type.Object({ execution: Type.Optional(Type.Union([Type.Literal("active"), Type.Literal("paused")])), explanation: Type.Optional(Type.String({ maxLength: 2000 })), mark: Type.Optional(Type.Number({ minimum: 1, maximum: 40 })), status: Type.Optional(Type.Union(planStatuses.map(value => Type.Literal(value)))), reason: Type.Optional(Type.String({ maxLength: 200 })), plan: Type.Optional(Type.Array(Type.Object({
+      step: Type.String({ minLength: 1, maxLength: 300 }), status: Type.Union(planStatuses.map(value => Type.Literal(value))), reason: Type.Optional(Type.String({ maxLength: 200 })),
     }), { maxItems: 40 })) }),
     async execute(_id, params, signal) {
-      const writes = params.plan !== undefined || params.execution !== undefined || params.explanation !== undefined || params.mark !== undefined || params.status !== undefined;
-      const state = await request("update_plan", { ...params, ...(writes ? { expectedRevision: observedRevision } : {}) }, signal) as { plan?: ConversationPlan };
+      const writes = params.plan !== undefined || params.execution !== undefined || params.explanation !== undefined
+        || params.mark !== undefined || params.status !== undefined || params.reason !== undefined;
+      const state = await request("update_checklist", { ...params, ...(writes ? { expectedRevision: observedRevision } : {}) }, signal) as { plan?: ConversationPlan };
       const plan = state?.plan;
       observedRevision = plan?.revision ?? 0;
       const response = writes && plan ? { plan: { revision: plan.revision, execution: plan.execution },
-        progress: { completed: plan.steps.filter(step => step.status === "completed").length, total: plan.steps.length } } : state;
+        progress: { completed: plan.steps.filter(step => step.status === "completed").length,
+          skipped: plan.steps.filter(step => step.status === "skipped").length, total: plan.steps.length } } : state;
       return { content: [{ type: "text", text: JSON.stringify(response) }], details: undefined };
     },
   });

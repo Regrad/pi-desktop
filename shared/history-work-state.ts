@@ -2,7 +2,8 @@ import type { ConversationGoal, ConversationPlan } from "./types.js";
 
 type Entry = { type: string; customType?: string; content?: unknown; details?: any; data?: any; timestamp?: string; message?: any };
 type WorkState = { goal?: ConversationGoal; plan?: ConversationPlan };
-const stateTools = new Set(["update_plan", "get_goal", "create_goal", "update_goal", "desktop_goal_report"]);
+// Sessions written before the checklist rename still carry the old tool name.
+const stateTools = new Set(["update_checklist", "update_plan", "get_goal", "create_goal", "update_goal", "desktop_goal_report"]);
 function text(value: unknown): string {
   return typeof value === "string" ? value : Array.isArray(value)
     ? value.filter(part => part?.type === "text").map(part => part.text).join("") : "";

@@ -6001,7 +6001,7 @@ export default function App() {
               </aside>}
               {activeConversationId && skillsOpen && <SkillsPanel key={`skills-${activeConversationId}`} conversationId={activeConversationId} onClose={() => setSkillsOpen(false)} />}
               {activeConversationId && !planMode && !notebookOpen && !planningOpen && snapshot?.conversation.plan?.steps.length ? (
-                <aside className="conversation-plan" aria-label={t("План текущего чата")}>
+                <aside className="conversation-plan" aria-label={t("Чеклист текущего чата")}>
                   <PlanPanel key={`plan-${snapshot.conversation.id}`} conversationId={snapshot.conversation.id} plan={snapshot.conversation.plan} working={planIsWorking(snapshot.conversation.plan, working, snapshot.planWorkingRevision)} />
                 </aside>
               ) : null}

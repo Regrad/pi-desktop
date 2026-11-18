@@ -11,7 +11,9 @@ const user = content => ({ role: "user", content });
 const blocks = message => typeof message.content === "string" ? message.content : message.content.map(x => x.text ?? "").join("\n");
 
 test("delayed older snapshots cannot contradict successful state writes or contaminate compaction", () => {
-  for (const [type, tool, field] of [["desktop_plan_state", "update_plan", "plan"],
+  // The checklist tool was renamed; sessions written earlier still carry the old name.
+  for (const [type, tool, field] of [["desktop_plan_state", "update_checklist", "plan"],
+    ["desktop_plan_state", "update_plan", "plan"],
     ["desktop_notebook_state", "update_notebook", "notebook"]]) {
     const old = { ...snapshot(type, "obsolete snapshot"), details: { stateKey: "7" } };
     const ack = { role: "toolResult", toolName: tool, content: [text(JSON.stringify({ [field]: { revision: 8 } }))] };

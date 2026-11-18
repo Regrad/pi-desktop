@@ -4,7 +4,7 @@ import { readFileSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { registerHooks, stripTypeScriptTypes } from "node:module";
-import { updatedPlan, planContext, planPolicy, planTick, canContinuePlan, planRequestSuffix, planRequestText, requestedPlanContext, visiblePlanRequestText } from "../shared/plan.ts";
+import { updatedPlan, planContext, planPolicy, planTick, canContinuePlan, planRequestSuffix, planRequestText, requestedPlanContext, visiblePlanRequestText, isPlanComplete, isPlanOpen } from "../shared/plan.ts";
 import { confirmedPlanRevision } from "../shared/plan-activity.ts";
 import { isPlanning, approvedPlanning, planningToolAllowed } from "../shared/planning.ts";
 
@@ -41,7 +41,8 @@ test("pause is the only inactive mode exposed to the model; legacy waiting plans
   assert.equal(updatedPlan({ plan: legacy.steps }, legacy).execution, "paused");
   assert.equal(updatedPlan({ execution: "paused", explanation: "Need approval" }, legacy).explanation, "Need approval");
   assert.match(planContext(legacy), /"execution":"paused"/);
-  assert.doesNotMatch(planContext(legacy), /waiting/);
+  assert.doesNotMatch(planContext(legacy), /"execution":"waiting"/);
+  assert.match(planContext(legacy), /statuses: pending, in_progress, waiting, skipped with a reason, completed/);
   const tools = [];
   planExtension({ on() {}, registerTool(tool) { tools.push(tool); } }, () => legacy);
   assert.deepEqual(tools[0].parameters.properties.execution.anyOf.map(value => value.const), ["active", "paused"]);
@@ -210,7 +211,7 @@ test("extension injects live state after compaction, keeps prompt constant and f
   const handlers = new Map(), tools = [], calls = [];
   planExtension({ sendMessage() {}, on(name, handler) { handlers.set(name, handler); }, registerTool(tool) { tools.push(tool); } }, () => current,
     async (action, params) => { calls.push({ action, params }); if (params.plan !== undefined) current = updatedPlan(params, current); return { plan: current }; });
-  assert.deepEqual(tools.map(tool => tool.name), ["update_plan"]);
+  assert.deepEqual(tools.map(tool => tool.name), ["update_checklist"]);
   const before = handlers.get("before_agent_start")({ systemPrompt: "Base" });
   const history = [{ role: "user", content: "Task" }, { role: "compactionSummary", summary: "Old checklist" }];
   const projected = handlers.get("context")({ messages: history }).messages;
@@ -218,7 +219,7 @@ test("extension injects live state after compaction, keeps prompt constant and f
   assert.match(projected.at(-1).content, /Original/);
   assert.equal(history.length, 2);
   const result = await tools[0].execute("call", { explanation: "Revised", plan: [step("New", "completed")] });
-  assert.equal(calls[0].action, "update_plan");
+  assert.equal(calls[0].action, "update_checklist");
   assert.equal(calls[0].params.expectedRevision, 1);
   assert.equal(JSON.parse(result.content[0].text).plan.revision, 2);
   assert.deepEqual(before, handlers.get("before_agent_start")({ systemPrompt: "Base" }));
@@ -242,25 +243,25 @@ test("actual host handler stores the checklist per chat and publishes through no
   const chats = new Map([["one", {}], ["two", {}]]), published = [];
   const runtime = { snapshot: { state: { isStreaming: true } } }, events = [];
   const host = { runtimes: new Map([["one", runtime]]), publish(_channel, event) { events.push(event); }, store: { getConversation: id => chats.get(id) }, async updateConversation(id, changes) { Object.assign(chats.get(id), changes); published.push(id); } };
-  const saved = await handle.call(host, "one", { action: "update_plan", params: { plan: [step("Check", "in_progress")] } });
+  const saved = await handle.call(host, "one", { action: "update_checklist", params: { plan: [step("Check", "in_progress")] } });
   assert.equal(saved.plan.revision, 1);
   assert.equal(chats.get("two").plan, undefined);
   assert.deepEqual(published, ["one"]);
-  assert.deepEqual(await handle.call(host, "one", { action: "update_plan", params: {} }), saved);
-  await assert.rejects(handle.call(host, "one", { action: "update_plan", params: { plan: [], expectedRevision: 0 } }), /changed/);
+  assert.deepEqual(await handle.call(host, "one", { action: "update_checklist", params: {} }), saved);
+  await assert.rejects(handle.call(host, "one", { action: "update_checklist", params: { plan: [], expectedRevision: 0 } }), /changed/);
   assert.equal(chats.get("one").plan.steps.length, 1);
   assert.equal(runtime.planWorkingRevision, undefined, "Paused creation does not animate");
-  const active = await handle.call(host, "one", { action: "update_plan", params: { execution: "active", expectedRevision: 1 } });
+  const active = await handle.call(host, "one", { action: "update_checklist", params: { execution: "active", expectedRevision: 1 } });
   assert.equal(runtime.planWorkingRevision, active.plan.revision);
   assert.equal(runtime.snapshot.planWorkingRevision, active.plan.revision);
   assert.equal(events.at(-1).event.type, "desktop_plan_activity");
   assert.equal(events.at(-1).event.revision, active.plan.revision);
   const revision = runtime.planWorkingRevision;
-  await handle.call(host, "one", { action: "update_plan", params: {} });
+  await handle.call(host, "one", { action: "update_checklist", params: {} });
   assert.equal(runtime.planWorkingRevision, revision, "Read does not change activity");
-  const explained = await handle.call(host, "one", { action: "update_plan", params: { explanation: "New evidence", expectedRevision: revision } });
+  const explained = await handle.call(host, "one", { action: "update_checklist", params: { explanation: "New evidence", expectedRevision: revision } });
   assert.equal(runtime.planWorkingRevision, explained.plan.revision, "Explanation edits preserve live activity");
-  await handle.call(host, "one", { action: "update_plan", params: { execution: "paused", expectedRevision: explained.plan.revision } });
+  await handle.call(host, "one", { action: "update_checklist", params: { execution: "paused", expectedRevision: explained.plan.revision } });
   assert.equal(runtime.planWorkingRevision, undefined, "Explicit pause clears live activity");
 });
 
@@ -387,7 +388,7 @@ test("plan state is persisted once, stays at its original position, and tool ack
   assert.deepEqual(run(history), history);
   assert.equal(persisted.length, 1);
   const result = await tools[0].execute("update", { execution: "paused" });
-  history.push({ role: "toolResult", toolName: "update_plan", ...result });
+  history.push({ role: "toolResult", toolName: "update_checklist", ...result });
   assert.deepEqual(run(history), history);
   assert.equal(persisted.length, 1);
   current = updatedPlan({ execution: "active" }, current);
@@ -405,7 +406,7 @@ test("delayed old plan reminder cannot overwrite a newer tool acknowledgement", 
   planExtension({ on(name, handler) { handlers.set(name, handler); }, registerTool() {},
     sendMessage(message) { sent.push(message); } }, () => current);
   const user = { role: "user", content: "тормозни", timestamp: 1 };
-  const history = [user, { role: "toolResult", toolName: "update_plan", content: [{ type: "text", text: JSON.stringify({ plan: current }) }] },
+  const history = [user, { role: "toolResult", toolName: "update_checklist", content: [{ type: "text", text: JSON.stringify({ plan: current }) }] },
     { role: "custom", customType: "desktop_plan_state", content: "old reminder", details: { stateKey: "7", userKey: "old" } }];
   assert.deepEqual(handlers.get("context")({ messages: history }).messages, history);
   assert.equal(sent.length, 0);
@@ -426,7 +427,7 @@ test("single step marks rewrite one row without resending the checklist", () => 
   assert.throws(() => updatedPlan({ status: "completed" }, current), /status writes a single marked step/);
   assert.throws(() => updatedPlan({ mark: 1, status: "completed", plan: current.steps }, current), /either mark/);
   assert.throws(() => updatedPlan({ mark: 1, status: "completed" }), /no checklist to mark/);
-  assert.throws(() => updatedPlan({ mark: 1, status: "done" }, current), /pending, in_progress or completed/);
+  assert.throws(() => updatedPlan({ mark: 1, status: "done" }, current), /status pending, in_progress, waiting, skipped, completed/);
   assert.equal(updatedPlan({ mark: 1, status: "completed", expectedRevision: current.revision }, current).revision, current.revision + 1);
 });
 
@@ -438,10 +439,10 @@ test("mark-only writes keep the revision guard and confirm working state like pl
   const result = await tools[0].execute("call", { mark: 1, status: "completed" });
   assert.equal(calls[0].expectedRevision, 4);
   assert.equal(JSON.parse(result.content[0].text).plan.steps, undefined);
-  assert.deepEqual(JSON.parse(result.content[0].text).progress, { completed: 1, total: 1 });
+  assert.deepEqual(JSON.parse(result.content[0].text).progress, { completed: 1, skipped: 0, total: 1 });
   assert.deepEqual(tools[0].parameters.properties.mark.anyOf, undefined);
   assert.equal(tools[0].parameters.properties.mark.minimum, 1);
-  assert.deepEqual(tools[0].parameters.properties.status.anyOf.map(value => value.const), ["pending", "in_progress", "completed"]);
+  assert.deepEqual(tools[0].parameters.properties.status.anyOf.map(value => value.const), ["pending", "in_progress", "waiting", "skipped", "completed"]);
   assert.match(tools[0].description, /\{mark: N, status\} where N is the 1-based position/);
   const source = readFileSync(new URL("../electron/pi-manager.ts", import.meta.url), "utf8");
   assert.match(source, /params\?\.explanation === undefined && params\?\.mark === undefined && params\?\.status === undefined\) return \{ plan: current \?\? null \}/);
@@ -480,7 +481,7 @@ test("only active unfinished checklists get a short tick every three tool turns;
   }
   addTurn(); addTurn();
   current = updatedPlan({ mark: 1, status: "completed" }, current);
-  history.push({ role: "toolResult", toolName: "update_plan", content: [{ type: "text", text: JSON.stringify({ plan: current }) }] });
+  history.push({ role: "toolResult", toolName: "update_checklist", content: [{ type: "text", text: JSON.stringify({ plan: current }) }] });
   assert.deepEqual(run(history), history);
   addTurn(); assert.deepEqual(run(history), history, "a plan write just presented the latest state");
   current = updatedPlan({ execution: "paused" }, current); history = run(history);
@@ -562,7 +563,7 @@ test("old paused snapshot cannot be described as live after a newer active ackno
   const messages = [{ role: "user", content: "Wait" },
     { role: "custom", customType: "desktop_plan_state", content: planContext(paused), details: { stateKey: "3" } },
     { role: "user", content: "Continue" },
-    { role: "toolResult", toolName: "update_plan", content: [{ type: "text", text: JSON.stringify({ plan: active }) }] }];
+    { role: "toolResult", toolName: "update_checklist", content: [{ type: "text", text: JSON.stringify({ plan: active }) }] }];
   assert.deepEqual(handlers.get("context")({ messages }).messages, messages);
   const prompt = handlers.get("before_agent_start")({ systemPrompt: "Base" }).systemPrompt;
   assert.ok(prompt.includes(stateFreshnessPolicy));
@@ -586,4 +587,55 @@ test("shared state freshness rules are included once regardless of goal/plan ext
     assert.equal(systemPrompt.split(stateFreshnessPolicy).length - 1, 1);
     assert.doesNotMatch(systemPrompt, /block is current application state|it overrides historical goals and summaries/);
   }
+});
+
+const skip = (text, reason = "не нужно после смены архитектуры") => ({ step: text, status: "skipped", reason });
+
+test("a skipped step states why, and the reason stays only where it belongs", () => {
+  assert.throws(() => updatedPlan({ plan: [step("Work", "skipped")] }), /Step 1 is skipped: give a short reason/);
+  const withReason = updatedPlan({ plan: [skip("Work", "  не нужно после смены архитектуры  "), step("Later")] });
+  assert.equal(withReason.steps[0].reason, "не нужно после смены архитектуры");
+  assert.equal(withReason.steps[1].reason, undefined);
+  const marked = updatedPlan({ mark: 1, status: "skipped", reason: "сделано другим способом" }, withReason);
+  assert.equal(marked.steps[0].reason, "сделано другим способом");
+  assert.equal(updatedPlan({ mark: 1, status: "pending" }, marked).steps[0].reason, undefined,
+    "returning a step to work drops the stale reason");
+  assert.throws(() => updatedPlan({ mark: 1, status: "skipped", reason: "x".repeat(201) }, marked), /reason must be text of at most 200 characters/);
+});
+
+test("the checklist runs in order and a question freezes it", () => {
+  const base = updatedPlan({ plan: [step("First"), step("Second"), step("Third")] });
+  assert.throws(() => updatedPlan({ mark: 2, status: "in_progress" }, base),
+    /Step 1 is pending while step 2 is in_progress/);
+  const passed = updatedPlan({ plan: [skip("First"), step("Second", "in_progress"), step("Third")] }, base);
+  assert.equal(passed.steps[1].status, "in_progress", "a closed step above the current one is allowed");
+  const frozen = updatedPlan({ plan: [step("First", "waiting"), step("Second"), step("Third")] }, base);
+  assert.equal(frozen.execution, "paused", "a question stops automatic continuation");
+  assert.throws(() => updatedPlan({ mark: 2, status: "in_progress" }, frozen),
+    /frozen while step 1 waits for the user/);
+  assert.throws(() => updatedPlan({ plan: [step("First", "waiting"), step("Second", "in_progress")] }, frozen),
+    /frozen while step 1 waits for the user/);
+});
+
+test("closing needs every step done or skipped, and neither skips work", () => {
+  const mixed = updatedPlan({ plan: [step("Done", "completed"), skip("Passed")] });
+  assert.equal(isPlanComplete(mixed.steps), true);
+  assert.equal(isPlanOpen(mixed), false);
+  assert.equal(canContinuePlan({ ...mixed, execution: "active" }), false, "a closed checklist has nothing to continue");
+  const open = updatedPlan({ plan: [step("Done", "completed"), skip("Passed"), step("Left")] });
+  assert.equal(isPlanComplete(open.steps), false);
+  assert.equal(isPlanOpen(open), true);
+  assert.equal(canContinuePlan({ ...open, execution: "active" }), true);
+  assert.equal(isPlanComplete([]), false, "an empty list is not a finished checklist");
+  assert.equal(isPlanOpen(updatedPlan({ plan: [] })), false);
+  const blocked = updatedPlan({ plan: [step("Done", "completed"), step("Question", "waiting")] });
+  assert.equal(canContinuePlan({ ...blocked, execution: "active" }), false);
+  assert.equal(isPlanOpen(blocked), true);
+});
+
+test("the tick reports skips and freezes without spelling out the list", () => {
+  const frozen = updatedPlan({ plan: [step("Investigate", "completed"), step("Decide", "waiting"), step("Build")], execution: "active" });
+  assert.match(planTick(frozen), /1\/3 completed, frozen on step 2, waiting for the user, execution paused/);
+  const skipped = updatedPlan({ plan: [step("Investigate", "completed"), skip("Old approach"), step("Build")] });
+  assert.match(planTick(skipped), /1\/3 completed, 1 skipped, next: Build/);
 });

@@ -4,7 +4,7 @@ import { readFileSync } from "node:fs";
 import { randomUUID } from "node:crypto";
 import { stripTypeScriptTypes } from "node:module";
 import { applyGoalReport } from "../shared/goal.ts";
-import { updatedPlan } from "../shared/plan.ts";
+import { updatedPlan, isPlanComplete } from "../shared/plan.ts";
 import { confirmedPlanRevision } from "../shared/plan-activity.ts";
 import { isPlanning, approvedPlanning, controlPlanningState } from "../shared/planning.ts";
 
@@ -20,7 +20,7 @@ function method(name, parameters) {
   const bodyEnd = source.indexOf("\n  }", bodyStart);
   assert.ok(bodyStart > start && bodyEnd > bodyStart);
   const body = stripTypeScriptTypes(`async function invoke(${parameters.join(",")}) {${source.slice(bodyStart, bodyEnd)}\n}`);
-  const execute = new Function("randomUUID", "updatedPlan", "confirmedPlanRevision", "isPlanning", "approvedPlanning", "controlPlanningState", `${body}; return invoke;`)(randomUUID, updatedPlan, confirmedPlanRevision, isPlanning, approvedPlanning, controlPlanningState);
+  const execute = new Function("randomUUID", "updatedPlan", "isPlanComplete", "confirmedPlanRevision", "isPlanning", "approvedPlanning", "controlPlanningState", `${body}; return invoke;`)(randomUUID, updatedPlan, isPlanComplete, confirmedPlanRevision, isPlanning, approvedPlanning, controlPlanningState);
   return function (...args) { return execute.call(this, ...args); };
 }
 const controlGoal = method("controlGoal", ["conversationId", "action"]);
@@ -84,7 +84,7 @@ test("checklist manual resume cannot bypass paused goals or revive completed/rem
   const f = fixture("complete", false);
   await assert.rejects(controlPlan.call(f.context, "chat", "resume"), /не задан/);
   f.conversation.plan = updatedPlan({ plan: [{ step: "Done", status: "completed" }] });
-  await assert.rejects(controlPlan.call(f.context, "chat", "resume"), /уже выполнен/);
+  await assert.rejects(controlPlan.call(f.context, "chat", "resume"), /уже закрыт/);
   await assert.rejects(controlPlan.call(f.context, "chat", "invalid"), /Неизвестное/);
 });
 

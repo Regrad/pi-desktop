@@ -22,7 +22,9 @@ function text(content) {
 export function discardDelayedStateSnapshots(messages) {
   const revisions = new Map();
   let acknowledgedGoal;
-  const tools = new Map([["update_plan", ["desktop_plan_state", "plan"]],
+  // "update_plan" is the pre-rename tool name still present in older sessions.
+  const tools = new Map([["update_checklist", ["desktop_plan_state", "plan"]],
+    ["update_plan", ["desktop_plan_state", "plan"]],
     ["update_notebook", ["desktop_notebook_state", "notebook"]],
     ["update_implementation_plan", ["desktop_implementation_plan_state", "planning"]]]);
   return messages.filter(message => {

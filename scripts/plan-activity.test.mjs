@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { confirmedPlanRevision, planIsWorking } from '../shared/plan-activity.ts';
-import { updatedPlan } from '../shared/plan.ts';
+import { updatedPlan, isPlanComplete } from '../shared/plan.ts';
 import { approvedPlanning, isPlanning } from '../shared/planning.ts';
 import { readFileSync } from 'node:fs';
 import { stripTypeScriptTypes } from 'node:module';
@@ -130,7 +130,7 @@ function manualControl() {
   const end = source.indexOf('  async removePlan(', start);
   assert.ok(start > 0 && end > start);
   const method = stripTypeScriptTypes('async function controlPlan' + source.slice(start, end).slice('  async controlPlan'.length));
-  return new Function('updatedPlan', 'confirmedPlanRevision', 'isPlanning', 'approvedPlanning', `${method}; return controlPlan;`)(updatedPlan, confirmedPlanRevision, isPlanning, approvedPlanning);
+  return new Function('updatedPlan', 'isPlanComplete', 'confirmedPlanRevision', 'isPlanning', 'approvedPlanning', `${method}; return controlPlan;`)(updatedPlan, isPlanComplete, confirmedPlanRevision, isPlanning, approvedPlanning);
 }
 
 test('manual resume confirms the current streaming run and pause releases it', async () => {

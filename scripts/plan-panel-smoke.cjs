@@ -62,6 +62,27 @@ app.whenReady().then(async () => {
     window.webContents.send("pi:event", { conversationId: conversation.id, event: { type: "desktop_plan_activity", revision: 1 } });
     await waitFor("document.querySelector('.plan-spinner')");
     assert.equal(await window.webContents.executeJavaScript("document.querySelector('.plan-step-status').textContent"), "Выполняется");
+    // Frozen and skipped rows must read as themselves, not as unfinished work.
+    const beforeStates = conversation.plan;
+    conversation.plan = { ...beforeStates, revision: beforeStates.revision + 1, execution: "paused", steps: [
+      { step: "Изучить структуру проекта и существующие инструменты", status: "completed" },
+      { step: "Добавить изменяемый чеклист и компактную панель", status: "skipped", reason: "не нужно после смены архитектуры" },
+      { step: "Проверить сохранение после перезапуска", status: "waiting" },
+      { step: "Собрать релиз", status: "pending" },
+    ] };
+    window.webContents.send("desktop:conversation-changed", conversation);
+    await waitFor("document.querySelector('.plan-step.waiting') && document.querySelector('.plan-step.skipped')");
+    // Markers are asserted through their accessible names: lucide class names follow icon aliases.
+    assert.equal(await window.webContents.executeJavaScript("document.querySelector('.plan-step.waiting .plan-step-icon').getAttribute('aria-label')"), "Ждёт твоего ответа");
+    assert.equal(await window.webContents.executeJavaScript("document.querySelector('.plan-step.skipped .plan-step-icon').getAttribute('aria-label')"), "Пропущено");
+    assert.equal(await window.webContents.executeJavaScript("document.querySelectorAll('.plan-step.completed .plan-step-status, .plan-step.pending .plan-step-status').length"), 0, "Done and pending rows carry no label");
+    assert.equal(await window.webContents.executeJavaScript("document.querySelector('.plan-step-reason').textContent"), "не нужно после смены архитектуры");
+    assert.match(await window.webContents.executeJavaScript("document.querySelector('.plan-frozen').textContent"), /ждёт твоего ответа/);
+    assert.equal(await window.webContents.executeJavaScript("document.querySelector('.plan-explanation:not(.plan-frozen)').textContent"), "Автопродолжение на паузе");
+    assert.equal(await window.webContents.executeJavaScript("document.querySelectorAll('.plan-step-status').length"), 2, "Only waiting and running rows carry a label");
+    conversation.plan = beforeStates;
+    window.webContents.send("desktop:conversation-changed", conversation);
+    await waitFor("document.querySelectorAll('.plan-step').length === 3");
     window.webContents.send("pi:event", { conversationId: conversation.id, event: { type: "desktop_persistence_error", error: "Smoke: temporary save failure" } });
     await new Promise(resolve => setTimeout(resolve, 100));
     assert.equal(await window.webContents.executeJavaScript("document.querySelector('.plan-step-status').textContent"), "Выполняется");
@@ -108,9 +129,9 @@ app.whenReady().then(async () => {
     writeFileSync(path.join(temporary, "plan-collapsed.png"), (await window.webContents.capturePage()).toPNG());
     conversation.plan = { ...conversation.plan, revision: 2, steps: conversation.plan.steps.map(step => ({ ...step, status: "completed" })) };
     window.webContents.send("desktop:conversation-changed", conversation);
-    await waitFor("document.querySelector('.plan-heading strong').textContent === 'План выполнен'");
+    await waitFor("document.querySelector('.plan-heading strong').textContent === 'Чеклист закрыт'");
     assert.equal(await window.webContents.executeJavaScript("document.querySelector('.plan-progress').getAttribute('aria-valuenow')"), "3");
-    await window.webContents.executeJavaScript("document.querySelector('[aria-label=\"Убрать план\"]').click()");
+    await window.webContents.executeJavaScript("document.querySelector('[aria-label=\"Убрать чеклист\"]').click()");
     await waitFor("!document.querySelector('.plan-panel')");
     assert.equal(removed, true);
     // A normal-mode checklist does not implicitly enter read-only planning mode.

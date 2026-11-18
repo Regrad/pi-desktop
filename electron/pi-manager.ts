@@ -3,7 +3,7 @@ import { storeChatAttachments } from "./chat-storage.js";
 import { randomUUID } from "node:crypto";
 import { fileURLToPath } from "node:url";
 import { applyGoalReport, goalPrompt, settleGoal } from "../shared/goal.js";
-import { updatedPlan, planRequestSuffix, canContinuePlan } from "../shared/plan.js";
+import { updatedPlan, planRequestSuffix, canContinuePlan, isPlanComplete } from "../shared/plan.js";
 import { confirmedPlanRevision } from "../shared/plan-activity.js";
 import { approvedPlanning, completePlanning, controlPlanningState, isPlanning, planImplementationPrompt, planningToolAllowed, revisePlanning } from "../shared/planning.js";
 import { canResumeRun } from "../shared/run-state.js";
@@ -477,7 +477,7 @@ export class PiManager {
         runtime.pendingPlanStartRevision = expectedPlanRevision;
         runtime.planContinuationQueued = true;
         try {
-          await runtime.rpc.request("desktop_plan_continue", { message: `<pi_desktop_service_context source="plan">Continue the next unfinished step of the current authorized checklist. If user input or approval is needed, set execution=paused, explain the reason and ask.</pi_desktop_service_context>`, });
+          await runtime.rpc.request("desktop_plan_continue", { message: `<pi_desktop_service_context source="plan">Continue the next pending step of the current authorized checklist. If user input or approval is needed, mark that step waiting, set execution=paused, ask one consolidated question and end the response.</pi_desktop_service_context>`, });
         } catch (error) {
           runtime.pendingPlanStartRevision = undefined;
           runtime.planContinuationQueued = undefined;
@@ -807,7 +807,10 @@ export class PiManager {
     const current = conversation.plan;
     if (!current?.steps.length) throw new Error("Чеклист не задан.");
     if (action === "resume") {
-      if (current.steps.every(step => step.status === "completed")) throw new Error("Чеклист уже выполнен.");
+      if (isPlanComplete(current.steps)) throw new Error("Чеклист уже закрыт: все шаги сделаны или пропущены.");
+      if (current.steps.some(step => step.status === "waiting")) {
+        throw new Error("Чеклист заморожен: шаг ждёт ответа пользователя. Получи ответ и обнови его статус.");
+      }
       const goal = conversation.goal;
       if (!approvedPlanning(conversation.planning) && goal && !["active", "complete"].includes(goal.status))
         throw new Error("Сначала возобновите цель или уберите её. Чеклист не может обходить остановленную цель.");
@@ -895,7 +898,7 @@ export class PiManager {
       if (!params || typeof params !== "object") throw new Error("Нужны параметры действия браузера.");
       return this.browserRequest(conversationId, params);
     }
-    if (request.action === "update_plan") {
+    if (request.action === "update_checklist") {
       const current = this.store.getConversation(conversationId).plan;
       const params = request.params as JsonObject | undefined;
       if (params?.plan === undefined && params?.execution === undefined && params?.explanation === undefined && params?.mark === undefined && params?.status === undefined) return { plan: current ?? null };

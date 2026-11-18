@@ -3334,6 +3334,14 @@ button.secondary.large {
 .plan-step.is-working { padding: 7px 8px; margin: 0 -8px; border-radius: 8px; background: #edf4ee; animation: plan-pulse 2s ease-in-out infinite; }
 .plan-step-text { min-width: 0; flex: 1; }
 .plan-step-status { flex-shrink: 0; font-size: 10px; font-weight: 500; color: #63836c; margin-top: 2px; }
+.plan-step-body { display: flex; flex-direction: column; gap: 2px; min-width: 0; flex: 1; }
+.plan-step-reason { font-size: 11px; font-weight: 400; color: var(--muted); }
+.plan-step.skipped { color: var(--muted); }
+.plan-step.skipped .plan-step-icon { color: #a9b3ac; }
+.plan-step.skipped .plan-step-text { text-decoration: line-through; text-decoration-color: #c6cec8; }
+.plan-step.waiting { padding: 7px 8px; margin: 0 -8px; border-radius: 8px; background: #fdf5e6; }
+.plan-step.waiting .plan-step-icon, .plan-step.waiting .plan-step-status { color: #9a6b12; }
+.plan-frozen { color: #9a6b12; }
 @keyframes plan-pulse { 50% { background: #e0ede3; } }
 .plan-marker-running { color: #4f7d5b; }
 @keyframes plan-spin { to { transform: rotate(360deg); } }

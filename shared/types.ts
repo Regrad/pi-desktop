@@ -38,9 +38,13 @@ export interface ConversationRecord {
   resultUnseen?: string;
 }
 
+export type PlanStatus = "pending" | "in_progress" | "waiting" | "skipped" | "completed";
+
 export interface PlanStep {
   step: string;
-  status: "pending" | "in_progress" | "completed";
+  status: PlanStatus;
+  /** Why the step was skipped; required for skipped and shown under it in the panel. */
+  reason?: string;
 }
 
 /** The agreed specification is independent of the execution checklist. */

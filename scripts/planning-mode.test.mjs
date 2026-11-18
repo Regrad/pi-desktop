@@ -147,7 +147,7 @@ test("normal tools remain discoverable; direct and nested execution obey the liv
     assert.equal(planningToolAllowed(name), false);
     for (const parentToolCallId of [undefined, "outer/1"]) assert.equal(guard({ toolName: name, input: {}, parentToolCallId }).block, true);
   }
-  for (const name of ["update_notebook", "update_plan"]) {
+  for (const name of ["update_notebook", "update_checklist"]) {
     assert.equal(planningToolAllowed(name, {}), true);
     assert.equal(planningToolAllowed(name, { execution: "active" }), false);
     assert.equal(planningToolAllowed(name, { content: "bad" }), false);
@@ -252,7 +252,7 @@ test("host independently blocks mutations, stale updates and late writes after S
   const handle = hostMethod("  private async handleGoalRequest(", "async function run(conversationId, request)", { isPlanning, planningToolAllowed, revisePlanning, completePlanning });
   const chat = { planning: controlPlanningState("start", 0) };
   const host = { store: { getConversation: () => chat }, runtimes: new Map([["chat", { runAborted: false }]]), planningWrites: new Set(), async updateConversation(_id, patch) { Object.assign(chat, patch); } };
-  for (const request of [{ action: "update_notebook", params: { append: "bad" } }, { action: "update_plan", params: { execution: "active" } }, { action: "browser", params: { action: "click" } }, { action: "create_goal", params: { objective: "bad" } }, { action: "manage_skills", params: { action: "delete" } }])
+  for (const request of [{ action: "update_notebook", params: { append: "bad" } }, { action: "update_checklist", params: { execution: "active" } }, { action: "browser", params: { action: "click" } }, { action: "create_goal", params: { objective: "bad" } }, { action: "manage_skills", params: { action: "delete" } }])
     await assert.rejects(handle.call(host, "chat", request), /запрещены/);
   await handle.call(host, "chat", { action: "update_implementation_plan", params: { content: "Plan", ready: true, expectedRevision: chat.planning.revision } });
   host.runtimes.get("chat").runAborted = true;
@@ -481,7 +481,7 @@ test("the standing policy describes both modes and names the state message as th
   assert.match(planningPolicy, /План · только чтение/);
   assert.match(planningPolicy, /Полный доступ/);
   assert.match(planningPolicy, /only source of this fact/);
-  assert.match(planningPolicy, /working checklist of update_plan/);
+  assert.match(planningPolicy, /working checklist of update_checklist/);
 });
 
 test("the executed gate and the instructions agree on what counts as Plan mode", () => {
@@ -518,7 +518,7 @@ test("approval starts the work as an application step, never as a message from t
   const message = planImplementationPrompt(approve(review()));
   assert.ok(message.startsWith('<pi_desktop_service_context source="implementation-plan">'));
   assert.match(message, /revision \d+/);
-  assert.match(message, /update_plan[\s\S]{0,200}execution/);
+  assert.match(message, /update_checklist[\s\S]{0,200}execution/);
   assert.match(message, /not a new request from the user/);
   assert.doesNotMatch(message, /goal controller/);
 });
