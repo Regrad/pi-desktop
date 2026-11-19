@@ -8,6 +8,7 @@ import { patchMcpIndex, patchMcpProxy, patchMcpOnDemandInit, patchMcpOnDemandMan
 import { patchCodemodeDiscoveryDescription, patchCodemodePlanning } from "../tool-routing/patch.js";
 import { patchDesktopContinuation } from "./continuation-patch.js";
 import { patchShellTimeout } from "./shell-timeout-patch.js";
+import { patchShellEnvironment } from "./shell-env-patch.js";
 import { patchRequestDiagnostics } from "./request-diagnostics-patch.js";
 import { patchContextRecovery, patchTransportRecovery } from "./recovery-patch.js";
 import { SUPPORTED_PI_VERSION } from "../pi-engine/version.js";
@@ -38,6 +39,7 @@ export async function applyContextCompatibility(coreRoot) {
   await patchFile(path.join(directory, "compaction", "compaction.js"), patchDesktopCompaction);
   await patchFile(path.join(directory, "agent-session.js"), patchDesktopContinuation);
   await patchFile(path.join(directory, "tools", "bash.js"), patchShellTimeout);
+  await patchFile(path.join(directory, "tools", "bash.js"), patchShellEnvironment);
   await patchFile(path.join(coreRoot, "dist", "extensions", "codemode", "tool.js"), patchCodemodeDiscoveryDescription);
   await patchFile(path.join(coreRoot, "dist", "extensions", "codemode", "execute.js"), patchCodemodePlanning);
 }
