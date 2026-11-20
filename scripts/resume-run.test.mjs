@@ -86,7 +86,9 @@ test("Enter with an empty composer uses the same continuation action as the butt
   let resumes = 0;
   const body = stripTypeScriptTypes(`async function submit(explainQuote) {${app.slice(begin, end)}\n}`);
   const bindings = { loading: false, input: "", historyQuotes: [], attachments: [], primaryAction: "resume", quotedHistoryPrompt: text => text,
-    resumeExecution: async () => { resumes++; } };
+    resumeExecution: async () => { resumes++; },
+    // Отправка проверяет, что папка проекта на месте; здесь проект без претензий.
+    snapshot: { conversation: { projectId: undefined } }, projectIssues: [], setLocationIssue: () => {} };
   const submit = new Function(...Object.keys(bindings), `${body}; return submit;`)(...Object.values(bindings));
   await submit();
   assert.equal(resumes, 1);

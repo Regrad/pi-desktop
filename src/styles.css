@@ -206,7 +206,7 @@ button:not(:disabled) {
   padding: 8px 8px;
   border-radius: 8px;
   display: grid;
-  grid-template-columns: 18px 1fr;
+  grid-template-columns: 18px minmax(0, 1fr) auto;
   align-items: center;
   gap: 7px;
   text-align: left;
@@ -218,6 +218,73 @@ button:not(:disabled) {
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+}
+/* Перенос проекта и ручное управление его папками */
+.project-issue-badge {
+  color: #b4762a;
+}
+.project-location-dialog > p,
+.project-folders-dialog > p {
+  margin: 0 0 10px;
+  color: #6b6b66;
+  font-size: 12px;
+  line-height: 1.45;
+}
+.project-location-paths {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-bottom: 4px;
+}
+.project-location-path,
+.project-issue-notice {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 9px;
+  border: 1px solid #f0d9c4;
+  border-radius: 9px;
+  background: #fffaf3;
+  color: #7a5320;
+  font-size: 11px;
+}
+.project-location-path > span,
+.project-issue-notice > span {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+.project-location-path small {
+  color: #8a6a3a;
+  white-space: nowrap;
+}
+.project-issue-notice {
+  margin: 0 0 8px;
+  font-size: 12px;
+}
+.project-issue-notice button {
+  flex: 0 0 auto;
+  white-space: nowrap;
+}
+.project-folders-dialog .project-folder-chip {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.project-folders-dialog .project-folder-chip > span {
+  flex: 1 1 auto;
+}
+.project-folders-dialog .project-folder-chip.missing {
+  border: 1px solid #f0d9c4;
+  background: #fffaf3;
+  color: #8a5a2a;
+}
+.project-folders-status {
+  margin-top: 10px;
+  color: #8a6a3a;
+  font-size: 11px;
 }
 .project-new-chat,
 .project-more {

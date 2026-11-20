@@ -295,6 +295,48 @@ export class PiManager {
     return this.store.renameProject(projectId, name);
   }
 
+  /** Папка проекта переехала; следующий запрос поднимет сеанс уже с новым путём. */
+  async moveProjectRoot(
+    projectId: string,
+    fromPath: string,
+    toDirectory: string,
+    verified = false,
+  ): Promise<ProjectRecord> {
+    const previousRoots = this.projectRoots(projectId);
+    const project = await this.store.moveProjectRoot(projectId, fromPath, toDirectory, verified);
+    await this.forgetProjectCaches(projectId, previousRoots);
+    return project;
+  }
+
+  async setProjectFolders(
+    projectId: string,
+    folderPaths: string[],
+  ): Promise<ProjectRecord> {
+    const previousRoots = this.projectRoots(projectId);
+    const project = await this.store.setProjectFolders(projectId, folderPaths);
+    await this.forgetProjectCaches(projectId, previousRoots);
+    return project;
+  }
+
+  private projectRoots(projectId: string): string[] {
+    const project = this.store.getProject(projectId);
+    return [project.path, ...project.paths];
+  }
+
+  /** Сеанс держит рабочую папку с момента запуска, а навыки кэшируются по ней. */
+  private async forgetProjectCaches(
+    projectId: string,
+    previousRoots: string[],
+  ): Promise<void> {
+    for (const root of previousRoots) this.skillStores.delete(path.resolve(root));
+    this.invalidateInstructions(projectId);
+    const ids = this.store
+      .snapshot()
+      .conversations.filter((conversation) => conversation.projectId === projectId)
+      .map((conversation) => conversation.id);
+    await Promise.all(ids.map((id) => this.stopConversation(id)));
+  }
+
   async sendPrompt(
     conversationId: string,
     message: string,
@@ -1508,6 +1550,9 @@ export class PiManager {
     const project = conversation.projectId
       ? this.store.getProject(conversation.projectId)
       : undefined;
+    // Запуск в несуществующей папке дал бы лишь непонятную ошибку движка.
+    // В удалённом режиме рабочая папка находится на клиентском компьютере.
+    if (project && !this.remoteRuntime) await this.store.assertProjectAvailable(project.id);
     const appendSystemPrompt =
       project && project.paths.length > 1
         ? [

@@ -6,6 +6,7 @@ import {
   ArrowDown,
   ArrowDownWideNarrow,
   ArrowLeft,
+  ArrowUp,
   Bot,
   BookOpen,
   Boxes,
@@ -17,6 +18,7 @@ import {
   Cpu,
   FileText,
   Folder,
+  FolderCog,
   FolderOpen,
   Gauge,
   Keyboard,
@@ -34,6 +36,7 @@ import {
   RotateCcw,
   SquareTerminal,
   Target,
+  TriangleAlert,
   ListChecks,
   Pencil,
   Trash2,
@@ -105,6 +108,7 @@ import type {
   ModelInfo,
   ModuleSettings,
   ProjectInstructions,
+  ProjectLocationIssue,
   ProjectRecord,
   QueuedPrompt,
   RunDiff,
@@ -1795,6 +1799,222 @@ function RenameConversationDialog({
           <button className="primary" type="submit" disabled={!value.trim()}>{t("Сохранить")}</button>
         </div>
       </form>
+    </div>
+  );
+}
+
+/** Выбор новой папки и перенос корня проекта; пустой ответ значит «пользователь отменил». */
+async function relocateProjectRoot(
+  projectId: string,
+  fromPath: string,
+): Promise<ProjectRecord | undefined> {
+  const selected = await window.piDesktop.chooseProjectFolders();
+  if (!selected.length) return undefined;
+  return window.piDesktop.moveProjectRoot(projectId, fromPath, selected[0]);
+}
+
+/** Появляется при открытии чата проекта, чья папка исчезла с диска. */
+function ProjectLocationDialog({
+  issue,
+  onDismiss,
+  onRelocated,
+}: {
+  issue: ProjectLocationIssue;
+  onDismiss: () => void;
+  onRelocated: (project: ProjectRecord) => void;
+}) {
+  const [busy, setBusy] = useState(false);
+  const [status, setStatus] = useState("");
+
+  const relocate = async () => {
+    if (busy) return;
+    setBusy(true);
+    setStatus("");
+    try {
+      const moved = await relocateProjectRoot(issue.projectId, issue.path);
+      if (moved) onRelocated(moved);
+    } catch (error) {
+      setStatus(error instanceof Error ? error.message : String(error));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div className="modal-backdrop">
+      <div className="modal-card project-location-dialog">
+        <div className="modal-head">
+          <strong>{t("Папка проекта не найдена")}</strong>
+          <button type="button" className="icon-button" onClick={onDismiss}>
+            <X size={17} />
+          </button>
+        </div>
+        <p>
+          {t(
+            "Проект «{0}» был привязан к папке, которой больше нет по прежнему пути. Чаты и история в порядке — нужно указать, где папка лежит теперь.",
+            issue.name,
+          )}
+        </p>
+        <div className="project-location-paths">
+          {issue.unavailable.map((item) => (
+            <div className="project-location-path" key={item.path}>
+              <TriangleAlert size={15} />
+              <span title={item.path}>{item.path}</span>
+              <small>
+                {item.reason === "missing" ? t("нет такой папки") : t("нет доступа")}
+              </small>
+            </div>
+          ))}
+        </div>
+        {status && <div className="project-folders-status">{status}</div>}
+        <div className="modal-actions">
+          <button onClick={onDismiss}>{t("Не сейчас")}</button>
+          <button className="primary" disabled={busy} onClick={() => void relocate()}>
+            <FolderOpen size={15} />
+            {t(" Указать новую папку")}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/** Ручное управление папками проекта: добавить, убрать, сделать основной, перенести пропавшую. */
+function ProjectFoldersDialog({
+  project,
+  issue,
+  onClose,
+  onChanged,
+}: {
+  project: ProjectRecord;
+  issue?: ProjectLocationIssue;
+  onClose: () => void;
+  onChanged: (project: ProjectRecord) => void;
+}) {
+  const [folders, setFolders] = useState<string[]>(
+    project.paths.length ? [...project.paths] : [project.path],
+  );
+  const [dirty, setDirty] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [status, setStatus] = useState("");
+  const missing = new Map(issue?.unavailable.map((item) => [item.path, item.reason]));
+  const apply = (next: ProjectRecord) => {
+    setFolders(next.paths.length ? [...next.paths] : [next.path]);
+    setDirty(false);
+    onChanged(next);
+  };
+
+  const addFolders = async () => {
+    const selected = await window.piDesktop.chooseProjectFolders();
+    if (!selected.length) return;
+    setFolders((current) => [
+      ...current,
+      ...selected.filter((item) => !current.includes(item)),
+    ]);
+    setDirty(true);
+  };
+
+  const moveFolder = async (fromPath: string) => {
+    if (busy) return;
+    setBusy(true);
+    setStatus("");
+    try {
+      const moved = await relocateProjectRoot(project.id, fromPath);
+      if (!moved) return;
+      apply(moved);
+      setStatus(t("Папка проекта обновлена"));
+    } catch (error) {
+      setStatus(error instanceof Error ? error.message : String(error));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const save = async () => {
+    if (!folders.length || busy) return;
+    setBusy(true);
+    setStatus("");
+    try {
+      apply(await window.piDesktop.setProjectFolders(project.id, folders));
+      setStatus(t("Список папок сохранён."));
+    } catch (error) {
+      setStatus(error instanceof Error ? error.message : String(error));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div className="modal-backdrop">
+      <div className="modal-card project-folders-dialog">
+        <div className="modal-head">
+          <strong>{t("Папки проекта «")}{project.name}»</strong>
+          <button type="button" className="icon-button" onClick={onClose}>
+            <X size={17} />
+          </button>
+        </div>
+        <p>
+          {t(
+            "Первая папка — основная рабочая папка чатов. Пропажу можно перенести или убрать из проекта.",
+          )}
+        </p>
+        <div className="project-folders">
+          {folders.map((folder, index) => (
+            <div
+              className={`project-folder-chip ${missing.has(folder) ? "missing" : ""}`}
+              key={folder}
+            >
+              {missing.has(folder) ? <TriangleAlert size={15} /> : <Folder size={15} />}
+              <span title={folder}>{folder}</span>
+              {index === 0 && <small>{t("Основная")}</small>}
+              {index > 0 && (
+                <button
+                  title={t("Сделать основной")}
+                  onClick={() => {
+                    setFolders((current) => [
+                      folder,
+                      ...current.filter((item) => item !== folder),
+                    ]);
+                    setDirty(true);
+                  }}
+                >
+                  <ArrowUp size={14} />
+                </button>
+              )}
+              {missing.has(folder) && (
+                <button
+                  title={t("Указать, где эта папка лежит теперь")}
+                  disabled={busy}
+                  onClick={() => void moveFolder(folder)}
+                >
+                  <FolderOpen size={14} />
+                </button>
+              )}
+              <button
+                title={t("Убрать папку")}
+                disabled={folders.length === 1}
+                onClick={() => {
+                  setFolders((current) => current.filter((item) => item !== folder));
+                  setDirty(true);
+                }}
+              >
+                <X size={14} />
+              </button>
+            </div>
+          ))}
+          <button className="add-folders-button" onClick={() => void addFolders()}>
+            <Plus size={16} />
+            {t(" Добавить папки")}
+          </button>
+        </div>
+        {status && <div className="project-folders-status">{status}</div>}
+        <div className="modal-actions">
+          <button onClick={onClose}>{t("Закрыть")}</button>
+          <button className="primary" disabled={!dirty || busy} onClick={() => void save()}>
+            {t("Сохранить")}
+          </button>
+        </div>
+      </div>
     </div>
   );
 }
@@ -3508,6 +3728,10 @@ export default function App() {
   const [conversationMenu, setConversationMenu] =
     useState<ConversationMenuState>();
   const [projectMenu, setProjectMenu] = useState<ProjectMenuState>();
+  const [projectIssues, setProjectIssues] = useState<ProjectLocationIssue[]>([]);
+  const [locationIssue, setLocationIssue] = useState<ProjectLocationIssue>();
+  const [foldersProject, setFoldersProject] = useState<ProjectRecord>();
+  const dismissedLocationIssues = useRef(new Set<string>());
   const [renameConversation, setRenameConversation] =
     useState<ConversationRecord>();
   const [renameProject, setRenameProject] = useState<ProjectRecord>();
@@ -3626,6 +3850,7 @@ export default function App() {
         setLanguage(payload.interfaceLanguage);
         setBootstrap(payload);
         setProjects(payload.projects);
+        void refreshProjectIssues();
         setConversations(payload.conversations);
         setArchivedConversations(payload.archivedConversations);
         setActiveProjectId(payload.activeProjectId);
@@ -4366,6 +4591,13 @@ export default function App() {
         setStartedAt(undefined);
         startedAtRef.current = undefined;
       }
+      const issues = await refreshProjectIssues();
+      const blocked = issues.find(
+        (item) => item.projectId === next.conversation.projectId,
+      );
+      if (blocked && !dismissedLocationIssues.current.has(blocked.projectId))
+        setLocationIssue(blocked);
+      else if (!blocked) setLocationIssue(undefined);
     } catch (error) {
       if (navigationSequenceRef.current !== navigationSequence) return;
       addNotice(
@@ -4466,6 +4698,32 @@ export default function App() {
       y: Math.min(event.clientY, window.innerHeight - 150),
     });
   };
+
+  /** Обновляет список пропавших папок проектов; ошибка канала не должна ломать интерфейс. */
+  const refreshProjectIssues = useCallback(async () => {
+    try {
+      const issues = await window.piDesktop.projectLocationIssues();
+      setProjectIssues(issues);
+      return issues;
+    } catch {
+      setProjectIssues([]);
+      return [] as ProjectLocationIssue[];
+    }
+  }, []);
+
+  /** Проект переехал или сменил список папок: обновляем карточку и проверяем доступность. */
+  const applyProjectUpdate = useCallback(
+    (updated: ProjectRecord) => {
+      setProjects((current) =>
+        current.map((item) => (item.id === updated.id ? updated : item)),
+      );
+      dismissedLocationIssues.current.delete(updated.id);
+      void refreshProjectIssues().then((issues) => {
+        if (!issues.some((item) => item.projectId === updated.id)) setLocationIssue(undefined);
+      });
+    },
+    [refreshProjectIssues],
+  );
 
   const showProjectMenu = (event: React.MouseEvent, projectId: string) => {
     event.preventDefault();
@@ -4672,6 +4930,14 @@ export default function App() {
 
   const submit = async (explainQuote?: string) => {
     if (loading) return;
+    const guardedProjectId = snapshot?.conversation.projectId;
+    const blockedProject = guardedProjectId
+      ? projectIssues.find((item) => item.projectId === guardedProjectId)
+      : undefined;
+    if (blockedProject) {
+      setLocationIssue(blockedProject);
+      return;
+    }
     const quick = explainQuote !== undefined;
     const submittedQuotes = quick ? [explainQuote] : historyQuotes;
     const originalInput = input;
@@ -5667,6 +5933,13 @@ export default function App() {
                         >
                           <Folder size={16} />
                           <span>{project.name}</span>
+                          {projectIssues.some((item) => item.projectId === project.id) && (
+                            <TriangleAlert
+                              size={14}
+                              className="project-issue-badge"
+                              aria-label={t("Папка проекта не найдена")}
+                            />
+                          )}
                         </button>
                         <button
                           className="project-new-chat"
@@ -6138,6 +6411,28 @@ export default function App() {
                       </div>
                     ))}
                   <div className="composer">
+                    {snapshot?.conversation.projectId &&
+                      projectIssues.find(
+                        (item) => item.projectId === snapshot.conversation.projectId,
+                      ) && (
+                        <div className="project-issue-notice">
+                          <TriangleAlert size={15} />
+                          <span>
+                            {t("Папка проекта не найдена — чат не сможет работать с файлами.")}
+                          </span>
+                          <button
+                            onClick={() =>
+                              setLocationIssue(
+                                projectIssues.find(
+                                  (item) => item.projectId === snapshot.conversation.projectId,
+                                ),
+                              )
+                            }
+                          >
+                            {t("Указать папку")}
+                          </button>
+                        </div>
+                      )}
                     {historyQuotes.length > 0 && (
                       <div className="history-quote-list" aria-label={t("Цитаты из переписки")}>
                         {historyQuotes.map((quote, index) => (
@@ -6625,6 +6920,25 @@ export default function App() {
                   <FolderOpen size={15} />{t(" Показать папку")}</button>
                 <button
                   onClick={() => {
+                    setFoldersProject(project);
+                    setProjectMenu(undefined);
+                  }}
+                >
+                  <FolderCog size={15} />{t(" Папки проекта…")}</button>
+                {projectIssues
+                  .filter((item) => item.projectId === project.id)
+                  .map((item) => (
+                    <button
+                      key={item.projectId}
+                      onClick={() => {
+                        setLocationIssue(item);
+                        setProjectMenu(undefined);
+                      }}
+                    >
+                      <TriangleAlert size={15} />{t(" Указать новое расположение папки…")}</button>
+                  ))}
+                <button
+                  onClick={() => {
                     void newChat(project.id);
                     setProjectMenu(undefined);
                   }}
@@ -6688,6 +7002,30 @@ export default function App() {
           title={renameProject.name}
           onClose={() => setRenameProject(undefined)}
           onSave={(title) => void saveProjectTitle(title)}
+        />
+      )}
+      {locationIssue && (
+        <ProjectLocationDialog
+          issue={locationIssue}
+          onDismiss={() => {
+            dismissedLocationIssues.current.add(locationIssue.projectId);
+            setLocationIssue(undefined);
+          }}
+          onRelocated={(updated) => {
+            applyProjectUpdate(updated);
+            addNotice(t("Папка проекта обновлена"), "warning");
+          }}
+        />
+      )}
+      {foldersProject && (
+        <ProjectFoldersDialog
+          project={foldersProject}
+          issue={projectIssues.find((item) => item.projectId === foldersProject.id)}
+          onClose={() => setFoldersProject(undefined)}
+          onChanged={(updated) => {
+            applyProjectUpdate(updated);
+            setFoldersProject(updated);
+          }}
         />
       )}
       {instructionsProject && (

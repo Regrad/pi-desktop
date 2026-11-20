@@ -7,7 +7,7 @@ import { DataStore } from "./data-store.js";
 import { PiManager } from "./pi-manager.js";
 import { webBackend } from "./web-backend.js";
 import { loadComfySettings } from "./comfy-client.js";
-import type { Attachment } from "../shared/types.js";
+import type { Attachment, ProjectLocationIssue } from "../shared/types.js";
 import type { DeviceBroker } from "../resources/web-access/device-broker.mjs";
 import type { WebBackend } from "../resources/web-access/server.mjs";
 
@@ -93,6 +93,28 @@ export class RemoteRuntime {
       },
       refreshProjectSessions: (projectId: string) => store.refreshProjectSessions(projectId),
       renameProject: (projectId: string, name: string) => manager.renameProject(projectId, name),
+      // Папки проекта лежат на клиентском ПК, поэтому доступность проверяется там же.
+      projectLocationIssues: async () => {
+        const issues: ProjectLocationIssue[] = [];
+        for (const project of store.snapshot().projects) {
+          const unavailable: ProjectLocationIssue["unavailable"] = [];
+          for (const root of [...new Set([project.path, ...project.paths])]) {
+            const info = await invoke("stat", { path: root });
+            if (!info.exists) unavailable.push({ path: root, reason: "missing" });
+            else if (!info.directory) unavailable.push({ path: root, reason: "unavailable" });
+          }
+          if (unavailable.length)
+            issues.push({ projectId: project.id, name: project.name, path: project.path, unavailable });
+        }
+        return issues;
+      },
+      moveProjectRoot: async (projectId: string, fromPath: string, toDirectory: string) => {
+        if (typeof toDirectory !== "string" || !path.win32.isAbsolute(toDirectory)
+          || !(await invoke("stat", { path: toDirectory })).directory)
+          throw new Error("Папка отсутствует на клиентском ПК");
+        return manager.moveProjectRoot(projectId, fromPath, toDirectory, true);
+      },
+      setProjectFolders: (projectId: string, paths: string[]) => manager.setProjectFolders(projectId, paths),
       removeProject: async (projectId: string) => { await manager.removeProject(projectId); return true; },
       deleteConversation: async (chatId: string) => { await manager.deleteConversation(chatId); return true; },
       chooseAttachments: async () => attachments(await invoke("chooseFiles")),

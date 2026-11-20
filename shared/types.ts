@@ -10,6 +10,14 @@ export interface ProjectRecord {
   lastOpenedAt: string;
 }
 
+/** Проект, у которого хотя бы одну папку не найти на диске. */
+export interface ProjectLocationIssue {
+  projectId: string;
+  name: string;
+  path: string;
+  unavailable: Array<{ path: string; reason: "missing" | "unavailable" }>;
+}
+
 export interface ProjectInstructions {
   projectId: string;
   filePath: string;
@@ -429,6 +437,16 @@ export interface PiDesktopApi {
   attachFilePaths(paths: string[]): Promise<Attachment[]>;
   removeProject(projectId: string): Promise<boolean>;
   renameProject(projectId: string, name: string): Promise<ProjectRecord>;
+  projectLocationIssues(): Promise<ProjectLocationIssue[]>;
+  moveProjectRoot(
+    projectId: string,
+    fromPath: string,
+    toDirectory: string,
+  ): Promise<ProjectRecord>;
+  setProjectFolders(
+    projectId: string,
+    folderPaths: string[],
+  ): Promise<ProjectRecord>;
   createConversation(projectId?: string): Promise<ConversationSnapshot>;
   openConversation(conversationId: string): Promise<ConversationSnapshot>;
   deleteConversation(conversationId: string): Promise<boolean>;

@@ -16,8 +16,10 @@ const deferred = () => {
   return { promise, resolve, reject };
 };
 
-function fixture({ working = false, goalMode = false, primaryAction = "send", input = "Задача", attachments = [] } = {}) {
+function fixture({ working = false, goalMode = false, primaryAction = "send", input = "Задача", attachments = [],
+  projectId = undefined, projectIssues = [] } = {}) {
   let pending = {}, messages = [], draft = input;
+  const locationIssues = [];
   const pendingRequestIdsRef = { current: new Set() };
   const activeIdRef = { current: "a" };
   const wait = deferred(), calls = [], notices = [];
@@ -37,6 +39,8 @@ function fixture({ working = false, goalMode = false, primaryAction = "send", in
     setAttachments: noop, setHistoryQuotes: noop, setGoalMode: noop, setPlanMode: noop,
     setMessages: update => { messages = update(messages); },
     setQueuedPrompts: noop,
+    // Чат принадлежит проекту; пропавшая папка проекта должна остановить отправку до запроса.
+    snapshot: { conversation: { projectId } }, projectIssues, setLocationIssue: issue => locationIssues.push(issue),
     addNotice: text => notices.push(text),
     window: { piDesktop: Object.fromEntries(["sendPrompt", "setGoal", "resumeConversation", "queuePrompt"].map(name => [name, (...args) => {
       calls.push({ name, args, pendingAtCall: { ...pending } });
@@ -47,7 +51,7 @@ function fixture({ working = false, goalMode = false, primaryAction = "send", in
     ${["beginRequest", "finishRequest", "resumeExecution", "submit"].map(declaration).join("\n")}
     return { beginRequest, finishRequest, resumeExecution, submit };
   `)(...Object.values(bindings));
-  return { ...functions, wait, calls, notices, activeIdRef, get pending() { return pending; }, get messages() { return messages; }, get draft() { return draft; } };
+  return { ...functions, wait, calls, notices, locationIssues, activeIdRef, get pending() { return pending; }, get messages() { return messages; }, get draft() { return draft; } };
 }
 
 test("preparation is visible before prompt IPC completes and duplicate sends are ignored", async () => {
@@ -134,4 +138,18 @@ test("preparation UI is separate from real model work, timing and plan activity"
   assert.match(app, /planIsWorking\(snapshot.conversation.plan, working, snapshot.planWorkingRevision\)/);
   for (const name of ["beginRequest", "finishRequest", "submit", "resumeExecution"])
     assert.doesNotMatch(declaration(name), /setWorking\(|setStartedAt\(/);
+});
+
+test("a chat of a project whose folder disappeared asks for its new place instead of sending", async () => {
+  const issue = { projectId: "p1", name: "Проект", path: "D:/gone/project", unavailable: [{ path: "D:/gone/project", reason: "missing" }] };
+  const f = fixture({ projectId: "p1", projectIssues: [issue] });
+  await f.submit();
+  assert.deepEqual(f.calls, [], "nothing is sent to a working folder that is not there");
+  assert.deepEqual(f.pending, {}, "the composer is not left in a preparing state");
+  assert.deepEqual(f.locationIssues.map(item => item.projectId), ["p1"], "the user is asked for the new folder");
+  const other = fixture({ projectId: "p2", projectIssues: [issue] });
+  const sending = other.submit();
+  assert.deepEqual(other.calls.map(call => call.name), ["sendPrompt"], "a healthy project keeps sending");
+  other.wait.resolve();
+  await sending;
 });

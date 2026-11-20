@@ -204,6 +204,17 @@ function registerIpc(): void {
   ipcMain.handle("desktop:rename-project", (_event, projectId: string, name: string) =>
     piManager.renameProject(projectId, name),
   );
+  ipcMain.handle("desktop:project-location-issues", () => store.projectLocationIssues());
+  ipcMain.handle(
+    "desktop:move-project-root",
+    (_event, projectId: string, fromPath: string, toDirectory: string) =>
+      piManager.moveProjectRoot(projectId, fromPath, toDirectory),
+  );
+  ipcMain.handle(
+    "desktop:set-project-folders",
+    (_event, projectId: string, folderPaths: string[]) =>
+      piManager.setProjectFolders(projectId, folderPaths),
+  );
   ipcMain.handle("desktop:create-conversation", (_event, projectId?: string) =>
     piManager.createConversation(projectId),
   );
@@ -518,6 +529,10 @@ async function ensureWebAccess() {
       checkComfyConnection: (url: string) => checkComfyConnection(url),
       refreshProjectSessions: (id: string) => store.refreshProjectSessions(id),
       renameProject: (id: string, name: string) => piManager.renameProject(id, name),
+      projectLocationIssues: () => store.projectLocationIssues(),
+      moveProjectRoot: (id: string, fromPath: string, toDirectory: string) =>
+        piManager.moveProjectRoot(id, fromPath, toDirectory),
+      setProjectFolders: (id: string, paths: string[]) => piManager.setProjectFolders(id, paths),
       removeProject: async (id: string) => { await piManager.removeProject(id); return true; },
       deleteConversation: async (id: string) => { await piManager.deleteConversation(id); return true; },
       getProjectInstructions: (id: string) => store.getProjectInstructions(id),

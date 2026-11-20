@@ -25,6 +25,11 @@ const api: PiDesktopApi = {
   attachFilePaths: (paths) => ipcRenderer.invoke("desktop:attach-file-paths", paths),
   removeProject: (projectId) => ipcRenderer.invoke("desktop:remove-project", projectId),
   renameProject: (projectId, name) => ipcRenderer.invoke("desktop:rename-project", projectId, name),
+  projectLocationIssues: () => ipcRenderer.invoke("desktop:project-location-issues"),
+  moveProjectRoot: (projectId, fromPath, toDirectory) =>
+    ipcRenderer.invoke("desktop:move-project-root", projectId, fromPath, toDirectory),
+  setProjectFolders: (projectId, folderPaths) =>
+    ipcRenderer.invoke("desktop:set-project-folders", projectId, folderPaths),
   createConversation: (projectId) => ipcRenderer.invoke("desktop:create-conversation", projectId),
   openConversation: (conversationId) => ipcRenderer.invoke("desktop:open-conversation", conversationId),
   deleteConversation: (conversationId) => ipcRenderer.invoke("desktop:delete-conversation", conversationId),

@@ -13,6 +13,7 @@ import {
   readdir,
   rename,
   rm,
+  stat,
   unlink,
   writeFile,
 } from "node:fs/promises";
@@ -34,6 +35,7 @@ import type {
   ModelServerDiscoveryResult,
   ModuleSettings,
   ProjectInstructions,
+  ProjectLocationIssue,
   ProjectRecord,
   QueuedPrompt,
   ThinkingLevel,
@@ -1332,6 +1334,85 @@ export class DataStore {
     return structuredClone(project);
   }
 
+  /**
+   * Проектные папки, в которых нельзя работать: их нет на диске или доступ закрыт.
+   * Вызывается при запуске, при открытии чата и после переноса проекта.
+   */
+  async projectLocationIssues(): Promise<ProjectLocationIssue[]> {
+    const checked = await Promise.all(
+      this.state.projects.map(async (project) => {
+        const unavailable = await unavailableFolders([project.path, ...project.paths]);
+        return unavailable.length
+          ? { projectId: project.id, name: project.name, path: project.path, unavailable }
+          : undefined;
+      }),
+    );
+    return checked.filter((issue): issue is ProjectLocationIssue => issue !== undefined);
+  }
+
+  /**
+   * Перенос корня проекта в новую папку. Корни, лежавшие внутри старой папки,
+   * переезжают следом по относительному пути; посторонние корни остаются как есть.
+   */
+  /**
+   * `verified` = существование папки уже проверил тот, кто ей владеет:
+   * в удалённом режиме папка лежит на клиентском компьютере, а не здесь.
+   */
+  async moveProjectRoot(
+    projectId: string,
+    fromPath: string,
+    toDirectory: string,
+    verified = false,
+  ): Promise<ProjectRecord> {
+    const project = this.getProject(projectId);
+    const target = path.resolve(toDirectory);
+    if (!verified) {
+      const targetInfo = await stat(target).catch(() => undefined);
+      if (!targetInfo?.isDirectory()) throw new Error("Указанной папки не существует");
+    }
+    const roots = uniquePaths([project.path, ...project.paths]);
+    const source = roots.find((root) => pathsEqual(root, fromPath));
+    if (!source) throw new Error("Эта папка не входит в проект");
+    if (pathsEqual(source, target)) return structuredClone(project);
+    const moved = roots.map((root) => {
+      if (pathsEqual(root, source)) return target;
+      const nested = pathInside(source, root);
+      return nested ? path.join(target, ...nested) : root;
+    });
+    project.paths = uniquePaths(moved);
+    if (pathsEqual(project.path, source)) project.path = target;
+    delete this.state.sessionIndex?.[projectId];
+    await this.save();
+    return structuredClone(project);
+  }
+
+  /** Запрос в чат проекта без доступной папки бессмысленен: движок упадёт с непонятной ошибкой. */
+  async assertProjectAvailable(projectId?: string): Promise<void> {
+    if (!projectId) return;
+    const project = this.getProject(projectId);
+    const [unavailable] = await unavailableFolders([project.path]);
+    if (unavailable)
+      throw new Error(
+        `Папка проекта не найдена: ${project.path}. Сначала укажите новое расположение проекта.`,
+      );
+  }
+
+  /** Полный список папок проекта, например после ручного редактирования в интерфейсе. */
+  async setProjectFolders(
+    projectId: string,
+    folderPaths: string[],
+  ): Promise<ProjectRecord> {
+    const project = this.getProject(projectId);
+    const canonical = uniquePaths(folderPaths);
+    if (!canonical.length) throw new Error("Добавьте хотя бы одну папку проекта");
+    project.paths = canonical;
+    if (!canonical.some((root) => pathsEqual(root, project.path)))
+      project.path = canonical[0];
+    delete this.state.sessionIndex?.[projectId];
+    await this.save();
+    return structuredClone(project);
+  }
+
   async createConversation(projectId?: string): Promise<ConversationRecord> {
     if (projectId) this.getProject(projectId);
     const now = new Date().toISOString();
@@ -1694,6 +1775,54 @@ function normalizePathKey(value: string): string {
 
 function pathsEqual(left: string, right: string): boolean {
   return normalizePathKey(left) === normalizePathKey(right);
+}
+
+/** Абсолютные пути без повторов, в первом встреченном написании. */
+function uniquePaths(values: string[]): string[] {
+  const seen = new Set<string>();
+  const result: string[] = [];
+  for (const value of values) {
+    const resolved = path.resolve(value);
+    const key = normalizePathKey(resolved);
+    if (seen.has(key)) continue;
+    seen.add(key);
+    result.push(resolved);
+  }
+  return result;
+}
+
+/** Части пути вложенной папки внутри родительской, либо undefined для посторонней. */
+function pathInside(parent: string, child: string): string[] | undefined {
+  const relative = path.relative(parent, child);
+  if (!relative || relative === ".." || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative))
+    return undefined;
+  return relative.split(/[\\/]/);
+}
+
+async function unavailableFolders(
+  folders: string[],
+): Promise<Array<{ path: string; reason: "missing" | "unavailable" }>> {
+  const checked = await Promise.all(
+    uniquePaths(folders).map(async (folder) => {
+      try {
+        const info = await stat(folder);
+        return info.isDirectory()
+          ? undefined
+          : { path: folder, reason: "unavailable" as const };
+      } catch (error) {
+        const code = (error as NodeJS.ErrnoException).code;
+        return {
+          path: folder,
+          reason: code === "ENOENT" || code === "ENOTDIR" || code === "ENXIO"
+            ? ("missing" as const)
+            : ("unavailable" as const),
+        };
+      }
+    }),
+  );
+  return checked.filter(
+    (item): item is { path: string; reason: "missing" | "unavailable" } => item !== undefined,
+  );
 }
 
 function isManagedPackage(
