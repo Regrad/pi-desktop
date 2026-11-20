@@ -1671,9 +1671,12 @@ export class DataStore {
   }
 
   private async readModelsConfig(): Promise<ModelsFileConfig> {
-    return JSON.parse(
-      await readFile(path.join(this.agentDir, "models.json"), "utf8"),
-    ) as ModelsFileConfig;
+    const content = await readFile(path.join(this.agentDir, "models.json"), "utf8");
+    try {
+      return JSON.parse(content) as ModelsFileConfig;
+    } catch {
+      throw new Error("Файл моделей повреждён: models.json содержит некорректный JSON.");
+    }
   }
 
   private mutateModels<T>(task: () => Promise<T>): Promise<T> {

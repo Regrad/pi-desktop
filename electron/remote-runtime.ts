@@ -40,7 +40,13 @@ export class RemoteRuntime {
       store.assertManagedSessionFile(file);
       const lines = (await readFile(file, "utf8").catch((error: NodeJS.ErrnoException) => { if (error.code === "ENOENT") return ""; throw error; })).split("\n");
       for (const line of lines) if (line.trim()) {
-        const entry = JSON.parse(line);
+        // Повреждённая строка журнала не должна закрывать доступ к остальным чатам.
+        let entry: { type?: string; message?: { role?: string; toolName?: string } };
+        try {
+          entry = JSON.parse(line) as typeof entry;
+        } catch {
+          continue;
+        }
         if (entry.type === "message" && entry.message?.role === "toolResult" && /^(media_|comfyui_|desktop_show_image$)/.test(entry.message.toolName ?? "")) collectMediaGrants(entry.message, this.host.dataDir, grants);
       }
     }
