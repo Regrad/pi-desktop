@@ -32,6 +32,14 @@ async function patchFile(file, patch) {
   if (result !== source) await writeFile(file, result, "utf8");
 }
 
+function patchDesktopPromptIdentity(source) {
+  const upstream = "You are a coding assistant running inside pi, a coding agent harness.";
+  const desktop = "You are a coding assistant running inside Pi Desktop.";
+  if (source.includes(desktop)) return source;
+  if (source.split(upstream).length !== 2) throw new Error("Pi Desktop system prompt no longer matches pinned Pi.");
+  return source.replace(upstream, desktop);
+}
+
 export async function applyContextCompatibility(coreRoot) {
   await requireVersion(coreRoot, SUPPORTED_PI_VERSION);
   const directory = path.join(coreRoot, "dist", "core");
@@ -39,6 +47,7 @@ export async function applyContextCompatibility(coreRoot) {
   await patchFile(path.join(directory, "messages.js"), patchServiceMessages);
   await patchFile(path.join(directory, "compaction", "compaction.js"), patchDesktopCompaction);
   await patchFile(path.join(directory, "agent-session.js"), patchDesktopContinuation);
+  await patchFile(path.join(directory, "system-prompt.js"), patchDesktopPromptIdentity);
   await patchFile(path.join(directory, "tools", "bash.js"), patchShellTimeout);
   await patchFile(path.join(directory, "tools", "bash.js"), patchShellEnvironment);
   await copyFile(path.join(bridgeRoot, "windows-bash.js"), path.join(directory, "tools", "desktop-windows-bash.js"));

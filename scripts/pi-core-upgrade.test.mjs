@@ -222,6 +222,8 @@ test("Pi 1.5.2 embedded SDK engine loads add-ons, preserves user input, runs too
   assert.deepEqual(settledHistory.messages, [], "Do not resend unchanged history on settlement");
   assert.equal(captured[0].messages.filter(m => m.role === "user").length, 1);
   assert.ok(captured[0].messages.some(m => ["system", "developer"].includes(m.role)
+    && messageText(m).startsWith("You are a coding assistant running inside Pi Desktop.")), "The default prompt should identify Pi Desktop");
+  assert.ok(captured[0].messages.some(m => ["system", "developer"].includes(m.role)
     && messageText(m).includes("Goals are thread-scoped state")));
   assert.ok(captured[0].messages.some(m => m.role === "user" && messageText(m).endsWith("Read evidence.txt and verify it.")));
   assert.ok(captured[0].messages.some(m => m.role === "user" && messageText(m).includes(lensFinding)));
