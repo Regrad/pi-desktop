@@ -30,38 +30,55 @@ function collect(batches) {
   return candidates;
 }
 
+function sourceResult({ read, snippet, ...source }, page) {
+  if (page?.text && read) {
+    return { ...source, url: page.url, title: compact(page.title).slice(0, 240) || source.title, status: "read", excerpt: snippet };
+  }
+  const status = source.kind === "image" || source.kind === "ref" ? "result" : snippet ? "snippet" : "unavailable";
+  return { ...source, status, excerpt: snippet, reason: page?.error };
+}
+
 export async function researchWeb(input, settings, signal, update, io = { search: searchWeb, scrape: scrapePages, excerpts }) {
   signal?.throwIfAborted();
   const query = (input.query ?? "").trim();
+  const report = { query, url: input.url, provider: input.url ? undefined : settings.searchProvider,
+    scraper: settings.scraperProvider, reranker: settings.rerankerType };
   let search;
   if (input.url) {
     search = { batches: [{ kind: "search", results: [{ url: publicUrl(input.url).href }] }], errors: [] };
   } else {
-    update({ phase: "searching", query });
+    update({ ...report, phase: "searching" });
     search = await io.search({ ...input, query }, settings, signal);
+    report.provider = search.provider ?? report.provider;
   }
   const candidates = collect(search.batches);
   const toRead = candidates.filter(result => result.read);
-  let pages = new Map();
+  const finished = new Map();
+  const showProgress = (phase, pages) => update({
+    ...report, phase, completed: pages.size, total: toRead.length,
+    sources: candidates.map(candidate => {
+      const { url, title, kind, status } = sourceResult(candidate, pages.get(candidate.url));
+      return { url, title, kind, status: candidate.read && !pages.has(candidate.url) ? "reading" : status };
+    }),
+  });
+  let pages = finished;
   if (toRead.length) {
-    update({ phase: "reading", query, provider: search.provider, total: toRead.length });
-    pages = await io.scrape(toRead.map(candidate => candidate.url), settings, signal);
+    showProgress("reading", finished);
+    pages = await io.scrape(toRead.map(candidate => candidate.url), settings, signal, (url, page) => {
+      finished.set(url, page);
+      showProgress("reading", finished);
+    });
     if (settings.rerankerType !== "none" && query && [...pages.values()].some(page => page.text)) {
-      update({ phase: "ranking", query, provider: search.provider, total: toRead.length });
+      showProgress("ranking", pages);
     }
   }
-  const sources = await Promise.all(candidates.map(async ({ read, snippet, ...candidate }) => {
+  const sources = await Promise.all(candidates.map(async candidate => {
     const page = pages.get(candidate.url);
-    if (!page?.text || !read) {
-      const status = candidate.kind === "image" || candidate.kind === "ref" ? "result" : snippet ? "snippet" : "unavailable";
-      return { ...candidate, status, excerpt: snippet, reason: page?.error };
-    }
+    const source = sourceResult(candidate, page);
+    if (source.status !== "read") return source;
     const passages = await io.excerpts(page.text, query, settings, signal, input.url ? 6000 : 1800, Boolean(input.url));
-    return {
-      ...candidate, url: page.url, title: compact(page.title).slice(0, 240) || candidate.title, status: "read",
-      excerpt: passages.excerpt, reason: passages.fallback,
-    };
+    return { ...source, excerpt: passages.excerpt, reason: passages.fallback };
   }));
   signal?.throwIfAborted();
-  return { phase: "done", query, provider: search.provider, scraper: settings.scraperProvider, reranker: settings.rerankerType, sources, errors: search.errors };
+  return { ...report, phase: "done", sources, errors: search.errors };
 }

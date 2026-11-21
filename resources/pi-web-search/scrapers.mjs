@@ -90,14 +90,19 @@ async function tavily(urls, settings, signal) {
 
 const adapters = { firecrawl, serper, keenable };
 
-export async function scrapePages(urls, settings, signal, validate = resolvePublicUrl) {
+export async function scrapePages(urls, settings, signal, onPage, validate = resolvePublicUrl) {
   const result = new Map();
+  const save = (url, page) => {
+    signal?.throwIfAborted();
+    result.set(url, page);
+    onPage?.(url, page);
+  };
   const validated = await Promise.all(urls.map(async url => {
     try {
       await validate(url);
       return url;
     } catch (error) {
-      result.set(url, { error: error.message });
+      save(url, { error: error.message });
     }
   }));
   signal?.throwIfAborted();
@@ -105,23 +110,25 @@ export async function scrapePages(urls, settings, signal, validate = resolvePubl
   if (!ready.length) return result;
 
   if (settings.scraperProvider === "tavily") {
+    let pages;
     try {
-      for (const [url, value] of await tavily(ready, settings, signal)) result.set(url, value);
+      pages = await tavily(ready, settings, signal);
     } catch (error) {
-      signal?.throwIfAborted();
-      for (const url of ready) result.set(url, { error: error.message });
+      pages = new Map(ready.map(url => [url, { error: error.message }]));
     }
+    for (const [url, value] of pages) save(url, value);
     return result;
   }
 
   const adapter = adapters[settings.scraperProvider];
   await Promise.all(ready.map(async url => {
+    let value;
     try {
-      result.set(url, await adapter(url, settings, signal));
+      value = await adapter(url, settings, signal);
     } catch (error) {
-      signal?.throwIfAborted();
-      result.set(url, { error: error.message });
+      value = { error: error.message };
     }
+    save(url, value);
   }));
   return result;
 }

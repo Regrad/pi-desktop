@@ -170,13 +170,20 @@ test("one search reads five unique results, keeps snippets and reports ranking",
         url: url(value), title: String(value), snippet: "only from search",
       })) }] };
     },
-    async scrape(urls) {
+    async scrape(urls, _settings, _signal, onPage) {
       assert.deepEqual(urls, [1, 2, 3, 4, 5].map(url));
-      return new Map(urls.filter(value => value !== url(2)).map(value => [value, { url: value, title: "Page title", text: "Actually extracted" }]));
+      const pages = new Map(urls.map(value => [value, value === url(2) ? { error: "Blocked" } : { url: value, title: "Page title", text: "Actually extracted" }]));
+      for (const [url, page] of pages) onPage(url, page);
+      return pages;
     },
     async excerpts(text) { return { excerpt: text }; },
   });
-  assert.deepEqual(progress.map(event => event.phase), ["searching", "reading", "ranking"]);
+  assert.deepEqual(progress.map(event => event.phase), ["searching", ...Array(6).fill("reading"), "ranking"]);
+  assert.deepEqual(progress.slice(1, -1).map(event => event.completed), [0, 1, 2, 3, 4, 5]);
+  assert.deepEqual(progress[1].sources.map(source => source.status), [...Array(5).fill("reading"), "snippet"]);
+  assert.equal(progress[2].sources[0].status, "read");
+  assert.equal(progress[3].sources[1].status, "snippet");
+  assert.equal(progress.some(event => JSON.stringify(event).includes("Actually extracted")), false);
   assert.deepEqual(result.sources.map(source => source.status), ["read", "snippet", "read", "read", "read", "snippet"]);
   assert.equal(result.sources[1].excerpt, "only from search");
 });
@@ -200,7 +207,9 @@ test("citation IDs survive reopening and the renderer resolves only known anchor
   assert.equal(tools.length, 1);
   const [tool] = tools;
   const previous = { type: "message", message: { role: "toolResult", details: { webResearch: { turn: 6 } } } };
-  const result = await tool.execute("call", { url: firstPage }, undefined, undefined, { sessionManager: { getEntries: () => [previous] } });
+  const progress = [];
+  const result = await tool.execute("call", { url: firstPage }, undefined, event => progress.push(event.details.webResearch), { sessionManager: { getEntries: () => [previous] } });
+  assert.deepEqual(progress.map(event => [event.completed, event.sources[0].status]), [[0, "reading"], [1, "read"]]);
   assert.equal(result.isError, false, result.content[0].text);
   const [source] = result.details.webResearch.sources;
   assert.equal(source.anchor, "turn7search0");

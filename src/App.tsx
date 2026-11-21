@@ -80,7 +80,7 @@ import { BrowserPanel } from "./BrowserPanel";
 import { ComfySettingsPanel } from "./ComfySettings";
 import { WebAccessSettingsPanel } from "./WebAccessSettings";
 import { WebSearchSettingsPanel } from "./WebSearchSettings";
-import { collectWebSearchSources, indexWebCitations, WebCitations, WebSearchSources, webSearchDetails } from "./WebSearchSources";
+import { indexWebCitations, WebCitations, WebSearchActivity } from "./WebSearchSources";
 import { remarkWebCitations } from "./web-citations";
 import { collectComfyMedia, collectAnswerMedia, answerCanPublishMedia } from "./comfy-images";
 import { ComfyMedia } from "./ComfyMedia";
@@ -1342,8 +1342,6 @@ function ToolResultContent({
 }) {
   const object =
     result && typeof result === "object" ? (result as JsonObject) : undefined;
-  const webSources = name === "web_search" ? webSearchDetails(result)?.sources : undefined;
-  if (Array.isArray(webSources) && webSources.length) return <WebSearchSources sources={webSources} />;
   const diff =
     typeof object?.details?.diff === "string" ? object.details.diff : undefined;
   if (diff) return <ToolDiffPreview diff={diff} expanded={expanded} />;
@@ -1364,11 +1362,11 @@ function ToolResultContent({
 
 function ToolCard({ tool, hideMedia = false }: { tool: ToolActivity; hideMedia?: boolean }) {
   const args = parsedToolArguments(tool.args);
-  const presentation = toolPresentation(tool.name, args);
-  const timing = shellTiming(tool.name, args, tool.result, tool.startedAt, tool.preparing);
-  const webPhase = tool.name === "web_search" ? webSearchDetails(tool.result)?.phase : undefined;
   const [expanded, setExpanded] = useState(false);
   const output = tool.result === undefined ? "" : toolOutputText(tool.result);
+  if (tool.name === "web_search") return <WebSearchActivity {...tool} args={args} output={output} />;
+  const presentation = toolPresentation(tool.name, args);
+  const timing = shellTiming(tool.name, args, tool.result, tool.startedAt, tool.preparing);
   const codeFragments = toolCodeFragments(
     tool.name,
     args,
@@ -1410,7 +1408,7 @@ function ToolCard({ tool, hideMedia = false }: { tool: ToolActivity; hideMedia?:
           {tool.preparing
             ? t("Формируется…")
             : tool.running
-              ? webPhase === "searching" ? t("Поиск в интернете…") : webPhase === "reading" ? t("Чтение источников…") : webPhase === "ranking" ? t("Отбор выдержек…") : t("Выполняется…")
+              ? t("Выполняется…")
               : tool.error
                 ? t("Ошибка")
                 : t("Готово")}
@@ -5627,7 +5625,7 @@ export default function App() {
       return `${messageKey(item.message, item.sourceIndex)}:${item.fragment ?? "whole"}${item.fragmentIndex === undefined ? "" : `:${item.fragmentIndex}`}`;
     return String(item.entry.id ?? `${item.kind}-${item.sourceIndex}-${index}`);
   };
-  const renderTranscriptItem = (item: TranscriptTimelineItem, published?: ReadonlySet<string>, answerMedia?: Record<string, unknown>[]): ReactNode => {
+  const renderTranscriptItem = (item: TranscriptTimelineItem, published?: ReadonlySet<string>, answerMedia?: Record<string, unknown>[], promoted?: ReadonlyMap<string, ToolActivity>): ReactNode => {
     if (item.kind === "compaction") {
       const tokensBefore =
         item.record?.tokensBefore ?? Number(item.entry.tokensBefore);
@@ -5659,7 +5657,7 @@ export default function App() {
     if (message.role === "custom" && message.display === false) return null;
     if (message.role === "toolResult" || message.role === "tool") {
       const id = toolResultIdentifier(message);
-      if (id && hasTranscriptTool(id)) return null;
+      if ((id && hasTranscriptTool(id)) || promoted?.has(id ?? messageKey(message, index))) return null;
       return (
         <ToolCard
           hideMedia={published?.has(id ?? messageKey(message, index))}
@@ -5711,24 +5709,14 @@ export default function App() {
             )}
           </article>
         )}
-        {calls.map((call, callIndex) => (
-          <Fragment key={toolCallIdentifier(call, `${messageKey(message, index)}-${callIndex}`)}>
-          <ToolCard
-            hideMedia={published?.has(toolCallIdentifier(call, `${messageKey(message, index)}-${callIndex}`))}
-            key={toolCallIdentifier(
-              call,
-              `${messageKey(message, index)}-${callIndex}`,
-            )}
-            tool={buildToolActivity(
-              call,
-              `${messageKey(message, index)}-${callIndex}`,
-            )}
-          />
-          {nestedFor(toolCallIdentifier(call, `${messageKey(message, index)}-${callIndex}`)).map(child => (
-            <ToolCard key={child.id} tool={child} />
-          ))}
-          </Fragment>
-        ))}
+        {calls.map((call, callIndex) => {
+          const fallbackId = `${messageKey(message, index)}-${callIndex}`;
+          const id = toolCallIdentifier(call, fallbackId);
+          return <Fragment key={id}>
+            {!promoted?.has(id) && <ToolCard hideMedia={published?.has(id)} tool={buildToolActivity(call, fallbackId)} />}
+            {nestedFor(id).filter(child => !promoted?.has(child.id)).map(child => <ToolCard key={child.id} tool={child} />)}
+          </Fragment>;
+        })}
       </>
     );
   };
@@ -5753,7 +5741,7 @@ export default function App() {
     display.display === "single"
       ? transcriptItemKey(display.item, 0)
       : display.key;
-  const foldStats = (process: TranscriptTimelineItem[]) => {
+  const foldStats = (process: TranscriptTimelineItem[], promoted: ReadonlyMap<string, ToolActivity>) => {
     let calls = 0;
     let errors = 0;
     let thinking = false;
@@ -5771,13 +5759,14 @@ export default function App() {
       )
         thinking = true;
       toolCallParts(item.message).forEach((call, callIndex) => {
-        calls += 1;
         const id = toolCallIdentifier(
           call,
-          `message-${item.sourceIndex}-tool-${callIndex}`,
+          `${messageKey(item.message, item.sourceIndex)}-${callIndex}`,
         );
+        if (promoted.has(id)) return;
+        calls += 1;
         const persisted = historicalToolIndex.results.get(id);
-        const nested = nestedFor(id);
+        const nested = nestedFor(id).filter(tool => !promoted.has(tool.id));
         calls += nested.length;
         errors += nested.filter(tool => tool.error).length;
         if (persisted) {
@@ -5791,21 +5780,25 @@ export default function App() {
     if (display.display === "single") return renderTranscriptItem(display.item);
     const expanded = expandedProcessFolds.has(display.key);
     const imageTools: { id: string; name: string; result?: unknown; args?: unknown }[] = [];
-    {
-      for (const item of display.process) {
-        if (item.kind !== "message") continue;
-        const message = item.message;
-        toolCallParts(message).forEach((call, index) => {
-          imageTools.push(buildToolActivity(call, `${messageKey(message, item.sourceIndex)}-${index}`));
-        });
-        if (message.role === "toolResult" || message.role === "tool") {
-          const id = toolResultIdentifier(message) ?? messageKey(message, item.sourceIndex);
-          imageTools.push({
-            id,
-            name: String(message.toolName ?? message.name ?? tools[id]?.name ?? ""),
-            result: resultMessagePayload(message),
-            args: tools[id]?.args,
-          });
+    const webTools = new Map<string, ToolActivity>();
+    for (const item of display.process) {
+      if (item.kind !== "message") continue;
+      const message = item.message;
+      toolCallParts(message).forEach((call, index) => {
+        const tool = buildToolActivity(call, `${messageKey(message, item.sourceIndex)}-${index}`);
+        imageTools.push(tool);
+        if (tool.name === "web_search") webTools.set(tool.id, tool);
+        for (const child of nestedFor(tool.id)) {
+          if (child.name === "web_search") webTools.set(child.id, child);
+        }
+      });
+      if (message.role === "toolResult" || message.role === "tool") {
+        const id = toolResultIdentifier(message) ?? messageKey(message, item.sourceIndex);
+        const name = String(message.toolName ?? message.name ?? tools[id]?.name ?? "");
+        const result = resultMessagePayload(message);
+        imageTools.push({ id, name, result, args: tools[id]?.args });
+        if (name === "web_search" && !webTools.has(id)) {
+          webTools.set(id, { id, name, result, args: tools[id]?.args, running: false, startedAt: 0, error: Boolean(message.isError) });
         }
       }
     }
@@ -5817,8 +5810,8 @@ export default function App() {
       stopReason: answerMessage?.stopReason,
     });
     const published = collectAnswerMedia(imageTools, answerComplete, answerMessage ? messageText(answerMessage) : "");
-    const webSources = collectWebSearchSources(imageTools);
-    const { calls, errors, thinking } = foldStats(display.process);
+    const { calls, errors, thinking } = foldStats(display.process, webTools);
+    const showFold = webTools.size === 0 || calls > 0 || thinking || display.process.some(item => item.kind !== "message" || item.message.role === "custom");
     const label =
       thinking && calls
         ? t("Размышления и инструменты")
@@ -5832,28 +5825,25 @@ export default function App() {
     if (errors) summary.push(t("с ошибками: {0}", errors));
     return (
       <div className="process-fold">
-        <button
+        {showFold && <button
           type="button"
           className={`process-fold-head ${expanded ? "open" : ""}`}
           onClick={() => toggleProcessFold(display.key)}
         >
           <ChevronRight size={14} />
           <span>{summary.join(" · ")}</span>
-        </button>
-        {expanded && (
+        </button>}
+        {showFold && expanded && (
           <div className="process-fold-body">
             {display.process.map((item, index) => (
               <Fragment key={transcriptItemKey(item, index)}>
-                {renderTranscriptItem(item, published.toolIds)}
+                {renderTranscriptItem(item, published.toolIds, undefined, webTools)}
               </Fragment>
             ))}
           </div>
         )}
+        {[...webTools.values()].map(tool => <ToolCard key={tool.id} tool={tool} />)}
         {renderTranscriptItem(display.answer, undefined, published.parts)}
-        {webSources.length > 0 && <details className="web-search-answer-sources">
-          <summary>{t("Источники")} · {webSources.length}</summary>
-          <WebSearchSources sources={webSources} />
-        </details>}
       </div>
     );
   };
