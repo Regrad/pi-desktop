@@ -29,7 +29,7 @@
     "image-size": "2.0.4",
     "lucide-react": "1.38.0",
     "mammoth": "1.12.2",
-    "pi-lens": "4.3.0",
+    "pi-lens": "4.5.1",
     "pi-mcp-adapter": "7.0.1",
     "pi-tool-repair": "0.3.10",
     "pi-web-access": "0.48.0",
@@ -128,10 +128,5 @@
     "vendor/pi/packages/agent",
     "vendor/pi/packages/coding-agent"
   ],
-  "overrides": {
-    "pi-lens": {
-      "@earendil-works/pi-tui": "1.5.2"
-    }
-  },
   "license": "MIT"
 }

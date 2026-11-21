@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { readFile } from "node:fs/promises";
+import { mkdir, readFile, rm } from "node:fs/promises";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 
@@ -17,18 +17,21 @@ export async function verifyGrammar(file, expectedHash) {
 }
 
 export async function ensurePiLensGrammars(packageDir) {
-  const { GRAMMARS, loadManifest } = await import(pathToFileURL(path.join(packageDir, "scripts", "download-grammars.js")).href);
-  const { downloadGrammarDetailed } = await import(pathToFileURL(path.join(packageDir, "dist", "clients", "grammar-source.js")).href);
+  const { GRAMMARS, loadManifest, downloadGrammar, sidecarPathFor } = await import(pathToFileURL(path.join(packageDir, "scripts", "download-grammars.js")).href);
   const manifest = loadManifest();
+  const grammarDir = path.join(packageDir, "grammars");
+  await mkdir(grammarDir, { recursive: true });
   let totalBytes = 0;
   // The upstream downloader tolerates failures; distribution preparation must not.
   for (const name of GRAMMARS) {
-    const file = path.join(packageDir, "grammars", name);
+    const file = path.join(grammarDir, name);
     const hash = manifest.grammars[name];
     if (!await verifyGrammar(file, hash)) {
-      const result = await downloadGrammarDetailed(path.dirname(file), name);
-      if (!result.ok || !await verifyGrammar(file, hash))
-        throw new Error(`Pi Lens grammar ${name} could not be downloaded and verified: ${result.reason ?? "download or integrity failure"}`);
+      // Upstream checks the stamp to skip downloads. A corrupt file can still
+      // have its original stamp, so invalidate it after our byte-level check.
+      await rm(sidecarPathFor(file), { force: true });
+      await downloadGrammar(grammarDir, name, manifest);
+      if (!await verifyGrammar(file, hash)) throw new Error(`Pi Lens grammar ${name} failed verification after downloading`);
     }
     totalBytes += (await readFile(file)).length;
   }

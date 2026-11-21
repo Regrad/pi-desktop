@@ -3,9 +3,10 @@ import assert from "node:assert/strict";
 import { mkdtemp, writeFile, rm, readFile } from "node:fs/promises";
 import path from "node:path";
 import os from "node:os";
-import { createDispatchContext, dispatchForFile, RunnerRegistry, clearCoverageNoticeState } from "../node_modules/pi-lens/dist/clients/dispatch/dispatcher.js";
-import { FactStore } from "../node_modules/pi-lens/dist/clients/dispatch/fact-store.js";
 import { patchPiLensAnalysisHealth } from "../resources/pi-lens/analysis-health-patch.mjs";
+import { getDesktopAnalysisBindings } from "../node_modules/pi-lens/dist/index.js";
+
+const { createDispatchContext, dispatchForFile, RunnerRegistry, clearCoverageNoticeState, FactStore } = getDesktopAnalysisBindings();
 
 async function dispatch(t, run) {
   const dir = await mkdtemp(path.join(os.tmpdir(), "lens-health-"));
@@ -20,11 +21,9 @@ async function dispatch(t, run) {
   return dispatchForFile(ctx, [{ runnerIds: ["health-fixture"], semantic: "blocking", mode: "all" }], registry);
 }
 
-test("health patch is idempotent in bundled and unbundled dispatchers", async () => {
-  for (const file of ["dist/index.js", "dist/clients/dispatch/dispatcher.js"]) {
-    const source = await readFile(path.join("node_modules/pi-lens", file), "utf8");
-    assert.equal(patchPiLensAnalysisHealth(source), source);
-  }
+test("health patch is idempotent in the bundled dispatcher", async () => {
+  const source = await readFile("node_modules/pi-lens/dist/index.js", "utf8");
+  assert.equal(patchPiLensAnalysisHealth(source), source);
 });
 
 test("a crashed analyzer cannot become a clean result", async t => {

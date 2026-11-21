@@ -4,9 +4,10 @@ import { mkdtemp, readFile, writeFile, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import * as sg from "@ast-grep/napi";
-import { desktopEvaluateAstGrepRules, evaluateAstGrepRules } from "../node_modules/pi-lens/dist/clients/dispatch/runners/ast-grep-napi.js";
-import { scanProjectDiagnostics } from "../node_modules/pi-lens/dist/clients/project-diagnostics/scanner.js";
 import { createAnalysisHost } from "../resources/pi-lens/analysis-host.mjs";
+import { getDesktopAnalysisBindings } from "../node_modules/pi-lens/dist/index.js";
+
+const { desktopEvaluateAstGrepRules, evaluateAstGrepRules, scanProjectDiagnostics } = getDesktopAnalysisBindings();
 
 const cancel = () => globalThis[Symbol.for("pi.desktop.cancel.native.analysis")]?.();
 
@@ -50,6 +51,18 @@ test("HTML script injections retain file coordinates and Unicode handling", asyn
   const { dir, file } = await fixture(t, content, ".html");
   const expected = evaluateAstGrepRules(file, sg.parse(sg.Lang.Html, content).root(), dir, "html", { content, sgModule: sg });
   assert.deepEqual(await desktopEvaluateAstGrepRules(file, content, dir, "html"), expected);
+});
+
+test("an unchanged finding does not crowd out a finding on the edited line", async t => {
+  const content = "new Promise(async resolve => resolve(1));\nnew Promise(async resolve => resolve(2));\n";
+  const { dir, file } = await fixture(t, content);
+  const outOfEditScope = [];
+  const diagnostics = await desktopEvaluateAstGrepRules(file, content, dir, "jsts", {
+    maxMatchesPerRule: 1, modifiedRanges: [{ start: 2, end: 2 }], outOfEditScope,
+  });
+  const fromPromiseRule = diagnostic => diagnostic.rule === "no-async-promise-executor-js";
+  assert.deepEqual(diagnostics.filter(fromPromiseRule).map(diagnostic => diagnostic.line), [2]);
+  assert.deepEqual(outOfEditScope.filter(fromPromiseRule).map(diagnostic => diagnostic.line), [1]);
 });
 
 test("stale source never receives a successful empty/incorrect report", async t => {

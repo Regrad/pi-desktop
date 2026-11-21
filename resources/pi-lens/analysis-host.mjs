@@ -120,13 +120,7 @@ export function createAnalysisHost({ workerUrl = new URL("./analysis-worker.mjs"
 const host = createAnalysisHost();
 globalThis[cancellationKey] = () => host.cancel();
 export async function analyzeAst(payload, options = {}) {
-  const start = Date.now();
-  const epochKey = Symbol.for("pi.desktop.native.analysis.epoch");
-  const epoch = globalThis[epochKey] ?? 0;
-  const { getRunnerTimeoutFloorMs } = await import("../clients/runtime-config.js");
-  if ((globalThis[epochKey] ?? 0) !== epoch || options.signal?.aborted) throw new DOMException("Native analysis cancelled", "AbortError");
-  const deadline = options.deadlineAt ?? start + Math.max(30_000, getRunnerTimeoutFloorMs());
-  const remaining = deadline - Date.now();
+  const remaining = options.deadlineAt === undefined ? 30_000 : options.deadlineAt - Date.now();
   if (remaining <= 0) throw new Error("Native analysis timed out; analysis incomplete.");
   return host.analyze(payload, { ...options, timeoutMs: remaining });
 }

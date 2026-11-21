@@ -3,8 +3,8 @@ import { registerHooks } from "node:module";
 // Inject one rule's real rejection path in a disposable executor only.
 registerHooks({ load(url, context, next) {
   const result = next(url, context);
-  if (!url.endsWith("/dispatch/runners/ast-grep-napi.js")) return result;
-  const anchor = "found = preflight.findAll(nativeConfig, maxMatchesPerRule - collected.length);";
+  if (!url.endsWith("/pi-lens/dist/index.js")) return result;
+  const anchor = "found = preflight.findAll(nativeConfig, editScoped ? Infinity : maxMatchesPerRule - collected.length);";
   const source = String(result.source);
   if (source.split(anchor).length !== 2) throw new Error("Native fault test anchor changed");
   return { ...result, source: source.replace(anchor,

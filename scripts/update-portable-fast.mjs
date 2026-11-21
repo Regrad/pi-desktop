@@ -14,7 +14,7 @@ import {
 } from "./release-update-core.mjs";
 import { createReleaseTransaction } from "./release-transaction.mjs";
 import { planComfyAddonUpdate, stageComfyAddonUpdate, assertComfyAddonState } from "./release-addon.mjs";
-import { treeIsolationFiles } from "../resources/pi-lens/tree-isolation-patch.mjs";
+import { piLensBridgeFiles } from "../resources/pi-lens/grammar-cache-patch.mjs";
 import { portableBinaryDirectory, portableApplicationDirectory } from "./portable-layout.mjs";
 
 const projectRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
@@ -200,18 +200,7 @@ async function syncBridgeOutputs() {
     await syncChangedFiles(files, await findPackage(projectRoot, name), await findPackage(appDir, name));
   }
 
-  const lensFiles = [...new Set([
-    "dist/index.js",
-    "dist/clients/dispatch/runners/ast-grep-napi.js",
-    "dist/clients/project-diagnostics/scanner.js",
-    "dist/clients/dispatch/dispatcher.js",
-    "dist/clients/tree-sitter-client.js",
-    "dist/clients/read-guard-tool-lines.js",
-    "dist/clients/lsp/launch.js",
-    ...treeIsolationFiles,
-    ...["analysis-host.mjs", "analysis-worker.mjs", "analysis-observations.mjs", "analysis-watchdog.mjs", "tree-operations.mjs", "analysis-context.mjs", "executable-path.mjs"].map((name) => `dist/desktop-analysis/${name}`),
-  ])];
-  await syncChangedFiles(lensFiles, await findPackage(projectRoot, "pi-lens"), await findPackage(appDir, "pi-lens"));
+  await syncChangedFiles(piLensBridgeFiles, await findPackage(projectRoot, "pi-lens"), await findPackage(appDir, "pi-lens"));
   process.stdout.write("Compatibility bridge files staged.\n");
 }
 

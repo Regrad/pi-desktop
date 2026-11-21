@@ -3,8 +3,8 @@ import { registerHooks } from "node:module";
 // analyzer and the user's files are never rewritten.
 registerHooks({ load(url, context, next) {
   const result = next(url, context);
-  if (!url.endsWith("/clients/tree-sitter-client.js")) return result;
-  const anchor = "for (const match of batch.query.matches(rootNode)) {";
+  if (!url.endsWith("/pi-lens/dist/index.js")) return result;
+  const anchor = "for (const match2 of batch.query.matches(rootNode)) {";
   const source = String(result.source);
   if (source.split(anchor).length !== 2) throw new Error("Test injection anchor changed");
   return { ...result, source: source.replace(anchor, `

@@ -5,24 +5,17 @@ import { spawnSync } from "node:child_process";
 import path from "node:path";
 import os from "node:os";
 import { serialize, deserialize } from "node:v8";
-import { TreeSitterClient } from "../node_modules/pi-lens/dist/clients/tree-sitter-client.js";
-import { desktopExtractModuleFile } from "../node_modules/pi-lens/dist/clients/module-report.js";
-import { captureReviewGraphStructuralIr } from "../node_modules/pi-lens/dist/clients/review-graph/builder.js";
-import { tryExpandRead } from "../node_modules/pi-lens/dist/clients/read-expansion.js";
-import { ComplexityClient } from "../node_modules/pi-lens/dist/clients/complexity-client.js";
-import { FactStore } from "../node_modules/pi-lens/dist/clients/dispatch/fact-store.js";
-import { importFactProvider } from "../node_modules/pi-lens/dist/clients/dispatch/facts/import-facts.js";
-import { functionFactProvider } from "../node_modules/pi-lens/dist/clients/dispatch/facts/function-facts.js";
-import { commentFactProvider } from "../node_modules/pi-lens/dist/clients/dispatch/facts/comment-facts.js";
-import { tryCatchFactProvider } from "../node_modules/pi-lens/dist/clients/dispatch/facts/try-catch-facts.js";
-import { loadWebTreeSitter } from "../node_modules/pi-lens/dist/clients/deps/web-tree-sitter.js";
 import { withAnalysisScope } from "../node_modules/pi-lens/dist/desktop-analysis/analysis-context.mjs";
-import { patchPiLensTreeIsolation, treeIsolationFiles } from "../resources/pi-lens/tree-isolation-patch.mjs";
-import { queryLoader, queriesForLanguage } from "../node_modules/pi-lens/dist/clients/tree-sitter-query-loader.js";
+import { patchPiLensTreeIsolation } from "../resources/pi-lens/tree-isolation-patch.mjs";
 import { createAnalysisHost } from "../resources/pi-lens/analysis-host.mjs";
-import treeRunner from "../node_modules/pi-lens/dist/clients/dispatch/runners/tree-sitter.js";
-import { getSharedTreeSitterClient, isTreeSitterWasmAborted } from "../node_modules/pi-lens/dist/clients/tree-sitter-shared.js";
-import { createDispatchContext } from "../node_modules/pi-lens/dist/clients/dispatch/dispatcher.js";
+import { getDesktopAnalysisBindings } from "../node_modules/pi-lens/dist/index.js";
+
+const {
+  TreeSitterClient, extractFile, captureReviewGraphStructuralIr, tryExpandRead, ComplexityClient, measureFunctionTable, FactStore,
+  importFactProvider, functionFactProvider, commentFactProvider, tryCatchFactProvider, loadWebTreeSitter,
+  queryLoader, queriesForLanguage, treeSitterRunner: treeRunner, getSharedTreeSitterClient, isTreeSitterWasmAborted,
+  createDispatchContext,
+} = getDesktopAnalysisBindings();
 
 const cancel = () => globalThis[Symbol.for("pi.desktop.cancel.native.analysis")]?.();
 
@@ -85,13 +78,9 @@ export async function sample(value: number) {
 export class Example { method() { return sample(1); } }
 `;
 
-test("all tree-sitter consumers are idempotently isolated, including the bundled extension", async () => {
-  for (const file of ["dist/index.js", ...treeIsolationFiles]) {
-    const source = await readFile(path.join("node_modules/pi-lens", file), "utf8");
-    const patched = patchPiLensTreeIsolation(source, file);
-    assert.equal(patchPiLensTreeIsolation(patched, file), patched, file);
-    assert.equal(patched, source, `installed ${file} has current bridge`);
-  }
+test("all tree-sitter consumers in the extension bundle are idempotently isolated", async () => {
+  const source = await readFile("node_modules/pi-lens/dist/index.js", "utf8");
+  assert.equal(patchPiLensTreeIsolation(source), source);
   assert.throws(() => loadWebTreeSitter(), /supervised analysis executor/);
   await assert.rejects(new TreeSitterClient().withParsedTree("x.ts", "typescript", "", () => true), /Unregistered/);
 });
@@ -125,6 +114,7 @@ test("file facts, structural graph IR, module report and complexity match origin
     payload("graph", { input, filePath: file, cwd: dir, content }),
     payload("module", { absPath: file, languageId: "typescript", content }),
     payload("complexity", { filePath: file }),
+    payload("complexityBaseline", { filePath: file, content }),
   ]);
   for (const [index, provider] of Object.values(providers).entries()) {
     const store = new FactStore();
@@ -138,10 +128,12 @@ test("file facts, structural graph IR, module report and complexity match origin
   assert.deepEqual(graph, expected[4].value);
   assert.equal(graph.complete, true);
   for (const [key, value] of expected[4].writes) assert.deepEqual(store.getFileFact(file, key), value);
-  assert.deepEqual(await desktopExtractModuleFile(file, "typescript", content), expected[5]);
+  assert.deepEqual(await extractFile(file, "typescript", content), expected[5]);
   assert.ok(expected[5].symbols.some(symbol => symbol.name === "sample"));
   assert.deepEqual(await new ComplexityClient().analyzeFile(file), expected[6]);
   assert.ok(expected[6].functionCount > 0);
+  assert.deepEqual(await measureFunctionTable(file, content), expected[7]);
+  assert.ok([...expected[7].values()].some(metric => metric.name === "sample"));
 });
 
 test("read expansion keeps its original enclosing-symbol behavior", async t => {
@@ -248,7 +240,7 @@ test("a real WASM-abort path retires its heap and the next request works", async
   t.after(() => host.cancel());
   const args = { queryDefs: [{ ...definition('(identifier) @NAME'), id: "inject-abort" }], filePath: file, languageId: "typescript", contentOverride: content, options: {} };
   const failed = await host.analyze(payload("queries", args));
-  assert.match(failed.error, /Aborted/); assert.equal(failed.retire, true);
+  assert.match(failed.error, /Aborted/i); assert.equal(failed.retire, true);
   const recovered = await host.analyze(payload("queries", { ...args, queryDefs: [definition('(function_declaration name: (identifier) @NAME)')] }));
   assert.equal(recovered.error, undefined); assert.equal(recovered.value.length, 1);
   assert.notEqual(pids[0], pids[1]);

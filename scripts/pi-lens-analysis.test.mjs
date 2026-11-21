@@ -26,15 +26,12 @@ const fixtures = [
   "const catalog={a:{n:10,s:'text'},b:{n:42,s:'next'}}; const fn=()=>({}); const s={secret:'unsafe'};",
 ];
 
-for (const file of ["dist/index.js", "dist/clients/dispatch/runners/ast-grep-napi.js"]) {
-  test(`AST bridge is idempotent and retains native matching: ${file}`, () => {
-    const source = readFileSync(new URL(`../node_modules/pi-lens/${file}`, import.meta.url), "utf8");
-    const patched = patchPiLensAnalysis(source);
-    assert.equal(patchPiLensAnalysis(patched), patched);
-    assert.match(patched, /preflight\.findAll\(nativeConfig, maxMatchesPerRule - collected.length\)/);
-    if (file !== "dist/index.js") assert.match(patched, /export function evaluateAstGrepRules\(/);
-  });
-}
+test(`AST bridge is idempotent and retains native matching: dist/index.js`, () => {
+  const source = readFileSync(new URL(`../node_modules/pi-lens/dist/index.js`, import.meta.url), "utf8");
+  const patched = patchPiLensAnalysis(source);
+  assert.equal(patchPiLensAnalysis(patched), patched);
+  assert.match(patched, /preflight\.findAll\(nativeConfig, editScoped \? Infinity : maxMatchesPerRule - collected.length\)/);
+});
 
 test("unknown upstream layout refuses partial patches", () => {
   assert.throws(() => patchPiLensAnalysis("unknown"), /incompatible/);
@@ -61,44 +58,38 @@ test("subtree matching can depend on relatives outside that subtree", () => {
   assert.deepEqual(createAstPreflight(scope).findAll(config).map(node => node.range()), scope.findAll(config).map(node => node.range()));
 });
 
-for (const file of ["dist/index.js", "dist/clients/dispatch/runners/ast-grep-napi.js"]) {
-  test(`native parse/matching is isolated but parent coverage/telemetry remains: ${file}`, () => {
-    const source = readFileSync(new URL(`../node_modules/pi-lens/${file}`, import.meta.url), "utf8");
-    const patched = patchPiLensIsolation(source, file === "dist/index.js");
-    assert.equal(patchPiLensIsolation(patched, file === "dist/index.js"), patched);
-    const start = patched.indexOf(file === "dist/index.js" ? "astGrepNapiRunner = {" : "const astGrepNapiRunner = {");
-    const runner = patched.slice(start, patched.indexOf(file === "dist/index.js" ? "ast_grep_napi_default =" : "export default astGrepNapiRunner", start));
-    assert.doesNotMatch(runner, /lang\.parse\(content\)|loadSg\(\)|root\.root\(\)/);
-    assert.match(runner, /await desktopEvaluateAstGrepRules/);
-    assert.ok(runner.indexOf("await desktopEvaluateAstGrepRules") < runner.indexOf("recordNapiFallbackCoverage(ctx.filePath)"));
-    assert.match(runner, /deadlineAt: ctx.desktopAnalysisDeadlineAt/);
-    assert.doesNotMatch(patched.slice(patched.indexOf("async function desktopEvaluateAstGrepRules"), start), /await readFile/);
-  });
-}
+test(`native parse/matching is isolated but parent coverage/telemetry remains: dist/index.js`, () => {
+  const source = readFileSync(new URL(`../node_modules/pi-lens/dist/index.js`, import.meta.url), "utf8");
+  const patched = patchPiLensIsolation(source);
+  assert.equal(patchPiLensIsolation(patched), patched);
+  const start = patched.indexOf("astGrepNapiRunner = {");
+  const runner = patched.slice(start, patched.indexOf("ast_grep_napi_default =", start));
+  assert.doesNotMatch(runner, /lang\.parse\(content\)|loadSg\(\)|root\.root\(\)/);
+  assert.match(runner, /await desktopEvaluateAstGrepRules/);
+  assert.ok(runner.indexOf("await desktopEvaluateAstGrepRules") < runner.indexOf("recordNapiFallbackCoverage(ctx.filePath)"));
+  assert.match(runner, /deadlineAt: ctx.desktopAnalysisDeadlineAt/);
+  assert.doesNotMatch(patched.slice(patched.indexOf("async function desktopEvaluateAstGrepRules"), start), /await readFile/);
+});
 
-for (const file of ["dist/index.js", "dist/clients/dispatch/dispatcher.js"]) {
-  test(`supervisor respects the existing configured dispatch budget: ${file}`, () => {
-    const source = readFileSync(new URL(`../node_modules/pi-lens/${file}`, import.meta.url), "utf8");
-    const patched = patchPiLensDispatchDeadline(source);
-    assert.equal(patchPiLensDispatchDeadline(patched), patched);
-    assert.match(patched, /desktopAnalysisDeadlineAt: Date\.now\(\) \+ timeoutMs/);
-  });
-}
+test(`supervisor respects the existing configured dispatch budget: dist/index.js`, () => {
+  const source = readFileSync(new URL(`../node_modules/pi-lens/dist/index.js`, import.meta.url), "utf8");
+  const patched = patchPiLensDispatchDeadline(source);
+  assert.equal(patchPiLensDispatchDeadline(patched), patched);
+  assert.match(patched, /desktopAnalysisDeadlineAt: Date\.now\(\) \+ timeoutMs/);
+});
 
-for (const file of ["dist/index.js", "dist/clients/project-diagnostics/scanner.js"]) {
-  test(`project scans await cancellation-aware analysis and do not cache incomplete results: ${file}`, () => {
-    const source = readFileSync(new URL(`../node_modules/pi-lens/${file}`, import.meta.url), "utf8");
-    const patched = patchPiLensScanIsolation(source);
-    assert.equal(patchPiLensScanIsolation(patched), patched);
-    const scanner = patched.slice(patched.indexOf("async function scanFileMajorRules("));
-    assert.match(scanner, /await desktopEvaluateAstGrepRules/);
-    assert.match(scanner, /await scanAstGrepFile/);
-    assert.doesNotMatch(scanner, /lang\.parse\(content\)|const sgModule = await loadSg/);
-    assert.match(scanner, /wasmAborted, astGrepFailed/);
-    assert.match(scanner, /snapshot\.astGrepStatus = "incomplete"/);
-    assert.match(scanner, /options\.files \|\| wasmAborted \|\| nativeAnalysisIncomplete/);
-  });
-}
+test(`project scans await cancellation-aware analysis and do not cache incomplete results: dist/index.js`, () => {
+  const source = readFileSync(new URL(`../node_modules/pi-lens/dist/index.js`, import.meta.url), "utf8");
+  const patched = patchPiLensScanIsolation(source);
+  assert.equal(patchPiLensScanIsolation(patched), patched);
+  const scanner = patched.slice(patched.indexOf("async function scanFileMajorRules("));
+  assert.match(scanner, /await desktopEvaluateAstGrepRules/);
+  assert.match(scanner, /await scanAstGrepFile/);
+  assert.doesNotMatch(scanner, /lang\.parse\(content\)|const sgModule = await loadSg/);
+  assert.match(scanner, /wasmAborted, astGrepFailed/);
+  assert.match(scanner, /snapshot\.astGrepStatus = "incomplete"/);
+  assert.match(scanner, /options\.files \|\| wasmAborted \|\| nativeAnalysisIncomplete/);
+});
 
 test("all shipped JavaScript security rules keep every native finding on regression fixtures", () => {
   const dir = new URL("../node_modules/pi-lens/rules/ast-grep-rules/coderabbit/rules/javascript/security/", import.meta.url);

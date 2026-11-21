@@ -37,15 +37,13 @@ test("installed physical ast-grep binary actually runs after path resolution", (
   }
 });
 
-test("both installed launchers retain the fix without stall instrumentation", async () => {
-  for (const name of ["dist/index.js", "dist/clients/lsp/launch.js"]) {
-    const source = await readFile(path.join("node_modules/pi-lens", name), "utf8");
-    assert.equal(patchPiLensExecutablePath(source, name), source);
-    assert.match(source, /command = desktopPhysicalExecutable\(command\)/);
-    assert.doesNotMatch(source, /desktopStall|desktop-analysis\/stall-probe\.mjs/);
-  }
+test("the bundled launcher retains the fix without stall instrumentation", async () => {
+  const source = await readFile("node_modules/pi-lens/dist/index.js", "utf8");
+  assert.equal(patchPiLensExecutablePath(source), source);
+  assert.match(source, /command = desktopPhysicalExecutable\(command\)/);
+  assert.doesNotMatch(source, /desktopStall|desktop-analysis\/stall-probe\.mjs/);
   assert.throws(() => patchPiLensExecutablePath("changed upstream"), /anchor changed/);
   const installer = await readFile("resources/pi-lens/grammar-cache-patch.mjs", "utf8");
-  assert.match(installer, /await applyPiLensExecutablePath\(packageDir\)/);
+  assert.match(installer, /patchPiLensExecutablePath, patchPiLensAnalysisBindings/);
   assert.doesNotMatch(installer, /Stall/);
 });

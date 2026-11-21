@@ -1,8 +1,9 @@
 # Pi Lens analysis integration
 
-The bridge targets Pi Lens **4.3.0**. It patches both the bundled extension and
-its unbundled modules. Unknown versions or changed patch anchors fail explicitly;
-there is no synchronous native/WASM fallback in the Pi process.
+The bridge targets Pi Lens **4.5.1**. It patches the published extension bundle
+and gives the supervised executor access to its analysis functions. Unknown
+versions or changed patch anchors stop installation. Native and WASM analysis
+run in the executor.
 
 ## Execution boundary
 

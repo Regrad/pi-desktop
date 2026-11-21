@@ -1,27 +1,30 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { cp, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { cp, mkdtemp, rm, symlink, writeFile } from "node:fs/promises";
 import { spawnSync } from "node:child_process";
 import { createPackage } from "@electron/asar";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
+import { tmpdir } from "node:os";
 
 test("real Electron loads, forks and cancels the analyzer from an ASAR archive", async t => {
   // This packages only an analyzer fixture; it never compiles or replaces Pi Desktop.
   const repo = process.cwd();
-  const dir = await mkdtemp(path.join(repo, ".lens-asar-test-"));
-  assert.ok(path.resolve(dir).startsWith(path.resolve(repo) + path.sep + ".lens-asar-test-"));
+  const dir = await mkdtemp(path.join(tmpdir(), "lens-asar-test-"));
+  assert.equal(path.dirname(path.resolve(dir)), path.resolve(tmpdir()));
   t.after(() => rm(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 }));
   const input = path.join(dir, "input");
   await cp(path.join(repo, "node_modules/pi-lens"), input, { recursive: true });
+  await symlink(path.join(repo, "node_modules"), path.join(dir, "node_modules"), process.platform === "win32" ? "junction" : "dir");
   const archive = path.join(dir, "analysis.asar");
   await createPackage(input, archive);
   const file = path.join(dir, "Проверка & cache.ts");
   const content = "export function example() { return 42; }\n";
   await writeFile(file, content, "utf8");
-  const clientUrl = pathToFileURL(path.join(archive, "dist/clients/tree-sitter-client.js")).href;
+  const clientUrl = pathToFileURL(path.join(archive, "dist/index.js")).href;
   const code = `
-    const {TreeSitterClient}=await import(${JSON.stringify(clientUrl)});
+    const {getDesktopAnalysisBindings}=await import(${JSON.stringify(clientUrl)});
+    const {TreeSitterClient}=getDesktopAnalysisBindings();
     const c=new TreeSitterClient();
     const q={id:'asar-test',query:'(function_declaration name: (identifier) @NAME)',metavars:['NAME']};
     const found=await c.runQueryOnFile(q,${JSON.stringify(file)},'typescript');

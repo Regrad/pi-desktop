@@ -22,7 +22,7 @@ test("complete installed grammar set can be verified entirely offline", async ()
   globalThis.fetch = () => { throw new Error("Unexpected network request for complete grammar set"); };
   try {
     const result = await ensurePiLensGrammars(path.resolve("node_modules/pi-lens"));
-    assert.equal(result.count, 27); assert.ok(result.totalBytes > 0);
+    assert.equal(result.count, 28); assert.ok(result.totalBytes > 0);
   } finally { globalThis.fetch = previous; }
 });
 

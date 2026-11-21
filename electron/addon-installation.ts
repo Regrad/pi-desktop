@@ -6,7 +6,7 @@ export const testedAddons = {
   "pi-web-access": "0.48.0",
   "pi-tool-repair": "0.3.10",
   "pi-mcp-adapter": "7.0.1",
-  "pi-lens": "4.3.0",
+  "pi-lens": "4.5.1",
 } as const;
 
 export type ManagedAddon = keyof typeof testedAddons;

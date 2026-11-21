@@ -70,6 +70,8 @@ test("old data/runtime cannot override embedded Pi or use untested add-on versio
     assert.equal(store.getEffectivePackagePath(pkg), path.join(app, "node_modules", pkg));
   }
   await put(dir, "runtime/node_modules/pi-lens/package.json", JSON.stringify({ version: "4.3.0" }));
+  assert.equal(store.getEffectivePackagePath("pi-lens"), path.join(app, "node_modules", "pi-lens"));
+  await put(dir, "runtime/node_modules/pi-lens/package.json", JSON.stringify({ version: "4.5.1" }));
   assert.equal(store.getEffectivePackagePath("pi-lens"), path.join(dir, "runtime", "node_modules", "pi-lens"));
   assert.equal(store.getEngineEntryPath(), path.join(app, "resources/pi-engine/worker.mjs"));
   const manager = new UpdateManager(store, app, process.execPath);

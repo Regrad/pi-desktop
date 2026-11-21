@@ -13,7 +13,7 @@ if (process.argv[2] === '--child') {
   process.env.PI_LENS_HOME = path.join(root, 'logs');
   registerHooks({ load(url, context, next) {
     const result = next(url, context);
-    if (url.endsWith('/dispatch/runners/ast-grep-napi.js')) {
+    if (url.endsWith('/pi-lens/dist/index.js')) {
       const source = String(result.source);
       // Once installed, exercise the actual isolated runner, not a reconstructed
       // old implementation. --skip-suspect remains a pre-install diagnostic only.
@@ -31,9 +31,8 @@ if (process.argv[2] === '--child') {
     }
     return result;
   } });
-  const { default: astGrepNapiRunner } = await import('../node_modules/pi-lens/dist/clients/dispatch/runners/ast-grep-napi.js');
-  const { createDispatchContext } = await import('../node_modules/pi-lens/dist/clients/dispatch/dispatcher.js');
-  const { FactStore } = await import('../node_modules/pi-lens/dist/clients/dispatch/fact-store.js');
+  const { getDesktopAnalysisBindings } = await import("../node_modules/pi-lens/dist/index.js");
+  const { astGrepNapiRunner, createDispatchContext, FactStore } = getDesktopAnalysisBindings();
   const file = path.join(root, 'admin', 'builder-catalog.js');
   const pi = { getFlag() { return undefined; } };
   const ctx = createDispatchContext(file, root, pi, new FactStore(), true, undefined, root);

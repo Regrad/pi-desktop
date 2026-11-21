@@ -4,17 +4,17 @@ import { readFile, writeFile, mkdtemp, rm } from "node:fs/promises";
 import path from "node:path";
 import os from "node:os";
 import { patchPiLensEditDiagnostics } from "../resources/pi-lens/edit-diagnostics-patch.mjs";
-import { getTouchedLinesForGuard } from "../node_modules/pi-lens/dist/clients/read-guard-tool-lines.js";
+import { getDesktopAnalysisBindings } from "../node_modules/pi-lens/dist/index.js";
 
-for (const name of ["dist/index.js", "dist/clients/read-guard-tool-lines.js"]) {
-  test(`neutral edit diagnostics are idempotent for ${name}`, async () => {
-    const source = await readFile(new URL(`../node_modules/pi-lens/${name}`, import.meta.url), "utf8");
-    const patched = patchPiLensEditDiagnostics(source);
-    assert.equal(patchPiLensEditDiagnostics(patched), patched);
-    assert.doesNotMatch(patched, /file has likely changed/);
-    assert.match(patched, /This replacement was not applied/);
-  });
-}
+const { getTouchedLinesForGuard } = getDesktopAnalysisBindings();
+
+test(`neutral edit diagnostics are idempotent for dist/index.js`, async () => {
+  const source = await readFile(new URL(`../node_modules/pi-lens/dist/index.js`, import.meta.url), "utf8");
+  const patched = patchPiLensEditDiagnostics(source);
+  assert.equal(patchPiLensEditDiagnostics(patched), patched);
+  assert.doesNotMatch(patched, /file has likely changed/);
+  assert.match(patched, /This replacement was not applied/);
+});
 
 test("unknown edit guard messages fail explicitly", () => {
   assert.throws(() => patchPiLensEditDiagnostics("unknown"), /incompatible/);

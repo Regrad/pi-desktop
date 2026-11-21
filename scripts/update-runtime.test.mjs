@@ -27,7 +27,7 @@ async function fixture(t) {
   };
   const resolve = pkg => resolveAddonPackage(runtime, bundled(pkg), pkg);
   await putPackage(bundled(name), "0.37.0");
-  await putPackage(bundled("pi-lens"), "4.3.0");
+  await putPackage(bundled("pi-lens"), testedAddons["pi-lens"]);
   const store = { runtimePackagesDir: runtime, getEffectivePackagePath: resolve, async refreshManagedPackageConfiguration() {} };
   const manager = new UpdateManager(store, app, process.execPath);
   manager.runNpm = async ([command, , stage, ...args]) => {
@@ -42,10 +42,10 @@ async function fixture(t) {
 
 test("upstream releases requiring compatibility work are visible but cannot install", async t => {
   const { manager } = await fixture(t);
-  t.mock.method(globalThis, "fetch", async url => Response.json({ version: String(url).includes("pi-lens") ? "4.5.1" : "99.0.0" }));
+  t.mock.method(globalThis, "fetch", async url => Response.json({ version: String(url).includes("pi-lens") ? "99.1.0" : "99.0.0" }));
   const status = await manager.getStatus();
   const lens = status.components.find(item => item.id === "pi-lens");
-  assert.equal(lens.latestVersion, "4.5.1");
+  assert.equal(lens.latestVersion, "99.1.0");
   assert.equal(lens.requiresCompatibleBuild, true);
   assert.equal(lens.updateAvailable, false);
   assert.equal(lens.updateable, false);
