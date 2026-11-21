@@ -1,7 +1,7 @@
 import { MediaLink } from "./MediaLink";
 import { t } from "./i18n";
 import { createContext, useId, useRef, useState } from "react";
-import { Check, ChevronRight, Globe, Link2, Search } from "lucide-react";
+import { Check, ChevronDown, Globe, Search } from "lucide-react";
 import type { CitationSource } from "./web-citations";
 
 type Source = { url: string; title: string; status: string; anchor?: string; kind?: string; date?: string; preview?: string; reason?: string };
@@ -84,6 +84,16 @@ function WebSearchSources({ sources }: { sources: Source[] }) {
 }
 
 const sourcePriority: Record<string, number> = { read: 4, reading: 3, snippet: 2, result: 1, unavailable: 0 };
+const pageForms = new Intl.PluralRules("ru");
+const sitePreviewSizes = [3, 2, 1];
+
+function readPageLabel(count: number): string {
+  const form = pageForms.select(count);
+  if (count === 1) return t("Прочитана 1 страница");
+  if (form === "one") return t("Прочитана {0} страница", count);
+  if (form === "few") return t("Прочитано {0} страницы", count);
+  return t("Прочитано {0} страниц", count);
+}
 
 export function WebSearchActivity({ calls }: { calls: SearchCall[] }) {
   const id = useId();
@@ -96,8 +106,6 @@ export function WebSearchActivity({ calls }: { calls: SearchCall[] }) {
   const phase = report?.phase;
   const error = calls.every(call => call.error);
   const interrupted = !active && calls.every(call => !call.output);
-  const label = active ? phase === "reading" ? t("Чтение источников…") : phase === "ranking" ? t("Отбор выдержек…") : t("Поиск в интернете…")
-    : error ? t("Ошибка веб-поиска") : interrupted ? t("Поиск прерван") : t("Поиск завершён");
   const provider = providerNames[(report?.provider || report?.scraper) ?? ""];
   const unique = new Map<string, Source>();
   for (const result of reports) {
@@ -107,41 +115,67 @@ export function WebSearchActivity({ calls }: { calls: SearchCall[] }) {
     }
   }
   const sources = [...unique.values()];
-  const readDomains = new Map<string, Source>();
+  const readSites = new Map<string, Source[]>();
+  const otherSources: Source[] = [];
+  let readCount = 0;
   for (const source of sources) {
     const host = domain(source.url);
-    if (host && source.status === "read" && /^https?:\/\//i.test(source.url) && !readDomains.has(host)) readDomains.set(host, source);
+    if (!host || source.status !== "read" || !/^https?:\/\//i.test(source.url)) {
+      otherSources.push(source);
+      continue;
+    }
+    readCount += 1;
+    const pages = readSites.get(host);
+    if (pages) pages.push(source);
+    else readSites.set(host, [source]);
   }
+  const label = active ? phase === "reading" ? t("Чтение источников…") : phase === "ranking" ? t("Отбор выдержек…") : t("Поиск в интернете…")
+    : error ? t("Ошибка веб-поиска") : interrupted ? t("Поиск прерван") : readCount ? readPageLabel(readCount) : t("Поиск завершён");
+  const detailsLabel = readSites.size ? t("{0}. Прочитанные сайты · {1}", label, readSites.size) : label;
   const targets = [...new Set(calls.map((call, index) => {
     const result = reports[index];
     return result?.url || (typeof call.args.url === "string" ? call.args.url : "") ||
       result?.query || (typeof call.args.query === "string" ? call.args.query : "");
   }).filter(Boolean))];
-  const Icon = active ? Search : Globe;
+  const Icon = active ? Search : readCount && !error && !interrupted ? Check : Globe;
   return <div className={`web-activity ${active ? "live" : "settled"}`}>
-    <button className="web-activity-heading" type="button" popoverTarget={id} aria-expanded={open} aria-controls={id}
+    <button className="web-activity-heading" type="button" popoverTarget={id} aria-expanded={open} aria-controls={id} aria-label={detailsLabel}
       onClick={event => {
         const bounds = event.currentTarget.getBoundingClientRect();
         const below = window.innerHeight - bounds.bottom - 14;
         const above = bounds.top - 14;
+        const opensBelow = below >= Math.min(250, above);
         panel.current?.style.setProperty("--source-left", `${Math.max(8, Math.min(bounds.left, window.innerWidth - 444))}px`);
-        panel.current?.style.setProperty("--source-edge", `${below >= Math.min(250, above) ? bounds.bottom + 6 : window.innerHeight - bounds.top + 6}px`);
-        panel.current?.style.setProperty("--source-height", `${Math.max(72, Math.min(300, Math.max(above, below)))}px`);
-        if (panel.current) panel.current.dataset.side = below >= Math.min(250, above) ? "below" : "above";
+        panel.current?.style.setProperty("--source-edge", `${opensBelow ? bounds.bottom + 6 : window.innerHeight - bounds.top + 6}px`);
+        panel.current?.style.setProperty("--source-height", `${Math.max(0, Math.min(320, opensBelow ? below : above))}px`);
+        if (panel.current) panel.current.dataset.side = opensBelow ? "below" : "above";
       }}>
       <span className="web-activity-icon" aria-hidden="true"><Icon size={15} /></span>
       <span className="web-activity-label" aria-live="polite">{label}</span>
-      {sources.length > 0 && <small className="web-activity-count">{t("Источники")} · {sources.length}</small>}
-      <ChevronRight className="web-activity-chevron" size={13} aria-hidden="true" />
+      {readSites.size > 0 && <span className="web-activity-sites" aria-hidden="true">
+        {[...readSites.keys()].slice(0, 3).map(host => <span key={host} className="web-activity-site" title={host}>{host}</span>)}
+        {sitePreviewSizes.filter(size => readSites.size > size).map(size =>
+          <span key={size} className="web-activity-more" data-preview-size={size}>+{readSites.size - size}</span>)}
+      </span>}
+      <ChevronDown className="web-activity-chevron" size={13} aria-hidden="true" />
     </button>
-    <div className="web-activity-sites" aria-label={t("Прочитанные сайты")}>
-      {[...readDomains].slice(0, 2).map(([host, source]) => <MediaLink key={host} href={source.url} title={source.title || host}>{host}</MediaLink>)}
-    </div>
     <div id={id} ref={panel} popover="auto" className="web-activity-details" aria-label={t("Источники")}
       onToggle={event => setOpen(event.currentTarget.matches(":popover-open"))}>
-      <div className="web-activity-panel-head"><strong>{t("Источники")}</strong>{provider && <small>{provider}</small>}</div>
-      {targets.length > 0 && <p className="web-activity-target" dir="auto">{targets.join(" · ")}</p>}
-      {sources.length > 0 ? <WebSearchSources sources={sources} /> : <p className="web-activity-target">
+      <div className="web-activity-panel-head"><strong>{readSites.size ? t("Прочитанные сайты") : t("Источники")}</strong>{provider && <small>{provider}</small>}</div>
+      {targets.length > 0 && <p className="web-activity-target web-activity-queries" dir="auto" title={targets.join(" · ")}>{targets.join(" · ")}</p>}
+      {readSites.size > 0 && <ul className="web-read-sites">
+        {[...readSites].map(([host, pages]) => <li key={host}>
+          <strong className="web-read-site" dir="auto">{host}</strong>
+          <ul className="web-read-pages">
+            {pages.map(page => <li key={page.url}><MediaLink href={page.url}>{page.title || page.url}</MediaLink></li>)}
+          </ul>
+        </li>)}
+      </ul>}
+      {otherSources.length > 0 && (readSites.size > 0 ? <details className="web-other-sources">
+        <summary>{t(otherSources.every(source => source.status === "snippet") ? "Фрагменты из выдачи · {0}" : "Другие результаты · {0}", otherSources.length)}</summary>
+        <WebSearchSources sources={otherSources} />
+      </details> : <WebSearchSources sources={otherSources} />)}
+      {sources.length === 0 && <p className="web-activity-target">
         {active ? t("Источники появятся после поиска") : error ? calls.find(call => call.error)?.output : t("Источники не найдены")}
       </p>}
     </div>
