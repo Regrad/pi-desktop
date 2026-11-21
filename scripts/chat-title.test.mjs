@@ -5,7 +5,7 @@ import { stripTypeScriptTypes } from "node:module";
 import path from "node:path";
 import http from "node:http";
 
-const bridge = readFileSync("resources/pi-engine/protocol.js", "utf8");
+const bridge = readFileSync("resources/pi-engine/protocol.js", "utf8").replace(/\r\n/g, "\n");
 const titleStart = bridge.indexOf("export async function generateChatTitle");
 const titleEnd = bridge.indexOf("\n}\n", titleStart) + 2;
 const generateChatTitle = new Function(`${bridge.slice(titleStart, titleEnd).replace("export ", "")};return generateChatTitle;`)();
