@@ -15,10 +15,15 @@ export function stateContext(pi: ExtensionAPI, customType: string, toolNames: st
     let seenUsers = 0;
     let seenUserKey: string | undefined;
     let toolTurns = 0;
+    let requestAnchor: [string, number, string | null] | undefined;
     const documentState = stateField === "notebook" || stateField === "planning" || customType === "desktop_plan_state";
     let hasSnapshot = !documentState;
     let acknowledgedGoal: { id: string; updatedAt: string } | undefined;
     for (const message of messages) {
+      if (Number.isFinite(message.timestamp) && (["user", "toolResult", "compactionSummary", "branchSummary"].includes(message.role)
+        || (message.role === "custom" && ["desktop_goal_continuation", "desktop_plan_continuation", "desktop_run_continuation"].includes(message.customType)))) {
+        requestAnchor = [message.role, message.timestamp, message.toolCallId ?? message.customType ?? null];
+      }
       if (message.role === "user") seenUserKey = identifyUser(++seenUsers, message);
       if (message.role === "assistant" && Array.isArray(message.content)
         && message.content.some((part: any) => part.type === "toolCall")) toolTurns++;
@@ -60,10 +65,10 @@ export function stateContext(pi: ExtensionAPI, customType: string, toolNames: st
     const summary = hasSnapshot && (previous === current ? reminderContent : options.changeContent);
     const message = { role: "custom", customType, display: false,
       content: summary || content,
-      details: { stateKey: current, userKey, ...(summary ? { summary: true } : {}),
+      details: { stateKey: current, userKey, ...(requestAnchor ? { requestAnchor } : {}), ...(summary ? { summary: true } : {}),
         ...(["desktop_plan_state", "desktop_goal_state"].includes(customType) ? { workState: state ?? null } : {}) }, timestamp: Date.now() };
-    // Pi persists after the current tool results while streaming; this projection
-    // supplies the state to the current request without starting another turn.
+    // Pi persists the snapshot after the tool results. Its anchor keeps it at
+    // the same place in later requests as when we first send it to the model.
     pi.sendMessage(message, { triggerTurn: false });
     return [...messages, message];
   };

@@ -12,6 +12,11 @@ import {
   configureHttpDispatcher, resolveModelScope, initializeThemeValidation,
 } from "./bindings.mjs";
 import { runRpcMode } from "./protocol.js";
+import { preserveLensAdvisories } from "../pi-rpc-bridge/service-context.js";
+
+function desktopContextExtension(pi) {
+  pi.on("context_with_system", event => preserveLensAdvisories(event.messages, pi));
+}
 
 process.title = 'Pi Desktop Engine';
 process.env.PI_CODING_AGENT = 'true';
@@ -45,7 +50,7 @@ try {
       resourceLoaderOptions: {
         additionalExtensionPaths: options.extensions || [],
         disabledBuiltinExtensions: ["mcp"],
-        extensionFactories: builtInExtensions,
+        extensionFactories: [...builtInExtensions, desktopContextExtension],
         noExtensions: options.isolated, noSkills: options.isolated,
         noPromptTemplates: options.isolated, noThemes: options.isolated,
         noContextFiles: options.isolated,

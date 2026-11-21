@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
-import { projectDesktopServiceContext, desktopSummaryMessages, desktopSummaryInstructions, serializeDesktopSummary, discardDelayedStateSnapshots } from "../resources/pi-rpc-bridge/service-context.js";
+import { projectDesktopServiceContext, desktopSummaryMessages, desktopSummaryInstructions, serializeDesktopSummary, discardDelayedStateSnapshots, preserveLensAdvisories } from "../resources/pi-rpc-bridge/service-context.js";
 import { patchServiceMessages, patchDesktopCompaction } from "./service-context-patch.mjs";
 
 const snapshot = (type, content) => ({ role: "custom", customType: type, content, display: false });
@@ -97,6 +97,33 @@ test("new tail events do not rewrite the leading system prompt or earlier turns"
   assert.deepEqual(after.slice(0, -1), before.slice(0, -1));
   assert.equal(after.filter(x => x.role === "user").length, 2);
   assert.equal(after[0].content, "Stable instructions");
+});
+
+test("persisting a snapshot after a tool result leaves its first request unchanged", () => {
+  const request = { ...user("Review"), timestamp: 10 };
+  const state = { ...snapshot("desktop_notebook_state", "revision 7"), details: { stateKey: "7", requestAnchor: ["user", 10, null] } };
+  const call = { role: "assistant", content: [{ type: "toolCall", id: "write" }] };
+  const result = { role: "toolResult", toolCallId: "write", toolName: "update_notebook", timestamp: 20, content: [text('{"notebook":{"revision":8}}')] };
+  const before = projectDesktopServiceContext([request, state]);
+  const after = projectDesktopServiceContext([request, call, result, state]);
+  assert.deepEqual(after, [...before, call, result]);
+});
+
+test("one-shot Lens findings retain their original position without creating user turns", () => {
+  const finding = "[pi-lens automated check — not a user request] Review the reported finding.";
+  const request = { ...user("Review"), timestamp: 10 };
+  const manual = { ...user(finding), timestamp: 5 };
+  const call = { role: "assistant", content: [{ type: "toolCall", id: "read" }] };
+  const result = { role: "toolResult", toolCallId: "read", content: [text("result")], timestamp: 20 };
+  const persisted = [];
+  const projection = preserveLensAdvisories([manual, user(finding), request], { sendMessage: message => persisted.push(message) });
+  const first = projectDesktopServiceContext(projection.messages);
+  const next = projectDesktopServiceContext([manual, request, call, result, ...persisted]);
+  assert.equal(first.length, 2);
+  assert.equal(persisted.length, 1);
+  assert.deepEqual(first[0], manual);
+  assert.match(blocks(first[1]), /reported finding/);
+  assert.deepEqual(next, [...first, call, result]);
 });
 
 test("summaries exclude private hypotheses but retain answers, calls and verified tool data", () => {

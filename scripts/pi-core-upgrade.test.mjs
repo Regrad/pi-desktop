@@ -40,6 +40,16 @@ test("Pi 1.5.2 embedded SDK engine loads add-ons, preserves user input, runs too
   const mcpDiscoveryCode = `const status=await tools.mcp({});if(status.details.connectedCount!==0)throw new Error('Status connected unused servers');const found=await tools.mcp({search:'no-matches-fixture'});if(!found.details.undiscoveredServers.some(s=>s.name==='cold'))throw new Error('Cold servers not discoverable');const listed=await tools.mcp({server:'fixture'});if(listed.details.error)throw new Error('Scoped discovery failed: '+JSON.stringify(listed));const pong=await tools.mcp({server:'fixture',tool:'fixture_ping',args:{}});if(!JSON.stringify(pong).includes('fixture-pong'))throw new Error('MCP tool did not execute');`;
   const mcpReloadCode=`const cfg=await tools.mcp({action:'config'});if(!cfg.details.desktopConfig.sources.some(s=>s.path===${JSON.stringify(mcpConfigPath)}))throw new Error('Wrong config path');await tools.write({path:${JSON.stringify(mcpConfigPath)},content:${JSON.stringify(JSON.stringify(mcpConfig))}});const connected=await tools.mcp({connect:'fixture'});if(connected.details.error)throw new Error(JSON.stringify(connected));text('MCP-RELOADED:'+JSON.stringify(connected));`;
   const probePath = path.join(directory, "routing-probe.mjs");
+  const lensProbePath = path.join(directory, "lens-advisory-probe.mjs");
+  const lensFinding = "[pi-lens automated check — not a user request] Fixture diagnostic.";
+  await writeFile(lensProbePath, `export default pi => {
+    let delivered = false;
+    pi.on("context", ({ messages }) => {
+      if (delivered || !messages.some(message => message.role === "user")) return;
+      delivered = true;
+      return { messages: [...messages, { role: "user", content: ${JSON.stringify(lensFinding)} }] };
+    });
+  };`, "utf8");
   const png = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aF3sAAAAASUVORK5CYII=";
   await writeFile(probePath, `export default pi => {pi.on('tool_call',event=>event.toolName==='comfyui_routing_probe'&&event.input.token==='blocked'?{block:true,reason:'fixture permission denied'}:undefined);pi.registerTool({name:"comfyui_routing_probe",label:"Routing probe",description:"Music and image routing fixture",parameters:{type:"object",properties:{token:{type:"string"}},required:["token"],additionalProperties:false},async execute(id,args){if(args.token==="json")return {content:[{type:"text",text:JSON.stringify({items:[{id:"typed-item"}],nextOffset:null})}],details:{}};if(args.token!=="ok")throw new Error("Invalid call reached executor");return {content:[{type:"text",text:"probe-ok"},{type:"image",data:${JSON.stringify(png)},mimeType:"image/png"}],details:{media:[{type:"audio",path:"C:/fixture.flac",mimeType:"audio/flac"}],audioSelection:true}};}});};`, "utf8");
   const captured = [];
@@ -96,7 +106,7 @@ test("Pi 1.5.2 embedded SDK engine loads add-ons, preserves user input, runs too
     "resources/pi-llama-generation-speed/index.js", "resources/pi-loop-police/index.js",
   ].map(file => path.join(root, process.env.PI_TEST_APP_ROOT && file.startsWith("electron/")
     ? `dist-electron/${file.replace(/\.ts$/, ".js")}` : file));
-  extensions.push(probePath);
+  extensions.push(probePath, lensProbePath);
   const packages=["pi-web-access","pi-tool-repair","pi-mcp-adapter","pi-lens"].map(name=>path.join(root,"node_modules",name));
   await writeFile(path.join(agent, "settings.json"), JSON.stringify({ packages, extensions,
     defaultProvider: "upgrade-test", defaultModel: "upgrade", defaultThinkingLevel: "off" }), "utf8");
@@ -211,7 +221,10 @@ test("Pi 1.5.2 embedded SDK engine loads add-ons, preserves user input, runs too
   assert.ok(captured[0].messages.some(m => ["system", "developer"].includes(m.role)
     && messageText(m).includes("Goals are thread-scoped state")));
   assert.ok(captured[0].messages.some(m => m.role === "user" && messageText(m).endsWith("Read evidence.txt and verify it.")));
+  assert.ok(captured[0].messages.some(m => m.role === "user" && messageText(m).includes(lensFinding)));
   assert.equal(captured[1].messages.filter(m => m.role === "user").length, 1, "service metadata must not invent user turns after tools");
+  assert.deepEqual(captured[1].messages.slice(0, captured[0].messages.length), captured[0].messages,
+    "Persisting the initial service snapshot must not move it after the read tool");
   assert.ok(captured[1].messages.some(m => m.role === "assistant" && m.reasoning_content === "Verified project X:/KDPI and editor https://tilda.ru/."));
   assert.ok(captured[1].messages.some(m => m.role === "tool" && messageText(m).includes("upgrade evidence")),
     JSON.stringify(captured[1].messages.filter(m => m.role === "tool")));
@@ -248,19 +261,13 @@ test("Pi 1.5.2 embedded SDK engine loads add-ons, preserves user input, runs too
   assert.equal(existsSync(usedMarker), true, "The requested MCP server must really start");
   // A completed run clears its temporary prompt options asynchronously. An
   // immediate continuation hides the bug; exercise the real idle boundary.
-  // Lens deliberately consumes its one-shot turn-end advisory on the next
-  // run (runtime-context.consumeTurnEndFindings). It is not persisted history;
-  // assert the full stable system/user/tool prefix independently of its timing.
-  const stableMessages = messages => messages.filter(message => !(message.role === 'user' &&
-    typeof message.content === 'string' && message.content.startsWith('[pi-lens automated check — not a user request] ')));
   for (const type of ["desktop_plan_continue", "desktop_goal_continue"]) {
     const previous = captured.at(-1);
     await new Promise(resolve => setTimeout(resolve, 1500));
     await request(type, { message: `<pi_desktop_service_context source="${type === "desktop_plan_continue" ? "plan" : "goal"}">Continue authorized work.</pi_desktop_service_context>` });
     const next = captured.at(-1);
     assert.deepEqual(next.tools, previous.tools, `${type} changed tool schemas`);
-    const prefix = stableMessages(previous.messages);
-    assert.deepEqual(stableMessages(next.messages).slice(0, prefix.length), prefix, `${type} changed the stable request prefix`);
+    assert.deepEqual(next.messages.slice(0, previous.messages.length), previous.messages, `${type} changed the stable request prefix`);
     assert.ok(messageText(next.messages[0]).includes("Goals are thread-scoped state"));
     assert.ok(messageText(next.messages[0]).includes("For simple tasks, work without a checklist"));
   }

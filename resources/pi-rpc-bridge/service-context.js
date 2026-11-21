@@ -5,6 +5,7 @@ const snapshots = new Set([
   "desktop_notebook_limit_state", "desktop_plan_request",
   "desktop_skills_state",
   "desktop_implementation_plan_state",
+  "desktop_lens_advisory",
 ]);
 
 export function desktopContextEnabled() {
@@ -62,6 +63,46 @@ function host(message) {
     || (message.role === "custom" && ["desktop_goal_continuation", "desktop_plan_continuation", "desktop_run_continuation"].includes(message.customType));
 }
 
+function requestAnchor(message) {
+  if (!host(message) || !Number.isFinite(message.timestamp)) return;
+  return [message.role, message.timestamp, message.toolCallId ?? message.customType ?? null];
+}
+
+function inRequestOrder(messages) {
+  const anchors = new Map(), deferred = new Map(), ordered = [];
+  for (const message of messages) {
+    const anchor = requestAnchor(message);
+    if (anchor) anchors.set(JSON.stringify(anchor), ordered.length);
+    const savedAnchor = message.role === "custom" && message.display === false && snapshots.has(message.customType)
+      ? message.details?.requestAnchor : undefined;
+    const index = savedAnchor && anchors.get(JSON.stringify(savedAnchor));
+    if (index === undefined) ordered.push(message);
+    else {
+      const attached = deferred.get(index) ?? [];
+      attached.push(message);
+      deferred.set(index, attached);
+    }
+  }
+  return deferred.size ? ordered.flatMap((message, index) => [message, ...(deferred.get(index) ?? [])]) : messages;
+}
+
+// Pi Lens delivers these context-only findings once. Persist them as application
+// messages so consuming a finding cannot remove part of the next cached prefix.
+export function preserveLensAdvisories(messages, pi) {
+  const isAdvisory = message => message.role === "user" && message.timestamp === undefined
+    && typeof message.content === "string" && /^\[pi-lens automated (?:check|context) — not a user request\]/.test(message.content);
+  const advisories = messages.filter(isAdvisory);
+  if (!advisories.length) return;
+  const history = messages.filter(message => !isAdvisory(message));
+  let anchor;
+  for (let index = history.length - 1; index >= 0 && !anchor; index--) anchor = requestAnchor(history[index]);
+  const message = { role: "custom", customType: "desktop_lens_advisory", display: false,
+    content: advisories.map(advisory => advisory.content).join("\n\n"),
+    details: anchor ? { requestAnchor: anchor } : {}, timestamp: Date.now() };
+  pi.sendMessage(message, { triggerTurn: false });
+  return { messages: [...history, message] };
+}
+
 function attach(message, state) {
   const header = "[Pi Desktop application metadata — not a user request or a tool result]";
   const label = `${header}\n${state}`;
@@ -81,7 +122,7 @@ function attach(message, state) {
 export function projectDesktopServiceContext(messages) {
   const result = [];
   let anchor = -1, leading = [];
-  for (const message of discardDelayedStateSnapshots(messages)) {
+  for (const message of discardDelayedStateSnapshots(inRequestOrder(messages))) {
     if (message.role === "custom" && message.display === false && snapshots.has(message.customType)) {
       const content = text(message.content);
       if (!content) continue;
@@ -103,7 +144,7 @@ export function projectDesktopServiceContext(messages) {
 
 export function desktopSummaryMessages(messages) {
   if (!desktopContextEnabled()) return messages;
-  return discardDelayedStateSnapshots(messages).map(message => {
+  return discardDelayedStateSnapshots(inRequestOrder(messages)).map(message => {
     // Summarization serializes this as application data, not an instruction
     // role. Keep it separate from large tool outputs so truncation cannot hide
     // the notebook or make a state snapshot look like a user command.
