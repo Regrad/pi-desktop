@@ -65,10 +65,11 @@ export async function applyRequestDiagnosticsCompatibility(coreRoot) {
 
 export async function applyAddonRequestCompatibility(name, root) {
   if (name === "pi-mcp-adapter") {
-    await requireVersion(root, "5.1.0");
-    await patchFile(path.join(root, "index.ts"), patchMcpIndex);
+    const version = JSON.parse(await readFile(path.join(root, "package.json"), "utf8")).version;
+    if (version !== "5.1.0" && version !== "7.0.1") throw new Error(`Unsupported MCP Adapter ${version}`);
+    await patchFile(path.join(root, "index.ts"), source => patchMcpIndex(source, version));
     await patchFile(path.join(root, "init.ts"), patchMcpOnDemandInit);
-    await patchFile(path.join(root, "server-manager.ts"), patchMcpOnDemandManager);
+    await patchFile(path.join(root, "server-manager.ts"), source => patchMcpOnDemandManager(source, version));
     await patchFile(path.join(root, "proxy-modes.ts"), patchMcpProxy);
     await copyFile(path.join(bridgeRoot, "..", "pi-mcp", "desktop-config.js"), path.join(root, "desktop-config.js"));
   }

@@ -68,7 +68,8 @@ test("embedded build installs request, summary and media bridges idempotently", 
 
 test("addon updates retain the MCP configuration bridge", async t => {
   const directory = await fixture(t);
-  const name = "pi-mcp-adapter", version = "5.1.0";
+  const name = "pi-mcp-adapter";
+  const { version } = JSON.parse(await readFile(path.join(root, "node_modules", name, "package.json"), "utf8"));
   const files = ["index.ts", "proxy-modes.ts", "init.ts", "server-manager.ts"];
   const target = path.join(directory, name);
   await put(target, "package.json", JSON.stringify({ name, version }));
@@ -79,15 +80,3 @@ test("addon updates retain the MCP configuration bridge", async t => {
   assert.deepEqual(await Promise.all(files.map(file => readFile(path.join(target, file), "utf8"))), before);
   await access(path.join(target, "desktop-config.js"));
 });
-
-test("updater reapplies request compatibility on installation and rollback", () => {
-  const source = readFileSyncCompat();
-  assert.equal((source.match(/await this\.applyAddonCompatibility\(definition\.packageName\)/g) ?? []).length, 2);
-  assert.doesNotMatch(source, /applyRpcBridge|applyCoreRequestCompatibility/);
-  assert.match(source, /if \(id === 'pi-core'\) throw/);
-});
-function readFileSyncCompat() {
-  // Loaded asynchronously below so the test does not need an additional fs API.
-  return updaterSource;
-}
-const updaterSource = await readFile(path.join(root, "electron/update-manager.ts"), "utf8");

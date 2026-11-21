@@ -107,7 +107,9 @@ test("Pi 1.5.2 embedded SDK engine loads add-ons, preserves user input, runs too
   ].map(file => path.join(root, process.env.PI_TEST_APP_ROOT && file.startsWith("electron/")
     ? `dist-electron/${file.replace(/\.ts$/, ".js")}` : file));
   extensions.push(probePath, lensProbePath);
-  const packages=["pi-web-access","pi-tool-repair","pi-mcp-adapter","pi-lens"].map(name=>path.join(root,"node_modules",name));
+  const packages = ["pi-web-access", "pi-tool-repair", "pi-mcp-adapter", "pi-lens"].map(name =>
+    name === "pi-mcp-adapter" && process.env.PI_TEST_MCP_PACKAGE
+      ? path.resolve(process.env.PI_TEST_MCP_PACKAGE) : path.join(root, "node_modules", name));
   await writeFile(path.join(agent, "settings.json"), JSON.stringify({ packages, extensions,
     defaultProvider: "upgrade-test", defaultModel: "upgrade", defaultThinkingLevel: "off" }), "utf8");
   const child = spawn(process.env.PI_TEST_EXECUTABLE || process.execPath, [path.join(root, 'resources/pi-engine/worker.mjs')], {

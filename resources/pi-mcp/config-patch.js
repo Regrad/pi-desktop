@@ -1,17 +1,20 @@
 // Shipped with the desktop so runtime updates retain the same MCP fixes.
 import { patchMcpOnDemandIndex } from "./on-demand-patch.js";
 export { patchMcpOnDemandInit, patchMcpOnDemandManager } from "./on-demand-patch.js";
-export function patchMcpIndex(source) {
+export function patchMcpIndex(source, version = "5.1.0") {
+  const modern = version === "7.0.1";
   if (source.includes('// Pi Desktop MCP configuration access v5')) {
     source = source.replace('const initialized = await initPromise;', 'const initialized = state;');
     const anchor = '              const fresh = loadMcpConfig(earlyConfigPath, _ctx.cwd);\n              if (JSON.stringify';
-    return patchMcpOnDemandIndex(source.replace(anchor, '              const fresh = loadMcpConfig(earlyConfigPath, _ctx.cwd);\n              const definition = fresh.mcpServers[params.connect];\n              if (definition && [definition.command, definition.url, definition.socket].filter(Boolean).length !== 1) throw new Error("MCP server must configure exactly one transport");\n              if (JSON.stringify'));
+    return patchMcpOnDemandIndex(source.replace(anchor, '              const fresh = loadMcpConfig(earlyConfigPath, _ctx.cwd);\n              const definition = fresh.mcpServers[params.connect];\n              if (definition && [definition.command, definition.url, definition.socket].filter(Boolean).length !== 1) throw new Error("MCP server must configure exactly one transport");\n              if (JSON.stringify'), version);
   }
   const replacements = [
     ['import { cloneMcpConfig,', 'import { getConfigDiscoveryPaths, cloneMcpConfig,'],
-    ['const description = buildProxyDescription(config, scriptTool);', 'const description = desktopMcpDescription;'],
+    [modern ? 'const description = buildProxyDescription(config);' : 'const description = buildProxyDescription(config, scriptTool);', 'const description = desktopMcpDescription;'],
     ['description: "Server name to connect (lazy connect + metadata refresh)"', 'description: "Server name to connect: reread configuration, then reconnect with normal trust and approval checks"'],
-    ["Action: 'install', 'ui-messages', 'auth-start', or 'auth-complete'", "Action: 'config' (configuration paths and safe endpoints), 'install', 'ui-messages', 'auth-start', or 'auth-complete'"],
+    [modern ? 'Action: ${gatewayActionList(allowScriptToolSave)}' : "Action: 'install', 'ui-messages', 'auth-start', or 'auth-complete'",
+      modern ? 'Action: config (configuration paths and safe endpoints), ${gatewayActionList(allowScriptToolSave)}'
+        : "Action: 'config' (configuration paths and safe endpoints), 'install', 'ui-messages', 'auth-start', or 'auth-complete'"],
     ['        let executeOwner = currentOwner;\n        const parseArgs =', `        let executeOwner = currentOwner;
         const configPaths = programmaticConfig ? [] : getConfigDiscoveryPaths(earlyConfigPath, _ctx.cwd);
         const info = () => configInfo(state?.config ?? earlyConfig, configPaths, getPiGlobalConfigPath(earlyConfigPath), params.connect ?? params.server, programmaticConfig);
@@ -66,10 +69,10 @@ export function patchMcpIndex(source) {
     ['        return proxyModes.executeStatus(proxyState);', '        return withConfigInfo(proxyModes.executeStatus(proxyState), info());'],
   ];
   for (const [from,to] of replacements) {
-    if (source.split(from).length !== 2) throw new Error(`Unsupported pi-mcp-adapter 5.1.0: missing or ambiguous patch anchor ${from.slice(0,80)}`);
+    if (source.split(from).length !== 2) throw new Error(`Unsupported pi-mcp-adapter ${version}: missing or ambiguous patch anchor ${from.slice(0,80)}`);
     source = source.replace(from,to);
   }
-  return patchMcpOnDemandIndex('// Pi Desktop MCP configuration access v5\nimport { desktopMcpDescription, configInfo, validateConfigFiles, withConfigInfo, diagnosticError } from "./desktop-config.js";\n' + source);
+  return patchMcpOnDemandIndex('// Pi Desktop MCP configuration access v5\nimport { desktopMcpDescription, configInfo, validateConfigFiles, withConfigInfo, diagnosticError } from "./desktop-config.js";\n' + source, version);
 }
 
 export function patchMcpProxy(source) {

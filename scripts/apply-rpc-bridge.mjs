@@ -3,9 +3,8 @@ import { findPackageJSON } from "node:module";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { patchToolResultImages } from "./tool-result-images-patch.mjs";
-import { patchMcpIndex, patchMcpProxy, patchMcpOnDemandInit, patchMcpOnDemandManager } from "./mcp-config-patch.mjs";
 import { patchToolRouting } from "./tool-routing-patch.mjs";
-import { applyContextCompatibility, applyRequestDiagnosticsCompatibility } from "../resources/pi-rpc-bridge/compatibility.js";
+import { applyAddonRequestCompatibility, applyContextCompatibility, applyRequestDiagnosticsCompatibility } from "../resources/pi-rpc-bridge/compatibility.js";
 import { applyPiLensGrammarCache } from "../resources/pi-lens/grammar-cache-patch.mjs";
 import { SUPPORTED_PI_VERSION } from "../resources/pi-engine/version.js";
 
@@ -66,15 +65,7 @@ if (patchedProvider !== providerSource) await writeFile(providerPath, patchedPro
 process.stdout.write("Pi Desktop multimodal tool-result compatibility bridge applied.\n");
 
 const adapterDir = path.join(root, "node_modules", "pi-mcp-adapter");
-const adapterPackage = await readPackage(path.join(adapterDir, "package.json"));
-if (adapterPackage.version !== "5.1.0") throw new Error(`MCP configuration bridge targets pi-mcp-adapter 5.1.0, found ${adapterPackage.version}`);
-for (const [name, patch] of [["index.ts", patchMcpIndex], ["proxy-modes.ts", patchMcpProxy], ["init.ts", patchMcpOnDemandInit], ["server-manager.ts", patchMcpOnDemandManager]]) {
-  const file = path.join(adapterDir, name);
-  const source = new TextDecoder("utf-8", { fatal: true }).decode(await readFile(file));
-  const result = patch(source);
-  if (result !== source) await writeFile(file, result, "utf8");
-}
-await copyFile(path.join(root, "resources", "pi-mcp", "desktop-config.js"), path.join(adapterDir, "desktop-config.js"));
+await applyAddonRequestCompatibility("pi-mcp-adapter", adapterDir);
 process.stdout.write("Pi Desktop MCP configuration bridge applied.\n");
 
 await applyPiLensGrammarCache(path.join(root, "node_modules", "pi-lens"));

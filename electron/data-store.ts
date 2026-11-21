@@ -1,5 +1,6 @@
 import { createHash, randomUUID } from "node:crypto";
 import { atomicStateWrite } from "./atomic-state.js";
+import { resolveAddonPackage } from "./addon-installation.js";
 import { normalizeInterfaceLanguage, type InterfaceLanguage } from "../shared/interface-language.js";
 import { notebookLimit, validateNotebookLimit } from "../shared/notebook.js";
 import { migrateLegacyAdapterConfig, parseMcpConfiguration } from "../shared/mcp-config.js";
@@ -292,15 +293,9 @@ export class DataStore {
 
   getEffectivePackagePath(packageName: string): string {
     // First-party Pi packages are a single embedded, tested source revision.
-    if (packageName.startsWith('@earendil-works/pi-')) return path.join(this.appRoot, 'node_modules', packageName);
-    const portablePath = path.join(
-      this.runtimePackagesDir,
-      "node_modules",
-      packageName,
-    );
-    return existsSync(path.join(portablePath, "package.json"))
-      ? portablePath
-      : path.join(this.appRoot, "node_modules", packageName);
+    const bundled = path.join(this.appRoot, "node_modules", packageName);
+    if (packageName.startsWith('@earendil-works/pi-')) return bundled;
+    return resolveAddonPackage(this.runtimePackagesDir, bundled, packageName);
   }
 
   getEngineEntryPath(): string {
@@ -363,7 +358,15 @@ export class DataStore {
     await ensureComfyAddon(this.dataDir, this.appRoot);
   }
 
-  private async writeManagedPackageConfiguration(
+  private managedPackageWrite = Promise.resolve();
+
+  private writeManagedPackageConfiguration(existingSettings?: Record<string, unknown>): Promise<void> {
+    const write = this.managedPackageWrite.then(() => this.saveManagedPackageConfiguration(existingSettings));
+    this.managedPackageWrite = write.catch(() => undefined);
+    return write;
+  }
+
+  private async saveManagedPackageConfiguration(
     existingSettings?: Record<string, unknown>,
   ): Promise<void> {
     const settingsPath = path.join(this.agentDir, "settings.json");
@@ -403,11 +406,7 @@ export class DataStore {
       settings.extensions = settings.extensions.filter(item => typeof item !== "string" ||
         !isManagedPackage(item.replace(/[\\/]index\.js$/i, ""), [], RETIRED_RESOURCE_NAMES));
     }
-    await writeFile(
-      settingsPath,
-      `${JSON.stringify(settings, null, 2)}\n`,
-      "utf8",
-    );
+    await atomicStateWrite(settingsPath, `${JSON.stringify(settings, null, 2)}\n`);
   }
 
   private async loadBuiltinModuleSettings(): Promise<void> {

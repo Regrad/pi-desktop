@@ -3349,9 +3349,13 @@ function SettingsPage({
                           <em>
                             {component.source === "local"
                               ? t("Защищён")
-                              : component.error
-                                ? t("Нет данных")
-                                : t("Актуально")}
+                              : component.requiresCompatibleBuild
+                                ? t("Требуется совместимая сборка Pi Desktop")
+                                : component.updateAvailable && !updateStatus.npmAvailable
+                                  ? t("Для установки нужен npm")
+                                  : component.error
+                                    ? t("Нет данных")
+                                    : t("Актуально")}
                           </em>
                         )}
                       </div>

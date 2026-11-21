@@ -169,6 +169,7 @@ export interface UpdateComponentStatus {
   latestVersion?: string;
   updateAvailable: boolean;
   updateable: boolean;
+  requiresCompatibleBuild?: boolean;
   source: "bundled" | "portable" | "local";
   error?: string;
 }

@@ -30,5 +30,5 @@ test("distribution preparation and Pi Lens upgrades both require complete verifi
   const pack = readFileSync(new URL("./package-portable.mjs", import.meta.url), "utf8");
   assert.ok(pack.indexOf("await ensurePiLensGrammars") < pack.indexOf('await run("dotnet"'));
   const updates = readFileSync(new URL("../electron/update-manager.ts", import.meta.url), "utf8");
-  assert.match(updates, /await ensurePiLensGrammars\(this.store.getEffectivePackagePath\("pi-lens"\)\)/);
+  assert.match(updates, /await ensurePiLensGrammars\(candidate\)/);
 });

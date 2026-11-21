@@ -62,13 +62,15 @@ test("sync refuses modified, added and missing original files while accepting ge
   await assert.rejects(verifyUpstream(dir), /ENOENT/);
 });
 
-test("old data/runtime Pi cannot override embedded packages; third-party overrides still work", async t => {
+test("old data/runtime cannot override embedded Pi or use untested add-on versions", async t => {
   const dir = await fixture(t);
   const store = new DataStore(dir, app, process.execPath);
   for (const pkg of ["@earendil-works/pi-coding-agent", "@earendil-works/pi-ai", "pi-lens"]) {
     await put(dir, `runtime/node_modules/${pkg}/package.json`, JSON.stringify({ version: "99.0.0" }));
-    assert.equal(store.getEffectivePackagePath(pkg), path.join(pkg === "pi-lens" ? path.join(dir, "runtime") : app, "node_modules", pkg));
+    assert.equal(store.getEffectivePackagePath(pkg), path.join(app, "node_modules", pkg));
   }
+  await put(dir, "runtime/node_modules/pi-lens/package.json", JSON.stringify({ version: "4.3.0" }));
+  assert.equal(store.getEffectivePackagePath("pi-lens"), path.join(dir, "runtime", "node_modules", "pi-lens"));
   assert.equal(store.getEngineEntryPath(), path.join(app, "resources/pi-engine/worker.mjs"));
   const manager = new UpdateManager(store, app, process.execPath);
   assert.throws(() => manager.updateComponent("pi-core"), /вместе с приложением/);

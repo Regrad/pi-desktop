@@ -1,44 +1,77 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { readFileSync } from "node:fs";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { spawnSync } from "node:child_process";
+import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
-const source = readFileSync(new URL("../electron/update-manager.ts", import.meta.url), "utf8");
-const method = source.slice(source.indexOf("  private async smokeTestRuntime()"), source.indexOf("  private async hasNpm()"));
-const body = method.slice(method.indexOf("{") + 1, method.lastIndexOf("}"))
-  .replace("let exitError: Error | undefined;", "let exitError;");
-const AsyncFunction = Object.getPrototypeOf(async function () {}).constructor;
-const smoke = new AsyncFunction("mkdtemp", "path", "tmpdir", "PiRpcProcess", "randomUUID", "rm", body);
+import { UpdateManager } from "../dist-electron/electron/update-manager.js";
+import { addonPointer, resolveAddonPackage, testedAddons } from "../dist-electron/electron/addon-installation.js";
 
-for (const appRoot of ["F:\\Pi_Desktop\\resources\\app.asar", "F:\\Pi Desktop\\resources\\app.asar"]) {
-  test(`update smoke passes the portable dependency root: ${appRoot}`, async () => {
-    const calls = [];
-    let stopped = false;
-    let cleaned = false;
-    const store = {
-      dataDir: "F:\\Pi Desktop\\data", agentDir: "F:\\Pi Desktop\\data\\agent",
-      getEngineEntryPath: () => "F:\\Pi Desktop\\data\\runtime\\node_modules\\pi\\cli.js",
-      getMcpDirectToolSelectors: async () => [],
-    };
-    class Rpc {
-      constructor(options) {
-        assert.equal(options.appRoot, appRoot);
-        assert.equal(options.enginePath, store.getEngineEntryPath());
-        assert.equal(options.agentDir, store.agentDir);
-      }
-      async start() {}
-      async request(command) { calls.push(command); return {}; }
-      async stop() { stopped = true; }
-    }
-    await smoke.call({ appRoot, store, runtimeExecutable: "F:\\Pi Desktop\\Pi Desktop.exe" },
-      async () => "temporary-smoke", path, () => "temporary", Rpc, () => "test-id", async () => { cleaned = true; });
-    assert.deepEqual(calls, ["get_state", "get_extension_state"]);
-    assert.equal(stopped, true);
-    assert.equal(cleaned, true);
+const name = "pi-web-access";
+async function fixture(t) {
+  const root = await mkdtemp(path.join(tmpdir(), "pi-addon-update-"));
+  t.after(async () => {
+    assert.equal(path.dirname(path.resolve(root)), path.resolve(tmpdir()));
+    assert.ok(path.basename(root).startsWith("pi-addon-update-"));
+    await rm(root, { recursive: true, force: true });
   });
+  const app = path.join(root, "app directory");
+  const runtime = path.join(root, "runtime");
+  const bundled = pkg => path.join(app, "node_modules", pkg);
+  const putPackage = async (directory, version) => {
+    await mkdir(directory, { recursive: true });
+    await writeFile(path.join(directory, "package.json"), JSON.stringify({ version }));
+  };
+  const resolve = pkg => resolveAddonPackage(runtime, bundled(pkg), pkg);
+  await putPackage(bundled(name), "0.37.0");
+  await putPackage(bundled("pi-lens"), "4.3.0");
+  const store = { runtimePackagesDir: runtime, getEffectivePackagePath: resolve, async refreshManagedPackageConfiguration() {} };
+  const manager = new UpdateManager(store, app, process.execPath);
+  manager.runNpm = async ([command, , stage, ...args]) => {
+    if (command === "--version") return "11.0.0";
+    assert.equal(command, "install");
+    assert.ok(args.includes("--ignore-scripts"));
+    assert.equal(args.at(-1), `${name}@${testedAddons[name]}`);
+    await putPackage(path.join(stage, "node_modules", name), testedAddons[name]);
+  };
+  return { manager, store, runtime, resolve, bundled };
 }
+
+test("upstream releases requiring compatibility work are visible but cannot install", async t => {
+  const { manager } = await fixture(t);
+  t.mock.method(globalThis, "fetch", async url => Response.json({ version: String(url).includes("pi-lens") ? "4.5.1" : "99.0.0" }));
+  const status = await manager.getStatus();
+  const lens = status.components.find(item => item.id === "pi-lens");
+  assert.equal(lens.latestVersion, "4.5.1");
+  assert.equal(lens.requiresCompatibleBuild, true);
+  assert.equal(lens.updateAvailable, false);
+  assert.equal(lens.updateable, false);
+  const web = status.components.find(item => item.id === name);
+  assert.equal(web.latestVersion, testedAddons[name]);
+  assert.equal(web.updateable, true);
+  assert.deepEqual((await manager.updateComponent("pi-lens")).updated, []);
+});
+
+test("a rejected staged install and a failed activation both preserve the effective package", async t => {
+  const { manager, store, resolve, bundled, runtime } = await fixture(t);
+  manager.smokeTestRuntime = async candidate => {
+    assert.equal(resolve(name), bundled(name));
+    assert.match(candidate, /generation-/);
+    throw new Error("candidate rejected");
+  };
+  await assert.rejects(manager.installCandidate(name, testedAddons[name]), /candidate rejected/);
+  await assert.rejects(readFile(addonPointer(runtime, name)), { code: "ENOENT" });
+  manager.smokeTestRuntime = async () => {};
+  store.refreshManagedPackageConfiguration = async () => { throw new Error("config write failed"); };
+  await assert.rejects(manager.installCandidate(name, testedAddons[name]), /config write failed/);
+  assert.equal(resolve(name), bundled(name));
+  store.refreshManagedPackageConfiguration = async () => {};
+  await manager.installCandidate(name, testedAddons[name]);
+  assert.notEqual(resolve(name), bundled(name));
+});
 
 test("RPC passes appRoot through to the add-on dependency resolver", () => {
   const rpc = readFileSync(new URL("../electron/pi-rpc-process.ts", import.meta.url), "utf8");

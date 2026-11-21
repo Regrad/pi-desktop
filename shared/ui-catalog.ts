@@ -254,6 +254,8 @@ export const englishUi: Readonly<Record<string, string>> = {
   "Защищён": "Protected",
   "Нет данных": "No data",
   "Актуально": "Up to date",
+  "Требуется совместимая сборка Pi Desktop": "Requires a compatible Pi Desktop build",
+  "Для установки нужен npm": "npm required to install",
   "Проверка npm…": "Checking npm…",
   "Нет данных об обновлениях.": "No update information.",
   "npm не найден. Проверка версий работает, но установка обновлений требует Node.js/npm в PATH.": "npm was not found. Version checks work, but installing updates requires Node.js/npm in PATH.",

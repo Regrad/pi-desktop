@@ -3,11 +3,11 @@
 const indexMarker = "// Pi Desktop MCP on-demand lifecycle v1\n";
 const initMarker = "// Pi Desktop MCP on-demand discovery v1\n";
 function replaceOnce(source, from, to) {
-  if (source.split(from).length !== 2) throw new Error("Unsupported pi-mcp-adapter 5.1.0 on-demand anchor: " + from.slice(0, 80));
+  if (source.split(from).length !== 2) throw new Error("Unsupported MCP adapter on-demand anchor: " + from.slice(0, 80));
   return source.replace(from, to);
 }
 
-export function patchMcpOnDemandIndex(source) {
+export function patchMcpOnDemandIndex(source, version = "5.1.0") {
   if (source.includes(indexMarker.trim())) return source;
   const crlf = source.includes("\r\n");
   let result = source.replace(/\r\n/g, "\n");
@@ -44,9 +44,8 @@ export function patchMcpOnDemandIndex(source) {
           assertRuntimeGuard(proxyGuard);
           if (discovery.details?.error) return withConfigInfo(discovery, info());
         }`);
-  result = replaceOnce(result,
-    "const result = await proxyModes.executeSearch(proxyState, params.search, params.regex, params.server, params.includeSchemas, params.limit, params.offset, params.searchMode, signal);",
-    "const result = withDeferredServers(await proxyModes.executeSearch(proxyState, params.search, params.regex, params.server, params.includeSchemas, params.limit, params.offset, params.searchMode, signal), proxyState);");
+  const search = `proxyModes.executeSearch(proxyState, params.search, params.regex, params.server, params.includeSchemas, params.limit, params.offset, params.searchMode, signal${version === "7.0.1" ? ", _ctx?.modelRegistry" : ""})`;
+  result = replaceOnce(result, `const result = await ${search};`, `const result = withDeferredServers(await ${search}, proxyState);`);
   result = indexMarker + result;
   return crlf ? result.replace(/\n/g, "\r\n") : result;
 }
@@ -77,11 +76,17 @@ function removeColdBootstrap(source) {
   return crlf ? result.replace(/\n/g, "\r\n") : result;
 }
 
-export function patchMcpOnDemandManager(source) {
+export function patchMcpOnDemandManager(source, version = "5.1.0") {
   const marker = "// Pi Desktop MCP cancellation skips diagnostic reconnects\n";
   if (source.includes(marker.trim())) return source;
   const crlf = source.includes("\r\n");
   let result = source.replace(/\r\n/g, "\n");
+  if (version === "7.0.1") {
+    result = replaceOnce(result, ").catch(async error => { throw await this.enrichHttpConnectionError(definition, error); });",
+      ").catch(async error => { throwIfAborted(signal); throw await this.enrichHttpConnectionError(definition, error); });");
+    result = marker + result;
+    return crlf ? result.replace(/\n/g, "\r\n") : result;
+  }
   result = replaceOnce(result,
     "connectionAttempt.catch(async error => { throw await this.enrichHttpConnectionError(definition, error); })",
     "connectionAttempt.catch(async error => { throwIfAborted(attemptSignal); throw await this.enrichHttpConnectionError(definition, error); })");
