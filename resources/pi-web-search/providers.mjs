@@ -1,139 +1,136 @@
-import { readFile } from "node:fs/promises";
-import path from "node:path";
 import { requestSignal, requestText } from "./http.mjs";
+import { credential, service } from "./settings.mjs";
 
-function credential(value, variable) {
-  if (typeof value !== "string" || !value.trim()) return process.env[variable];
-  const reference = value.match(/^\$(?:\{(\w+)\}|(\w+))$/);
-  if (reference) return process.env[reference[1] ?? reference[2]];
-  if (value.startsWith("!")) throw new Error("Configure search credentials as a value or an environment variable");
-  return value.trim();
+export async function requestJson(url, { body, headers, signal, timeout = 12_000, configuredProvider } = {}) {
+  const response = await requestText(url, {
+    configuredProvider,
+    signal: requestSignal(signal, timeout),
+    headers: { Accept: "application/json", ...(body === undefined ? {} : { "Content-Type": "application/json" }), ...headers },
+    ...(body === undefined ? {} : { method: "POST", body: JSON.stringify(body) }),
+  });
+  return JSON.parse(response);
 }
 
-export async function loadWebSettings(agentDir) {
-  try {
-    const config = JSON.parse(await readFile(path.join(agentDir, "web-search.json"), "utf8"));
-    if (!config || typeof config !== "object" || Array.isArray(config)) throw new Error();
-    return config;
-  } catch (error) {
-    if (error.code === "ENOENT") return {};
-    throw new Error("Invalid web-search.json in the agent directory");
-  }
-}
-
-function endpoint(base, suffix) {
+export function providerPath(base, suffix) {
   const url = new URL(base);
-  url.pathname = url.pathname.replace(/\/+$/, "");
-  if (!url.pathname.endsWith(suffix)) url.pathname += suffix;
+  const pathname = url.pathname.replace(/\/+$/, "");
+  url.pathname = pathname.endsWith(suffix) ? pathname : pathname + suffix;
   return url;
 }
 
-function jsonPost(body, headers, signal) {
-  return { method: "POST", headers: { "Content-Type": "application/json", ...headers }, body: JSON.stringify(body), signal };
+const dateRange = { h: "day", d: "day", w: "week", m: "month", y: "year" };
+const keenableRange = { h: "1h", d: "1d", w: "7d", m: "1mo", y: "1y" };
+const countryNames = new Intl.DisplayNames("en", { type: "region", fallback: "none" });
+
+function resultRows(response, property) {
+  if (!Array.isArray(response?.[property])) throw new Error("Unexpected search provider response");
+  return response[property];
 }
 
-async function jsonRequest(url, options) {
-  const response = await requestText(url, options);
-  return JSON.parse(response.text);
-}
-
-function exaTextResults(text) {
-  const entries = [...text.matchAll(/^Title:[ \t]*([^\r\n]*)\r?\nURL:[ \t]*(https?:\/\/\S+)[ \t]*$/gim)];
-  return entries.map((entry, index) => {
-    const data = text.slice(entry.index + entry[0].length, entries[index + 1]?.index ?? text.length);
-    return { title: entry[1], url: entry[2], snippet: data.split(/^Highlights?:/im)[1] ?? data.split(/^Text:/im)[1] ?? "" };
+async function serper(input, settings, type, signal) {
+  const key = credential(settings, "serperApiKey");
+  if (!key) throw new Error("Serper requires an API key");
+  const endpoint = type === "search" ? "search" : type;
+  const data = await requestJson("https://google.serper.dev/" + endpoint, {
+    headers: { "X-API-KEY": key }, signal,
+    body: {
+      q: input.query, num: 8, safe: ["off", "moderate", "active"][settings.safeSearch] ?? "moderate",
+      ...(input.date ? { tbs: "qdr:" + input.date } : {}),
+      ...(input.country ? { gl: input.country.toLowerCase() } : {}),
+    },
   });
+  return resultRows(data, type === "search" ? "organic" : type).map(item => ({
+    url: item.link, title: item.title, snippet: item.snippet, date: item.date, imageUrl: item.imageUrl,
+  }));
 }
 
-async function searchExa(query, settings, signal) {
-  const apiKey = credential(settings.exaApiKey, "EXA_API_KEY");
-  if (apiKey) {
-    const data = await jsonRequest("https://api.exa.ai/search",
-      jsonPost({ query, numResults: 8, contents: { highlights: { maxCharacters: 700 } } }, { "x-api-key": apiKey }, signal));
-    return data.results?.map(item => ({ ...item, snippet: item.highlights?.join(" ") }));
-  }
-  const response = await requestText("https://mcp.exa.ai/mcp", jsonPost({
-    jsonrpc: "2.0", id: 1, method: "tools/call",
-    params: { name: "web_search_exa", arguments: { query, numResults: 8, contextMaxCharacters: 6000 } },
-  }, { Accept: "application/json, text/event-stream", "MCP-Protocol-Version": "2025-03-26" }, signal));
-  const envelope = response.contentType.includes("text/event-stream")
-    ? response.text.split(/\r?\n\r?\n/).flatMap(event => {
-      const payload = event.split(/\r?\n/).filter(line => line.startsWith("data:")).map(line => line.slice(5).trim()).join("\n");
-      return payload ? [JSON.parse(payload)] : [];
-    }).find(event => event.id === 1)
-    : JSON.parse(response.text);
-  if (!envelope?.result || envelope.result.isError) throw new Error("Exa rejected the search");
-  return envelope.result.content?.flatMap(block => block.type === "text" ? exaTextResults(block.text) : []);
-}
-
-async function searchSearxng(query, settings, signal) {
-  const base = settings.searxngBaseUrl || process.env.SEARXNG_BASE_URL;
-  if (!base) throw new Error("Configure searxngBaseUrl in web-search.json");
-  const url = endpoint(base, "/search");
-  url.searchParams.set("q", query);
-  url.searchParams.set("format", "json");
-  url.searchParams.set("safesearch", "1");
+async function searxng(input, settings, type, signal) {
+  const connection = service(settings, "searxngApiKey", "searxngInstanceUrl", "SEARXNG_INSTANCE_URL", "https://localhost", "SEARXNG_BASE_URL");
+  if (!settings.searxngInstanceUrl && !process.env.SEARXNG_INSTANCE_URL && !process.env.SEARXNG_BASE_URL) throw new Error("Set the SearXNG instance URL");
+  const url = providerPath(connection.url, "/search");
+  const options = settings.searxngSearchOptions ?? {};
+  const engines = Array.isArray(options.engines) ? options.engines.join(",") : options.engines;
+  const parameters = {
+    q: input.query, format: "json", pageno: "1", categories: type === "search" ? "general" : type,
+    language: options.language || "all", engines: engines || "google,bing,duckduckgo",
+    safesearch: String(settings.safeSearch ?? 1),
+  };
+  const timeRange = options.timeRange ?? dateRange[input.date];
+  if (timeRange && timeRange !== "week") parameters.time_range = timeRange;
+  for (const [key, value] of Object.entries(parameters)) url.searchParams.set(key, value);
   const headers = Object.fromEntries(Object.entries(settings.searxngHeaders ?? {}).filter(([, value]) => typeof value === "string"));
-  const data = await jsonRequest(url, { headers: { Accept: "application/json", ...headers }, signal, configuredProvider: true });
-  return data.results?.map(item => ({ ...item, snippet: item.content }));
+  if (connection.key) headers["X-API-Key"] = connection.key;
+  const data = await requestJson(url, { headers, signal, configuredProvider: connection.configuredProvider, timeout: options.timeout });
+  return resultRows(data, "results").map(item => ({
+    url: item.url, title: item.title, snippet: item.content, date: item.publishedDate, imageUrl: item.img_src,
+  }));
 }
 
-async function searchTavily(query, settings, signal) {
-  const key = credential(settings.tavilyApiKey, "TAVILY_API_KEY");
-  if (!key) throw new Error("Configure TAVILY_API_KEY for Tavily search");
-  const data = await jsonRequest("https://api.tavily.com/search",
-    jsonPost({ query, max_results: 8, include_raw_content: false, include_answer: false }, { Authorization: `Bearer ${key}` }, signal));
-  return data.results?.map(item => ({ ...item, snippet: item.content }));
+async function tavily(input, settings, type, signal) {
+  const connection = service(settings, "tavilyApiKey", "tavilySearchUrl", "TAVILY_SEARCH_URL", "https://api.tavily.com/search");
+  if (!connection.key) throw new Error("Tavily requires an API key");
+  const options = settings.tavilySearchOptions ?? {};
+  const topic = type === "news" ? "news" : options.topic ?? "general";
+  const range = options.timeRange ?? dateRange[input.date];
+  const region = /^[a-z]{2}$/i.test(input.country ?? "") ? input.country.toUpperCase() : undefined;
+  const country = region ? countryNames.of(region === "UK" ? "GB" : region)?.toLowerCase() : input.country?.toLowerCase();
+  const data = await requestJson(connection.url, {
+    ...connection, signal, timeout: options.timeout,
+    headers: { Authorization: "Bearer " + connection.key },
+    body: {
+      query: input.query, search_depth: options.searchDepth ?? "basic", topic,
+      max_results: options.maxResults ?? 8, include_images: Boolean(type === "images" || options.includeImages),
+      include_answer: false, include_raw_content: false,
+      ...(range ? { time_range: range } : {}),
+      ...(country && topic === "general" ? { country } : {}),
+      ...(options.includeDomains ? { include_domains: options.includeDomains } : {}),
+      ...(options.excludeDomains ? { exclude_domains: options.excludeDomains } : {}),
+      ...(options.safeSearch !== undefined ? { safe_search: options.safeSearch } : {}),
+    },
+  });
+  if (type === "images") return resultRows(data, "images").map(item => {
+    const imageUrl = typeof item === "string" ? item : item.url;
+    return { url: imageUrl, imageUrl, title: item.description, snippet: "" };
+  });
+  return resultRows(data, "results").map(item => ({ url: item.url, title: item.title, snippet: item.content, date: item.published_date }));
 }
 
-async function searchSerper(query, settings, signal) {
-  const key = credential(settings.serperApiKey, "SERPER_API_KEY");
-  if (!key) throw new Error("Configure SERPER_API_KEY for Serper search");
-  const data = await jsonRequest("https://google.serper.dev/search", jsonPost({ q: query, num: 8 }, { "X-API-KEY": key }, signal));
-  return data.organic?.map(item => ({ ...item, url: item.link }));
+async function keenable(input, settings, _type, signal) {
+  const key = credential(settings, "keenableApiKey");
+  const connection = service(settings, "keenableApiKey", "keenableApiUrl", "KEENABLE_API_URL",
+    key ? "https://api.keenable.ai/v1/search" : "https://api.keenable.ai/v1/search/public");
+  const options = settings.keenableSearchOptions ?? {};
+  const data = await requestJson(connection.url, {
+    ...connection, signal, timeout: options.timeout,
+    headers: {
+      "X-Keenable-Title": options.attributionTitle ?? "Pi Desktop",
+      ...(connection.key ? { "X-API-Key": connection.key } : {}),
+    },
+    body: {
+      query: input.query, max_results: options.maxResults ?? 8, ...(options.site ? { site: options.site } : {}),
+      ...(input.date ? { published_after: keenableRange[input.date] } : {}),
+    },
+  });
+  return resultRows(data, "results").map(item => ({ url: item.url, title: item.title, snippet: item.snippet || item.description, date: item.published_at }));
 }
 
-async function searchKeenable(query, settings, signal) {
-  const key = credential(settings.keenableApiKey, "KEENABLE_API_KEY");
-  const data = await jsonRequest(key ? "https://api.keenable.ai/v1/search" : "https://api.keenable.ai/v1/search/public",
-    jsonPost({ query, max_results: 8 }, { "X-Keenable-Title": "Pi Desktop", ...(key ? { "X-API-Key": key } : {}) }, signal));
-  return data.results?.map(item => ({ ...item, snippet: item.snippet || item.description }));
-}
+const adapters = { serper, searxng, tavily, keenable };
+const media = [["news", "news"], ["images", "image"], ["videos", "ref"]];
 
-const providers = { exa: searchExa, searxng: searchSearxng, tavily: searchTavily, serper: searchSerper, keenable: searchKeenable };
-
-export async function searchWeb(query, settings, signal) {
-  const preferred = Object.hasOwn(providers, settings.provider) ? settings.provider
-    : (settings.searxngBaseUrl || process.env.SEARXNG_BASE_URL) ? "searxng" : "exa";
-  const order = preferred === "exa" && settings.provider !== "exa" ? ["exa", "keenable"] : [preferred];
-  let failure;
-  for (const name of order) {
+export async function searchWeb(input, settings, signal) {
+  const provider = settings.searchProvider;
+  const adapter = adapters[provider];
+  const enabled = media.filter(([type]) => input[type] && provider !== "keenable" && !(provider === "tavily" && type === "videos"));
+  const batches = await Promise.all([["search", "search"], ...enabled].map(async ([type, kind]) => {
     try {
-      const results = await providers[name](query, settings, requestSignal(signal, 12_000));
-      if (!Array.isArray(results)) throw new Error("Unexpected search response");
-      return { provider: name, results };
+      const results = await adapter(input, settings, type, signal);
+      return { kind, results };
     } catch (error) {
       signal?.throwIfAborted();
-      failure = new Error(`${name}: ${error.message}`);
+      return { kind, error: error.message };
     }
-  }
-  throw failure;
-}
-
-export async function scrapeWithFirecrawl(url, settings, signal) {
-  const key = credential(settings.firecrawlApiKey, "FIRECRAWL_API_KEY");
-  const base = settings.firecrawlBaseUrl || process.env.FIRECRAWL_BASE_URL;
-  if (!key && !base) return;
-  const version = settings.firecrawlApiVersion === "v1" ? "v1" : "v2";
-  const data = await jsonRequest(endpoint(base || "https://api.firecrawl.dev", `/${version}/scrape`), {
-    ...jsonPost({
-      url, formats: ["markdown"], onlyMainContent: true, timeout: 9_000,
-      ...(version === "v2" ? { lockdown: settings.firecrawlFreshScrape !== true && process.env.FIRECRAWL_FRESH_SCRAPE !== "1", parsers: [] } : {}),
-    }, key ? { Authorization: `Bearer ${key}` } : {}, signal),
-    configuredProvider: Boolean(base),
-  });
-  const content = data.data?.markdown;
-  if (data.success && typeof content === "string" && content.trim()) {
-    return { url: data.data.metadata?.sourceURL || url, title: data.data.metadata?.title, text: content };
-  }
+  }));
+  const errors = batches.filter(batch => batch.error);
+  if (errors.length === batches.length) throw new Error(provider + ": " + errors[0].error);
+  return { provider, batches, errors };
 }

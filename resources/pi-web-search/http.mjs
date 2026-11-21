@@ -24,7 +24,6 @@ function lookupPublic(hostname, options, callback) {
 
 const publicTransport = new Agent({ connect: { lookup: lookupPublic } });
 const configuredProviderTransport = new Agent();
-const redirectStatus = new Set([301, 302, 303, 307, 308]);
 const maxBytes = 2 * 1024 * 1024;
 
 function httpUrl(value) {
@@ -73,36 +72,19 @@ async function readBounded(response) {
 }
 
 export function requestSignal(signal, milliseconds) {
-  const timeout = AbortSignal.timeout(milliseconds);
+  if (milliseconds === 0) return signal;
+  const timeout = AbortSignal.timeout(Number.isSafeInteger(milliseconds) && milliseconds > 0 ? Math.min(milliseconds, 120_000) : 12_000);
   return signal ? AbortSignal.any([signal, timeout]) : timeout;
 }
 
-export async function requestText(input, { configuredProvider = false, redirects = 0, page = false, ...options } = {}) {
-  let url = configuredProvider ? httpUrl(input) : publicUrl(input);
+export async function requestText(input, { configuredProvider = false, ...options } = {}) {
+  const url = configuredProvider ? httpUrl(input) : publicUrl(input);
   const dispatcher = configuredProvider ? configuredProviderTransport : publicTransport;
-  for (let hop = 0; ; hop++) {
-    const response = await fetch(url, { ...options, redirect: "manual", dispatcher });
-    if (redirectStatus.has(response.status)) {
-      const location = response.headers.get("location");
-      await response.body?.cancel();
-      if (!location || hop >= redirects) throw new Error("Unexpected or excessive redirects");
-      url = publicUrl(new URL(location, url));
-      continue;
-    }
-    if (!response.ok) {
-      await response.body?.cancel();
-      throw new Error(`HTTP ${response.status}`);
-    }
-    const contentType = response.headers.get("content-type") ?? "";
-    if (page && !/^(?:text\/|application\/(?:xhtml\+xml|json))/i.test(contentType)) {
-      await response.body?.cancel();
-      throw new Error("Unsupported page content type");
-    }
-    const bytes = await readBounded(response);
-    const charset = contentType.match(/charset\s*=\s*["']?([^;\s"']+)/i)?.[1] ??
-      (/html/i.test(contentType) ? bytes.subarray(0, 2048).toString("ascii").match(/charset\s*=\s*["']?([\w-]+)/i)?.[1] : undefined);
-    let decoder;
-    try { decoder = new TextDecoder(charset || "utf-8"); } catch { decoder = new TextDecoder(); }
-    return { url: url.href, contentType, text: decoder.decode(bytes) };
+  const response = await fetch(url, { ...options, redirect: "manual", dispatcher });
+  if (!response.ok) {
+    await response.body?.cancel();
+    if ([301, 302, 303, 307, 308].includes(response.status)) throw new Error("Unexpected provider redirect");
+    throw new Error(`HTTP ${response.status}`);
   }
+  return (await readBounded(response)).toString("utf8");
 }

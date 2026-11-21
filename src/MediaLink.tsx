@@ -6,10 +6,10 @@ export function markdownMediaUrl(value: string, key: string): string {
   return key === "href" && parseGeneratedLink(value) ? value : defaultUrlTransform(value);
 }
 
-export function MediaLink({ href, children }: { href?: string; children?: ReactNode }) {
+export function MediaLink({ href, children, title, className }: { href?: string; children?: ReactNode; title?: string; className?: string }) {
   const [error, setError] = useState("");
   const generated = href ? parseGeneratedLink(href) : undefined;
-  if (!generated || !href) return <a href={href} target="_blank" rel="noreferrer">{children}</a>;
+  if (!generated || !href) return <a href={href} title={title} className={className} target="_blank" rel="noreferrer">{children}</a>;
   const text = typeof children === "string" ? children : Array.isArray(children) && children.every(item => typeof item === "string") ? children.join("") : undefined;
   const open = async () => {
     setError("");

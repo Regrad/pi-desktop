@@ -47,6 +47,7 @@ import {
 import {
   Fragment,
   useCallback,
+  useContext,
   useEffect,
   useLayoutEffect,
   useMemo,
@@ -78,7 +79,9 @@ import { NotebookSettings } from "./NotebookSettings";
 import { BrowserPanel } from "./BrowserPanel";
 import { ComfySettingsPanel } from "./ComfySettings";
 import { WebAccessSettingsPanel } from "./WebAccessSettings";
-import { collectWebSearchSources, WebSearchSources, webSearchDetails } from "./WebSearchSources";
+import { WebSearchSettingsPanel } from "./WebSearchSettings";
+import { collectWebSearchSources, indexWebCitations, WebCitations, WebSearchSources, webSearchDetails } from "./WebSearchSources";
+import { remarkWebCitations } from "./web-citations";
 import { collectComfyMedia, collectAnswerMedia, answerCanPublishMedia } from "./comfy-images";
 import { ComfyMedia } from "./ComfyMedia";
 import { MediaLink, markdownMediaUrl } from "./MediaLink";
@@ -142,6 +145,7 @@ interface Notice {
 type SettingsSection =
   | "general"
   | "web-access"
+  | "web-search"
   | "comfyui"
   | "models"
   | "modules"
@@ -922,13 +926,14 @@ function MessageContent({
 }
 
 function Markdown({ text }: { text: string }) {
+  const citations = useContext(WebCitations);
   return (
     <ReactMarkdown
-      remarkPlugins={[remarkGfm]}
+      remarkPlugins={[remarkGfm, [remarkWebCitations, citations]]}
       urlTransform={markdownMediaUrl}
       components={{
         img: ({ src, alt, title }) => <PreviewImage className="content-image" src={src} alt={alt} title={title} />,
-        a: ({ href, children }) => <MediaLink href={href}>{children}</MediaLink>,
+        a: ({ href, children, title, className }) => <MediaLink href={href} title={title} className={className}>{children}</MediaLink>,
         code: ({ children, className }) => (
           <code className={className}>{children}</code>
         ),
@@ -1405,7 +1410,7 @@ function ToolCard({ tool, hideMedia = false }: { tool: ToolActivity; hideMedia?:
           {tool.preparing
             ? t("Формируется…")
             : tool.running
-              ? webPhase === "searching" ? t("Поиск в интернете…") : webPhase === "reading" ? t("Чтение источников…") : t("Выполняется…")
+              ? webPhase === "searching" ? t("Поиск в интернете…") : webPhase === "reading" ? t("Чтение источников…") : webPhase === "ranking" ? t("Отбор выдержек…") : t("Выполняется…")
               : tool.error
                 ? t("Ошибка")
                 : t("Готово")}
@@ -2555,6 +2560,7 @@ function SettingsPage({
     { id: "general", label: t("Общее"), icon: Settings },
     // Web access is paused: keep its implementation, but hide the settings entry.
     { id: "models", label: t("Модели"), icon: Cpu },
+    { id: "web-search", label: t("Веб-поиск"), icon: Search },
     { id: "comfyui", label: "ComfyUI", icon: Boxes },
     { id: "modules", label: t("Модули"), icon: Boxes },
     { id: "customization", label: t("Кастомизация"), icon: Pencil },
@@ -2938,6 +2944,7 @@ function SettingsPage({
         <div className="settings-inner">
           {section === "comfyui" && <ComfySettingsPanel />}
           {section === "web-access" && <WebAccessSettingsPanel />}
+          {section === "web-search" && <WebSearchSettingsPanel />}
           {section === "general" && (
             <>
               <h1>{t("Общее")}</h1>
@@ -5538,6 +5545,12 @@ export default function App() {
     });
     return { results, calls };
   }, [messages]);
+  const webCitationSources = useMemo(() => indexWebCitations([
+    ...Array.from(historicalToolIndex.results.values(), message => ({
+      name: String(message.toolName ?? message.name ?? ""), result: resultMessagePayload(message),
+    })),
+    ...Object.values(tools),
+  ]), [historicalToolIndex, tools]);
   const streamingToolIds = new Set<string>();
   if (streamingMessage) {
     toolCallParts(streamingMessage).forEach((call, callIndex) => {
@@ -6169,13 +6182,15 @@ export default function App() {
                         ))}
                       </div>
                     )}
-                    <VirtualFilm
-                      items={transcriptDisplay}
-                      itemKey={displayItemKey}
-                      renderItem={renderDisplayItem}
-                      resetKey={activeConversationId}
-                      scrollRef={conversationScrollRef}
-                    />
+                    <WebCitations.Provider value={webCitationSources}>
+                      <VirtualFilm
+                        items={transcriptDisplay}
+                        itemKey={displayItemKey}
+                        renderItem={renderDisplayItem}
+                        resetKey={activeConversationId}
+                        scrollRef={conversationScrollRef}
+                      />
+                    </WebCitations.Provider>
                     {orphanTools.map((tool) => (
                       <ToolCard key={tool.id} tool={tool} />
                     ))}

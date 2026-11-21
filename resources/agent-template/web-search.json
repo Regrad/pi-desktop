@@ -1,3 +1,5 @@
 {
-  "provider": "auto"
+  "searchProvider": "auto",
+  "scraperProvider": "auto",
+  "rerankerType": "auto"
 }

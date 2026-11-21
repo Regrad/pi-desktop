@@ -423,6 +423,8 @@ export interface PiDesktopApi {
   getGeneratedMediaUrl?(kind: string, filename: string): string;
   showGeneratedOnClient?(kind: string, filename: string): Promise<unknown>;
   getWebAccessSettings(): Promise<import("./web-access.js").WebAccessStatus>;
+  getWebSearchSettings(): Promise<import("./web-search.js").WebSearchSettings>;
+  saveWebSearchSettings(settings: import("./web-search.js").SaveWebSearchSettings): Promise<import("./web-search.js").WebSearchSettings>;
   saveWebAccessSettings(settings: import("./web-access.js").WebAccessSettings): Promise<import("./web-access.js").WebAccessStatus>;
   bootstrap(): Promise<BootstrapPayload>;
   rendererReady(): void;

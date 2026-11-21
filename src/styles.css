@@ -929,6 +929,39 @@ button:not(:disabled) {
   cursor: pointer;
   color: var(--text-muted, #777773);
 }
+a.web-citation {
+  display: inline-block;
+  margin-inline-start: 3px;
+  font-size: 0.78em;
+  font-weight: 550;
+  text-decoration: none;
+  vertical-align: 0.22em;
+}
+.web-search-settings {
+  display: grid;
+  gap: 14px;
+  max-width: 620px;
+  padding: 18px;
+}
+.web-search-settings label {
+  display: grid;
+  gap: 5px;
+}
+.web-search-settings input,
+.web-search-settings select {
+  min-width: 0;
+  width: 100%;
+}
+.web-search-settings > button {
+  justify-self: start;
+}
+.web-search-keys label {
+  margin-block: 9px;
+}
+.web-search-keys label > span {
+  display: flex;
+  gap: 8px;
+}
 .tool-card-preview pre,
 .tool-card-body pre {
   margin: 0;

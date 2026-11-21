@@ -20,6 +20,8 @@ import { installImageContextMenu } from "./image-context-menu.js";
 import { installEditorContextMenu } from "./editor-context-menu.js";
 import { translateUi, type InterfaceLanguage } from "../shared/interface-language.js";
 import type { WebAccessSettings } from "../shared/web-access.js";
+import type { SaveWebSearchSettings } from "../shared/web-search.js";
+import { createWebSearchSettings } from "./web-search-settings.js";
 
 protocol.registerSchemesAsPrivileged([{ scheme: "pi-generated", privileges: { standard: true, secure: true, supportFetchAPI: true, stream: true, corsEnabled: true } }]);
 
@@ -146,6 +148,15 @@ function registerIpc(): void {
   });
   ipcMain.handle("desktop:get-web-access-settings", async () => (await ensureWebAccess()).status());
   ipcMain.handle("desktop:save-web-access-settings", async (_event, settings: WebAccessSettings) => (await ensureWebAccess()).configure(settings));
+  const webSearch = createWebSearchSettings(projectRoot, store.agentDir);
+  ipcMain.handle("desktop:get-web-search-settings", (event) => {
+    if (event.sender !== mainWindow?.webContents) throw new Error("Web search settings are available in Pi Desktop");
+    return webSearch.get();
+  });
+  ipcMain.handle("desktop:save-web-search-settings", (event, settings: SaveWebSearchSettings) => {
+    if (event.sender !== mainWindow?.webContents) throw new Error("Web search settings are available in Pi Desktop");
+    return webSearch.save(settings);
+  });
   ipcMain.handle("desktop:bootstrap", () => {
     const state = store.snapshot();
     return {
