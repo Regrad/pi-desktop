@@ -7,7 +7,8 @@ import { BrowserAutomation, type BrowserLocator } from "./browser-automation.js"
 import { BrowserSiteTools, webMcpBootstrap } from "./browser-site-tools.js";
 import type { BrowserState, BrowserUiCommand, BrowserTab, BrowserDownload } from "../shared/browser.js";
 
-type Tab = { record: BrowserTab; view: WebContentsView; queue: Promise<unknown>; initialized: Promise<void>; started: boolean; sleeping: boolean; epoch: number; fileNode?: number; requests: Set<string>; activity: number; automation?: BrowserAutomation; siteTools?: BrowserSiteTools; logs: { level: string; message: string; source?: string; line?: number; timestamp: number }[] };
+type Tab = { record: BrowserTab; view?: WebContentsView; queue: Promise<unknown>; initialized: Promise<void>; started: boolean; epoch: number; fileNode?: number; requests: Set<string>; activity: number; automation?: BrowserAutomation; siteTools?: BrowserSiteTools; logs: { level: string; message: string; source?: string; line?: number; timestamp: number }[] };
+type LiveTab = Tab & { view: WebContentsView };
 function inputOptions(params: Record<string, unknown>): { button: "left" | "right" | "middle"; modifiers: number; clickCount: number } {
   const button = params.button ?? "left", modifiers = params.modifiers ?? 0, clickCount = params.clickCount ?? 1;
   if (!["left", "right", "middle"].includes(String(button)) || !Number.isInteger(modifiers) || Number(modifiers) < 0 || Number(modifiers) > 15 || !Number.isInteger(clickCount) || Number(clickCount) < 1 || Number(clickCount) > 3) throw new Error("Неверная кнопка или модификаторы ввода.");
@@ -57,8 +58,9 @@ export class BrowserManager {
   // chats the user actually opens.
   private dataDir: string;
   private restoredChats = new Set<string>();
-  private savedActive = new Map<string, string>();
+  private activeTabs = new Map<string, string>();
   private writeTimers = new Map<string, NodeJS.Timeout>();
+  private disposing = false;
 
   constructor(dataDir: string, getWindow: () => BrowserWindow | null, changed: (state: BrowserState) => void) {
     this.getWindow = getWindow; this.changed = changed; this.dataDir = dataDir;
@@ -68,7 +70,7 @@ export class BrowserManager {
     this.browserSession.setPermissionCheckHandler(() => false);
     // Cookies stay shared; downloaded files belong to the initiating chat.
     this.browserSession.on("will-download", (event, item, contents) => {
-      const tab = [...this.tabs.values()].find(tab => tab.view.webContents === contents);
+      const tab = [...this.tabs.values()].find(tab => tab.view?.webContents === contents);
       if (!tab) { event.preventDefault(); return; }
       const filename = path.basename(item.getFilename()).replace(/[<>:"/\\|?*\x00-\x1f]/g, "_").slice(0, 150).replace(/[. ]+$/, "");
       const ownedDownloads = path.join(chatDirectory(dataDir, tab.record.conversationId), "downloads");
@@ -101,19 +103,18 @@ export class BrowserManager {
     const win = this.getWindow();
     if (!win || win.isDestroyed()) return;
     for (const tab of this.tabs.values()) {
-      // Restored tabs hold no renderer until they are shown or touched, so
-      // there is nothing to place yet.
-      if (tab.sleeping) continue;
+      const view = tab.view;
+      if (!view) continue;
       const displayed = this.visible && this.viewportReady && tab.record.id === this.activeTabId && tab.record.conversationId === this.conversationId;
-      if (!win.contentView.children.includes(tab.view)) win.contentView.addChildView(tab.view);
+      if (!win.contentView.children.includes(view)) win.contentView.addChildView(view);
       // Keep hidden tabs rendered outside the window's clipped content area.
       // setVisible(false) discards a never-shown view's capture surface.
       const size = this.pageSize(tab), scale = displayed ? this.presentationScale(tab) : 1;
       const width = Math.round(size.width * scale), height = Math.round(size.height * scale);
-      tab.view.setBounds(displayed ? { ...this.bounds, width, height } : { x: -width - 1, y: -height - 1, width, height });
+      view.setBounds(displayed ? { ...this.bounds, width, height } : { x: -width - 1, y: -height - 1, width, height });
       if (displayed || tab.record.viewport) void this.applyViewport(tab).catch(() => undefined);
-      void tab.view.webContents.debugger.sendCommand("Emulation.setFocusEmulationEnabled", { enabled: !this.visible || tab.record.id !== this.activeTabId }).catch(() => undefined);
-      tab.view.setVisible(true);
+      void view.webContents.debugger.sendCommand("Emulation.setFocusEmulationEnabled", { enabled: !this.visible || tab.record.id !== this.activeTabId }).catch(() => undefined);
+      view.setVisible(true);
     }
   }
   private tab(id: unknown, owner?: string): Tab {
@@ -126,25 +127,34 @@ export class BrowserManager {
   private ensureRestored(owner?: string): void {
     if (!owner || this.restoredChats.has(owner)) return;
     this.restoredChats.add(owner);
-    let saved: { activeUrl?: unknown; tabs?: unknown };
-    try { saved = JSON.parse(readFileSync(this.tabsFile(owner), "utf8")) as { activeUrl?: unknown; tabs?: unknown }; }
+    let saved: { activeUrl?: unknown; activeIndex?: unknown; tabs?: unknown } | null;
+    try { saved = JSON.parse(readFileSync(this.tabsFile(owner), "utf8")); }
     catch { return; }
-    const entries = Array.isArray(saved.tabs) ? saved.tabs : [];
+    if (!Array.isArray(saved?.tabs)) return;
     const created: Tab[] = [];
-    for (const entry of entries.slice(0, Math.max(0, 20 - this.tabs.size))) {
+    let active: Tab | undefined;
+    for (const [index, entry] of saved.tabs.entries()) {
       const item = entry as { url?: unknown; title?: unknown };
       let url: string;
-      try { url = browserUrl(item.url); } catch { continue; }
-      created.push(this.createTab(owner, url, { title: typeof item.title === "string" && item.title.trim() ? item.title.trim().slice(0, 200) : "Восстановленная вкладка" }));
+      try { url = browserUrl(item?.url); } catch { continue; }
+      const title = typeof item.title === "string" && item.title.trim() ? item.title.trim().slice(0, 200) : "Восстановленная вкладка";
+      const tab = this.createTab(owner, url, title);
+      if (saved.activeIndex === index) active = tab;
+      created.push(tab);
     }
     if (!created.length) return;
-    const active = typeof saved.activeUrl === "string" ? created.find(tab => tab.record.url === saved.activeUrl) : undefined;
-    this.savedActive.set(owner, (active || created[0]).record.id);
-    if (this.conversationId === owner) this.activeTabId = this.savedActive.get(owner);
-    this.layout(); this.publish();
+    active ??= created.find(tab => tab.record.url === saved.activeUrl) ?? created[0];
+    this.activeTabs.set(owner, active.record.id);
+    if (this.conversationId === owner) this.activeTabId = active.record.id;
+  }
+  private selectTab(tab: Tab): void {
+    const { conversationId, id } = tab.record;
+    this.activeTabs.set(conversationId, id);
+    if (this.conversationId === conversationId) this.activeTabId = id;
+    this.persist(conversationId);
   }
   private persist(owner?: string): void {
-    if (!owner || !this.restoredChats.has(owner)) return;
+    if (this.disposing || !owner || !this.restoredChats.has(owner)) return;
     const pending = this.writeTimers.get(owner);
     if (pending) clearTimeout(pending);
     const timer = setTimeout(() => { this.writeTimers.delete(owner); this.writeTabs(owner); }, 800);
@@ -154,11 +164,11 @@ export class BrowserManager {
   private writeTabs(owner: string): void {
     const own = [...this.tabs.values()].filter(tab => tab.record.conversationId === owner);
     const tabs = own.map(tab => ({ url: tab.record.url, title: tab.record.title }));
-    const activeIndex = own.findIndex(tab => tab.record.id === this.activeTabId);
+    const activeIndex = own.findIndex(tab => tab.record.id === this.activeTabs.get(owner));
     try {
       mkdirSync(chatDirectory(this.dataDir, owner), { recursive: true });
       writeFileSync(this.tabsFile(owner), JSON.stringify({ version: 1, tabs,
-        activeUrl: activeIndex >= 0 ? tabs[activeIndex].url : undefined }), "utf8");
+        ...(activeIndex >= 0 ? { activeIndex, activeUrl: tabs[activeIndex].url } : {}) }), "utf8");
     } catch { /* A full or locked disk must not break browsing. */ }
   }
   private flushWrites(): void {
@@ -170,25 +180,40 @@ export class BrowserManager {
     }
   }
   private open(owner: string, url: string): Tab {
-    const tab = this.createTab(owner, url);
-    this.startTab(tab);
+    this.assertViewCapacity();
+    const tab = this.createTab(owner, url, "Новая вкладка");
+    if (this.conversationId === owner || !this.activeTabs.has(owner)) this.selectTab(tab);
+    else this.persist(owner);
+    this.wake(tab);
     return tab;
   }
-  /** A restored tab is created without a renderer and loads only when it is used. */
-  private createTab(owner: string, url: string, restored?: { title: string }): Tab {
-    if (this.tabs.size >= 20) throw new Error("Закройте лишние вкладки (максимум 20).");
+  private assertViewCapacity(): void {
+    if ([...this.tabs.values()].filter(tab => tab.view).length >= 20)
+      throw new Error("Закройте лишние вкладки (максимум 20).");
+  }
+  private createTab(owner: string, url: string, title: string): Tab {
+    const tab: Tab = { record: { id: randomUUID(), conversationId: owner, title, url, loading: false, sleeping: true },
+      queue: Promise.resolve(), initialized: Promise.resolve(), started: false, epoch: 0, requests: new Set(), activity: Date.now(), logs: [] };
+    this.tabs.set(tab.record.id, tab);
+    return tab;
+  }
+  private wake(tab: Tab): LiveTab {
+    if (tab.view) return tab as LiveTab;
+    this.assertViewCapacity();
+    const { url, conversationId: owner } = tab.record;
     const view = new WebContentsView({ webPreferences: { session: this.browserSession, sandbox: true,
       nodeIntegration: false, contextIsolation: true, webSecurity: true, enableBlinkFeatures: "WebMCP" } });
     view.setVisible(false);
-    const tab: Tab = { record: { id: randomUUID(), conversationId: owner, title: restored?.title || "Новая вкладка", url,
-      loading: !restored, sleeping: restored ? true : undefined },
-      view, queue: Promise.resolve(), initialized: Promise.resolve(), started: false, sleeping: Boolean(restored), epoch: 0, requests: new Set(), activity: Date.now(), logs: [] };
-    this.tabs.set(tab.record.id, tab);
-    if (owner === this.conversationId) this.activeTabId = tab.record.id;
+    const live = Object.assign(tab, { view });
+    tab.record.sleeping = undefined;
+    tab.record.loading = true;
+    tab.record.error = undefined;
     const wc = view.webContents;
     const refresh = () => {
-      if (wc.isDestroyed()) return;
-      tab.record.title = wc.getTitle() || "Новая вкладка"; tab.record.url = wc.getURL() || url;
+      if (wc.isDestroyed() || !this.tabs.has(tab.record.id) || !tab.started) return;
+      const currentUrl = wc.getURL();
+      if (!currentUrl || currentUrl === "about:blank") return;
+      tab.record.title = wc.getTitle() || "Новая вкладка"; tab.record.url = currentUrl;
       tab.record.loading = wc.isLoading();
       tab.record.canGoBack = wc.navigationHistory.canGoBack(); tab.record.canGoForward = wc.navigationHistory.canGoForward();
       this.persist(tab.record.conversationId);
@@ -221,11 +246,10 @@ export class BrowserManager {
       else if (method === "Page.javascriptDialogClosed") { tab.record.dialog = undefined; this.publish(); }
       else if (method === "Page.fileChooserOpened") { tab.fileNode = params.backendNodeId; tab.record.fileChooser = { multiple: params.mode === "selectMultiple" }; this.publish(); }
     });
-    this.persist(owner);
-    this.layout(); this.publish();
-    return tab;
+    this.startTab(live, url);
+    return live;
   }
-  private startTab(tab: Tab): void {
+  private startTab(tab: LiveTab, url: string): void {
     const wc = tab.view.webContents;
     wc.debugger.attach("1.3");
     void wc.debugger.sendCommand("Network.enable").catch(error => { tab.record.error = String(error); this.publish(); });
@@ -234,24 +258,38 @@ export class BrowserManager {
       .then(() => wc.debugger.sendCommand("Page.enable"))
       .then(() => wc.debugger.sendCommand("Page.setInterceptFileChooserDialog", { enabled: true }))
       .then(() => wc.debugger.sendCommand("Page.addScriptToEvaluateOnNewDocument", { source: webMcpBootstrap }))
-      .then(() => { tab.started = true; void wc.loadURL(tab.record.url).catch(error => { tab.record.error = String(error); this.publish(); }); this.layout(); })
+      .then(() => {
+        if (!this.tabs.has(tab.record.id) || wc.isDestroyed()) return;
+        tab.started = true;
+        void wc.loadURL(url).catch(error => {
+          if (error?.code === "ERR_ABORTED" || !this.tabs.has(tab.record.id)) return;
+          tab.record.error = String(error);
+          tab.record.loading = false;
+          this.publish();
+        });
+        this.layout();
+      })
       .catch(error => { tab.record.error = String(error); this.publish(); throw error; });
     void tab.initialized.catch(() => undefined);
     this.layout(); this.publish();
-  }
-  /** Wakes one restored tab: only now does it get a renderer and a page load. */
-  private wake(tab: Tab): void {
-    if (!tab.sleeping) return;
-    tab.sleeping = false; tab.record.sleeping = undefined; tab.record.loading = true;
-    this.startTab(tab);
   }
   private close(tab: Tab): void {
     tab.automation?.disconnect();
     tab.siteTools?.cancel();
     this.tabs.delete(tab.record.id);
-    this.getWindow()?.contentView.removeChildView(tab.view);
-    if (!tab.view.webContents.isDestroyed()) tab.view.webContents.close();
-    if (this.activeTabId === tab.record.id) this.activeTabId = [...this.tabs.values()].find(item => item.record.conversationId === this.conversationId)?.record.id;
+    if (tab.view) {
+      this.getWindow()?.contentView.removeChildView(tab.view);
+      if (!tab.view.webContents.isDestroyed()) tab.view.webContents.close();
+    }
+    const owner = tab.record.conversationId;
+    if (this.activeTabs.get(owner) === tab.record.id) {
+      const next = [...this.tabs.values()].find(item => item.record.conversationId === owner);
+      if (next) this.selectTab(next);
+      else {
+        this.activeTabs.delete(owner);
+        if (this.conversationId === owner) this.activeTabId = undefined;
+      }
+    }
     this.persist(tab.record.conversationId);
     this.layout(); this.publish();
   }
@@ -260,11 +298,7 @@ export class BrowserManager {
     if (command.action === "select-chat") {
       if (this.conversationId !== command.conversationId) this.viewportReady = false;
       this.conversationId = command.conversationId;
-      const remembered = command.conversationId ? this.savedActive.get(command.conversationId) : undefined;
-      this.activeTabId = (remembered && this.tabs.has(remembered) ? remembered : undefined)
-        || [...this.tabs.values()].find(tab => tab.record.conversationId === this.conversationId)?.record.id;
-      if (command.conversationId) this.savedActive.delete(command.conversationId);
-      this.layout();
+      this.activeTabId = command.conversationId ? this.activeTabs.get(command.conversationId) : undefined;
     } else if (command.action === "show" || command.action === "hide") this.visible = command.action === "show";
     else if (command.action === "bounds") {
       const b = command.bounds, win = this.getWindow();
@@ -281,10 +315,10 @@ export class BrowserManager {
       const item = command.downloadId ? this.downloads.get(command.downloadId) : undefined;
       if (!item || item.conversationId !== this.conversationId || item.state !== "completed") throw new Error("Загрузка не завершена или принадлежит другому чату.");
       shell.showItemInFolder(item.path);
-    } else {
-      const tab = this.tab(command.tabId);
-      this.wake(tab);
-      if (command.action === "select") this.activeTabId = tab.record.id;
+    } else if (command.action === "close") this.close(this.tab(command.tabId));
+    else {
+      const tab = this.wake(this.tab(command.tabId));
+      if (command.action === "select") this.selectTab(tab);
       else if (command.action === "choose-files") {
         const win = this.getWindow(); if (!win) throw new Error("Окно приложения закрыто.");
         const epoch = tab.epoch;
@@ -300,12 +334,16 @@ export class BrowserManager {
         this.cancelTab(tab); tab.record.viewport = undefined; await this.applyViewport(tab);
       } else if (command.action === "stop-loading") {
         tab.view.webContents.stop();
-      } else if (command.action === "close") this.close(tab);
-      else if (command.action === "navigate") { const url = browserUrl(command.url); this.cancelTab(tab); tab.record.error = undefined; void tab.view.webContents.loadURL(url).catch(error => { tab.record.error = error.message; this.publish(); }); }
+      } else if (command.action === "navigate") { const url = browserUrl(command.url); await tab.initialized; this.cancelTab(tab); tab.record.error = undefined; void tab.view.webContents.loadURL(url).catch(error => { if (error?.code !== "ERR_ABORTED") { tab.record.error = error.message; this.publish(); } }); }
       else if (command.action === "reload") { this.cancelTab(tab); tab.view.webContents.reload(); }
       else if (command.action === "back" && tab.view.webContents.navigationHistory.canGoBack()) { this.cancelTab(tab); tab.view.webContents.navigationHistory.goBack(); }
       else if (command.action === "forward" && tab.view.webContents.navigationHistory.canGoForward()) { this.cancelTab(tab); tab.view.webContents.navigationHistory.goForward(); }
       else if (!["back", "forward"].includes(command.action)) throw new Error("Неизвестное действие браузера.");
+    }
+    const active = this.activeTabId ? this.tabs.get(this.activeTabId) : undefined;
+    if (this.visible && active && !active.view) {
+      try { this.wake(active); }
+      catch (error) { active.record.error = String(error); }
     }
     this.layout(); this.publish(); return this.state();
   }
@@ -315,12 +353,18 @@ export class BrowserManager {
     if (action === "list") return { tabs: [...this.tabs.values()].filter(tab => tab.record.conversationId === owner).map(tab => this.metadata(tab)) };
     if (action === "open") return { tab: this.metadata(this.open(owner, browserUrl(params.url))) };
     if (action === "downloads") return { downloads: [...this.downloads.values()].filter(item => item.conversationId === owner).map(item => ({ ...item })) };
-    const tab = this.tab(params.tabId, owner);
-    this.wake(tab);
+    const target = this.tab(params.tabId, owner);
+    if (action === "close" && !target.view) { this.close(target); return { closed: true }; }
+    if (action === "hide" && !target.view) {
+      if (this.conversationId === owner) { this.visible = false; this.layout(); this.publish(); }
+      return { tab: this.metadata(target), visible: false };
+    }
+    const tab = this.wake(target);
     const epoch = tab.epoch;
     if (action === "show" || action === "hide" || action === "select" || action === "handoff") {
       if (action === "handoff") this.cancelTab(tab, true);
-      if (this.conversationId === owner) { this.visible = action !== "hide"; this.activeTabId = tab.record.id; this.layout(); this.publish(); }
+      this.selectTab(tab);
+      if (this.conversationId === owner) { this.visible = action !== "hide"; this.layout(); this.publish(); }
       return { tab: this.metadata(tab), visible: this.visible && this.conversationId === owner };
     }
     const check = () => {
@@ -340,7 +384,7 @@ export class BrowserManager {
         const timeout = params.timeoutMs ?? 10000;
         if (!Number.isInteger(timeout) || Number(timeout) < 1 || Number(timeout) > 30000) throw new Error("Таймаут: 1–30000 мс.");
         if (tab.siteTools.describe(params.toolId)?.kind === "form" && this.conversationId === owner) {
-          this.visible = true; this.activeTabId = tab.record.id; this.layout(); this.publish();
+          this.visible = true; this.selectTab(tab); this.layout(); this.publish();
         }
         const result = await tab.siteTools.call(params.toolId, params.arguments ?? {}, Number(timeout));
         check(); return { tab: this.metadata(tab), result, untrusted: true };
@@ -534,7 +578,7 @@ export class BrowserManager {
     return Math.min(1, this.bounds.width / size.width, this.bounds.height / size.height);
   }
   private async applyViewport(tab: Tab): Promise<void> {
-    if (!tab.started) return;
+    if (!tab.view || !tab.started) return;
     const displayed = this.visible && this.viewportReady && tab.record.id === this.activeTabId && tab.record.conversationId === this.conversationId;
     if (displayed && !tab.record.viewport) {
       await tab.view.webContents.debugger.sendCommand("Emulation.clearDeviceMetricsOverride"); return;
@@ -547,7 +591,7 @@ export class BrowserManager {
       scale: displayed ? this.presentationScale(tab) : 1,
     });
   }
-  private async wait(tab: Tab, params: Record<string, unknown>, check: () => void): Promise<Record<string, unknown>> {
+  private async wait(tab: LiveTab, params: Record<string, unknown>, check: () => void): Promise<Record<string, unknown>> {
     const timeout = params.timeoutMs ?? 10000, until = params.waitUntil ?? "load";
     if (!Number.isInteger(timeout) || Number(timeout) < 0 || Number(timeout) > 30000) throw new Error("Ожидание: 0–30000 мс.");
     if (!["load", "domcontentloaded", "networkidle"].includes(String(until))) throw new Error("Неизвестное условие ожидания.");
@@ -600,7 +644,7 @@ export class BrowserManager {
   }
   // A JS dialog can suspend an Input command or capture. Return control to the
   // caller so it can answer the dialog, rather than deadlocking the tab queue.
-  private async untilDialog<T>(tab: Tab, operation: Promise<T>, timeout = 10000): Promise<T | undefined> {
+  private async untilDialog<T>(tab: LiveTab, operation: Promise<T>, timeout = 10000): Promise<T | undefined> {
     if (tab.record.dialog) { void operation.catch(() => undefined); return undefined; }
     const debuggerApi = tab.view.webContents.debugger;
     let opened: (_event: unknown, method: string) => void;
@@ -613,16 +657,16 @@ export class BrowserManager {
     try { return await Promise.race([operation, interrupted]); }
     finally { clearTimeout(timer!); debuggerApi.off("message", opened!); }
   }
-  private zoom(tab: Tab, value: unknown): void {
+  private zoom(tab: LiveTab, value: unknown): void {
     if (typeof value !== "number" || !Number.isFinite(value) || value < 0.25 || value > 3) throw new Error("Масштаб должен быть от 0.25 до 3.");
     tab.view.webContents.setZoomFactor(value); tab.record.zoom = value; this.publish();
   }
-  private async answerDialog(tab: Tab, accept: unknown, promptText: unknown): Promise<void> {
+  private async answerDialog(tab: LiveTab, accept: unknown, promptText: unknown): Promise<void> {
     if (!tab.record.dialog || typeof accept !== "boolean" || (promptText !== undefined && (typeof promptText !== "string" || promptText.length > 10000))) throw new Error("Нужен открытый диалог и accept=true/false.");
     await tab.view.webContents.debugger.sendCommand("Page.handleJavaScriptDialog", { accept, ...(typeof promptText === "string" ? { promptText } : {}) });
     tab.record.dialog = undefined; this.publish();
   }
-  private async upload(tab: Tab, files: unknown): Promise<void> {
+  private async upload(tab: LiveTab, files: unknown): Promise<void> {
     if (!tab.fileNode || !Array.isArray(files) || files.length > 20 || files.some(file => typeof file !== "string" || !path.isAbsolute(file) || !statSync(file).isFile())) throw new Error("Сначала откройте выбор файла на странице; нужны абсолютные пути к файлам (до 20).");
     if (!tab.record.fileChooser?.multiple && files.length > 1) throw new Error("Это поле принимает только один файл.");
     await tab.view.webContents.debugger.sendCommand("DOM.setFileInputFiles", { files, backendNodeId: tab.fileNode });
@@ -636,10 +680,11 @@ export class BrowserManager {
     if (pending) clearTimeout(pending);
     this.writeTimers.delete(owner);
     this.restoredChats.delete(owner);
-    this.savedActive.delete(owner);
+    this.activeTabs.delete(owner);
     try { rmSync(this.tabsFile(owner), { force: true }); } catch { /* nothing was saved */ }
   }
   async dispose(): Promise<void> {
+    this.disposing = true;
     this.flushWrites();
     this.browserSession.flushStorageData();
     await this.browserSession.cookies.flushStore();

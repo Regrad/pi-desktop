@@ -336,12 +336,41 @@ test("tabs of a chat survive closing the app and wake only when they are used", 
     const restored = (await second.manager.request("chat", { action: "list" })).tabs;
     assert.deepEqual(restored.map(tab => tab.url), ["https://example.com/a", "https://example.com/b"]);
     assert.equal(restored.filter(tab => tab.sleeping).length, 2);
-    assert.deepEqual(second.views.map(view => view.webContents.url), [undefined, undefined]);
+    assert.equal(second.views.length, 0, "Restoring tab metadata does not create renderers");
     await second.manager.request("chat", { action: "state", tabId: restored[1].id, vision: false });
-    assert.equal(second.views[1].webContents.url, "https://example.com/b");
-    assert.equal(second.views[0].webContents.url, undefined);
+    assert.deepEqual(second.views.map(view => view.webContents.url), ["https://example.com/b"]);
     const shown = await second.manager.ui({ action: "select-chat", conversationId: "chat" });
     assert.equal(shown.activeTabId, restored[0].id);
+    await second.manager.ui({ action: "show" });
+    await second.manager.ui({ action: "bounds", bounds: { x: 0, y: 0, width: 500, height: 500 } });
+    await second.manager.request("chat", { action: "wait", tabId: restored[0].id, waitUntil: "domcontentloaded" });
+    assert.equal(second.views[1].webContents.url, "https://example.com/a", "Showing the panel loads the active tab without a second click");
+    await second.manager.dispose();
+  } finally { rmSync(directory, { recursive: true, force: true }); }
+});
+
+test("restored tabs survive the live tab limit, switching chats and slow shutdown", async () => {
+  const directory = mkdtempSync(path.join(os.tmpdir(), "pi-browser-shutdown-"));
+  const file = owner => path.join(directory, "chats", owner, "browser-tabs.json");
+  const tabs = Array.from({ length: 3 }, (_, index) => ({ url: `https://example.com/restored/${index}` }));
+  try {
+    mkdirSync(path.dirname(file("restored")), { recursive: true });
+    writeFileSync(file("restored"), JSON.stringify({ tabs, activeIndex: 1 }));
+    const { manager, views } = fixture(directory);
+    for (let index = 0; index < 19; index++) await manager.request("busy", { action: "open", url: `https://example.com/busy/${index}` });
+    const selected = await manager.ui({ action: "select-chat", conversationId: "restored" });
+    const restored = (await manager.request("restored", { action: "list" })).tabs;
+    assert.equal(views.length, 19);
+    assert.equal(restored.length, 3);
+    assert.equal(selected.activeTabId, restored[1].id);
+    await manager.ui({ action: "select", tabId: restored[2].id });
+    await manager.ui({ action: "select-chat", conversationId: "busy" });
+    assert.equal((await manager.ui({ action: "select-chat", conversationId: "restored" })).activeTabId, restored[2].id);
+    await manager.dispose();
+    await new Promise(resolve => setTimeout(resolve, 900));
+    const saved = JSON.parse(readFileSync(file("restored"), "utf8"));
+    assert.deepEqual(saved.tabs.map(tab => tab.url), tabs.map(tab => tab.url));
+    assert.equal(saved.activeIndex, 2);
   } finally { rmSync(directory, { recursive: true, force: true }); }
 });
 
