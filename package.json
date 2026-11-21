@@ -22,6 +22,7 @@
     "@earendil-works/pi-ai": "file:vendor/pi/packages/ai",
     "@earendil-works/pi-coding-agent": "file:vendor/pi/packages/coding-agent",
     "@earendil-works/pi-tui": "file:vendor/pi/packages/tui",
+    "@langchain/core": "1.5.0",
     "@langchain/textsplitters": "1.0.2",
     "@modelcontextprotocol/sdk": "1.27.1",
     "@zavora-ai/computer-use-mcp": "7.1.0",
