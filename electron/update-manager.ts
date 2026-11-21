@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { spawn } from "node:child_process";
 import { existsSync } from "node:fs";
-import { mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readdir, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
@@ -34,6 +34,17 @@ const LOCAL_COMPONENTS: Array<Omit<UpdateComponentStatus, "updateAvailable">> = 
   { id: "pi-llama-generation-speed", name: "Generation Speed", description: "Показывает текущую скорость генерации llama.cpp.", updateable: false, source: "local" },
   { id: "pi-loop-police", name: "Loop Police", description: "Локальная настроенная защита от реальных циклов.", updateable: false, source: "local" },
 ];
+
+// Read the virtual ASAR entries directly into their staging files.
+async function copyArchivedPeer(source: string, destination: string): Promise<void> {
+  await mkdir(destination);
+  for (const entry of await readdir(source, { withFileTypes: true })) {
+    const from = path.join(source, entry.name);
+    const to = path.join(destination, entry.name);
+    if (entry.isDirectory()) await copyArchivedPeer(from, to);
+    else await writeFile(to, await readFile(from), { flag: "wx" });
+  }
+}
 
 export class UpdateManager {
   private cachedStatus?: UpdateStatus;
@@ -174,13 +185,18 @@ export class UpdateManager {
 
   private async linkBundledPeers(stage: string, candidate: string): Promise<void> {
     const manifest = JSON.parse(await readFile(path.join(candidate, "package.json"), "utf8")) as { peerDependencies?: Record<string, string> };
+    const archived = path.basename(this.appRoot) === "app.asar";
     for (const name of Object.keys(manifest.peerDependencies ?? {})) {
       if (!/^(?:@[a-z0-9_-]+\/)?[a-z0-9._-]+$/i.test(name)) throw new Error("Недопустимое имя зависимости дополнения");
       const bundled = path.join(this.appRoot, "node_modules", name);
       const link = path.join(stage, "node_modules", name);
       if (!existsSync(path.join(bundled, "package.json")) || existsSync(link)) continue;
+      // Pi's extension loader supplies these peers from its current SDK.
+      // Windows junctions require a physical directory.
+      if (archived && /^(?:@earendil-works\/pi-(?:coding-agent|agent-core|ai|tui)|typebox)$/.test(name)) continue;
       await mkdir(path.dirname(link), { recursive: true });
-      await symlink(bundled, link, process.platform === "win32" ? "junction" : "dir");
+      if (archived) await copyArchivedPeer(bundled, link);
+      else await symlink(bundled, link, process.platform === "win32" ? "junction" : "dir");
     }
   }
 

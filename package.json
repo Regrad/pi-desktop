@@ -47,6 +47,7 @@
     "undici": "8.12.3"
   },
   "devDependencies": {
+    "@electron/asar": "3.4.1",
     "@types/node": "24.10.1",
     "@types/react": "19.2.14",
     "@types/react-dom": "19.2.3",
@@ -63,7 +64,12 @@
   "build": {
     "appId": "local.pi.desktop",
     "productName": "Pi Desktop",
-    "asar": false,
+    "asar": {
+      "smartUnpack": false
+    },
+    "asarUnpack": [
+      "**/*.{node,exe,dll,jar,ps1,cmd,bat}"
+    ],
     "electronLanguages": [
       "ru",
       "en-US"
@@ -76,6 +82,9 @@
       "dist-electron/**/*",
       "resources/**/*",
       "node_modules/**/*",
+      "!**/*.map",
+      "!node_modules/lucide-react/**",
+      "!node_modules/three/**",
       "package.json"
     ],
     "extraFiles": [
@@ -100,6 +109,16 @@
         "to": "Invoke-PiDesktop.ps1"
       }
     ],
+    "extraResources": [
+      {
+        "from": "vendor/pi/LICENSE",
+        "to": "pi-engine/LICENSE"
+      },
+      {
+        "from": "vendor/pi.upstream.json",
+        "to": "pi-engine/upstream.json"
+      }
+    ],
     "win": {
       "target": [
         {
@@ -109,17 +128,7 @@
           ]
         }
       ]
-    },
-    "extraResources": [
-      {
-        "from": "vendor/pi/LICENSE",
-        "to": "app/resources/pi-engine/LICENSE"
-      },
-      {
-        "from": "vendor/pi.upstream.json",
-        "to": "app/resources/pi-engine/upstream.json"
-      }
-    ]
+    }
   },
   "workspaces": [
     "vendor/pi/packages/telemetry",

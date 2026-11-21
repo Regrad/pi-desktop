@@ -3,6 +3,7 @@
 import { randomUUID } from "node:crypto";
 import { existsSync } from "node:fs";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 import {
   createAgentSessionServices, createAgentSessionFromServices, createAgentSessionRuntime,
   SessionManager, SettingsManager, resolveCliModel, initTheme,
@@ -23,6 +24,17 @@ process.title = 'Pi Desktop Engine';
 process.env.PI_CODING_AGENT = 'true';
 process.env.AI_AGENT = 'pi';
 process.env.PI_SKIP_VERSION_CHECK = '1';
+
+// recheck starts its helper with spawn, which needs a physical path.
+const archive = fileURLToPath(new URL("../../", import.meta.url));
+if (process.platform === "win32" && path.basename(archive) === "app.asar") {
+  const unpacked = path.join(path.dirname(archive), "app.asar.unpacked", "node_modules");
+  for (const [key, relative] of [["RECHECK_BIN", "recheck-windows-x64/recheck.exe"], ["RECHECK_JAR", "recheck-jar/recheck.jar"]]) {
+    const physical = path.join(unpacked, relative);
+    if (!process.env[key] && existsSync(physical)) process.env[key] = physical;
+  }
+}
+
 takeOverStdout();
 configureHttpDispatcher();
 try {

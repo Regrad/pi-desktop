@@ -4,7 +4,7 @@ import { readFile, stat } from "node:fs/promises";
 import path from "node:path";
 import { promisify } from "node:util";
 import { FAST_RELEASE_MANIFEST } from "./release-update-core.mjs";
-import { installedApplicationDirectory } from "./portable-layout.mjs";
+import { installedApplicationPath, portableBinaryDirectory, readApplicationFile } from "./portable-layout.mjs";
 
 const exec = promisify(execFile);
 const prefix = "resources/pi-comfyui/";
@@ -40,7 +40,8 @@ export async function planComfyAddonUpdate(projectRoot, portableRoot, snapshot, 
   try { previous = JSON.parse(await readFile(path.join(portableRoot, FAST_RELEASE_MANIFEST), "utf8")); }
   catch (error) { if (error.code !== "ENOENT" && !(error instanceof SyntaxError)) throw error; }
   const active = path.join(portableRoot, activeComfyAddon);
-  const appDirectory = await installedApplicationDirectory(portableRoot);
+  const installed = await installedApplicationPath(portableBinaryDirectory(portableRoot));
+  const app = installed.endsWith("app.asar") || await exists(installed) ? installed : await installedApplicationPath(portableRoot);
   const changes = [], preserved = [];
   // Keep deliberate removal and first-install seeding under the existing policy.
   if (!(await exists(active))) return { changes, preserved };
@@ -54,13 +55,14 @@ export async function planComfyAddonUpdate(projectRoot, portableRoot, snapshot, 
     const currentHash = await fileHash(target);
     const desiredHash = snapshot.files[filename];
     if (currentHash === desiredHash) continue;
+    const template = await readApplicationFile(app, filename);
     if (currentHash === undefined) {
       // A missing formerly installed file is a user deletion, not an upgrade.
-      if (previous?.files?.[filename] || await exists(path.join(appDirectory, filename))) preserved.push(relative);
+      if (previous?.files?.[filename] || template) preserved.push(relative);
       else changes.push({ relative, source: path.join(projectRoot, filename), previousHash: undefined, sourceHash: desiredHash });
       continue;
     }
-    const templateHash = await fileHash(path.join(appDirectory, filename));
+    const templateHash = template && hash(template);
     let stock = currentHash === previous?.files?.[filename] || currentHash === templateHash;
     if (!stock && (!previous || previous.format === 1)) {
       stock = (await (options.historicalHashes ?? historicalHashes)(projectRoot, filename)).has(currentHash);

@@ -4,6 +4,7 @@ import { cp, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
+import { createPackage } from "@electron/asar";
 import { createFastReleaseManifest, FAST_RELEASE_MANIFEST } from "./release-update-core.mjs";
 import { createReleaseTransaction } from "./release-transaction.mjs";
 import { activeComfyAddon, planComfyAddonUpdate, stageComfyAddonUpdate, assertComfyAddonState } from "./release-addon.mjs";
@@ -59,6 +60,22 @@ test("full pack applies the same addon upgrade to copied data before activation"
   await tx.commit(phase => assertComfyAddonState(plan, next, phase === "after"));
   assert.equal(await readFile(path.join(next, activeComfyAddon, "stock.ts"), "utf8"), "new stock");
   assert.equal(await readFile(path.join(portable, activeComfyAddon, "stock.ts"), "utf8"), "old stock", "old installation is intact until the full swap");
+});
+
+test("addon updates can identify stock and edited files from the packed application", async t => {
+  const { root, portable } = await fixture(t);
+  const archive = path.join(portable, "app", "resources", "app.asar");
+  await mkdir(path.dirname(archive), { recursive: true });
+  await createPackage(path.join(portable, "resources", "app"), archive);
+  const active = path.join(portable, activeComfyAddon);
+  await writeFile(path.join(active, "custom.ts"), "my local edit");
+  await rm(path.join(active, "deleted.ts"));
+  const snapshot = await createFastReleaseManifest(root);
+  // Force stock detection against the archive rather than a previous manifest.
+  await writeFile(path.join(portable, FAST_RELEASE_MANIFEST), JSON.stringify({ ...snapshot, files: {} }));
+  const plan = await planComfyAddonUpdate(root, portable, snapshot);
+  assert.deepEqual(plan.changes.map(change => change.relative).sort(), ["added.ts", "stock.ts"]);
+  assert.deepEqual(plan.preserved.sort(), ["custom.ts", "deleted.ts"]);
 });
 
 test("legacy false-current manifests repair only exact historical stock files", async t => {

@@ -15,10 +15,17 @@ import {
 import { createReleaseTransaction } from "./release-transaction.mjs";
 import { planComfyAddonUpdate, stageComfyAddonUpdate, assertComfyAddonState } from "./release-addon.mjs";
 import { piLensBridgeFiles } from "../resources/pi-lens/grammar-cache-patch.mjs";
-import { portableBinaryDirectory, portableApplicationDirectory } from "./portable-layout.mjs";
+import { installedApplicationPath, isApplicationArchive, portableBinaryDirectory, portableApplicationDirectory } from "./portable-layout.mjs";
 
 const projectRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
-const targetDir = path.join(projectRoot, "release", "Pi Desktop");
+const releaseRoot = path.join(projectRoot, "release");
+const targetDir = process.env.PI_PORTABLE_TARGET
+  ? path.resolve(projectRoot, process.env.PI_PORTABLE_TARGET)
+  : path.join(releaseRoot, "Pi Desktop");
+const relativeTarget = path.relative(releaseRoot, targetDir);
+if (!relativeTarget || relativeTarget === ".." || relativeTarget.startsWith(".." + path.sep) || path.isAbsolute(relativeTarget)) {
+  throw new Error("Portable target must be a subdirectory of the release folder.");
+}
 const binaryDir = portableBinaryDirectory(targetDir);
 const appDir = portableApplicationDirectory(targetDir);
 const manifestPath = path.join(targetDir, FAST_RELEASE_MANIFEST);
@@ -222,7 +229,8 @@ try {
   const snapshot = await createFastReleaseManifest(projectRoot);
   const currentFiles = snapshot.files;
   const currentFingerprint = snapshot.packagingFingerprint;
-  if (!manifest || !(await exists(appDir))) {
+  const installedApp = await installedApplicationPath(binaryDir);
+  if (!manifest || !(await exists(installedApp))) {
     await runFullBuild("The release is not initialized for modular updates.");
     process.exitCode = 0;
   } else if (manifest.packagingFingerprint !== currentFingerprint) {
@@ -235,6 +243,12 @@ try {
     if (addonPlan.preserved.length) process.stdout.write(`Preserving local addon edits/deletions: ${addonPlan.preserved.join(", ")}\n`);
     if (changes.fullRequired) {
       await runFullBuild("package-lock.json changed.");
+      process.exitCode = 0;
+    } else if (isApplicationArchive(installedApp) &&
+      (changes.renderer || changes.electron || changes.bridge || changes.clientAgent || changes.packageMetadata || changes.resources.length)) {
+      // Electron indexes archive contents at build time. Replace the archive
+      // and its unpacked files together when any of their inputs change.
+      await runFullBuild("Application archive inputs changed.");
       process.exitCode = 0;
     } else if (changedPaths.length === 0 && addonPlan.changes.length === 0 && manifest.format === FAST_RELEASE_FORMAT) {
       process.stdout.write("Release is already current.\n");
