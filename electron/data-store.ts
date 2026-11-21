@@ -92,19 +92,17 @@ const THINKING_LEVELS: ThinkingLevel[] = [
   "max",
 ];
 const MANAGED_PACKAGE_NAMES = [
-  "pi-web-access",
   "pi-tool-repair",
   "pi-mcp-adapter",
   "pi-lens",
 ] as const;
-const RETIRED_PACKAGE_NAMES = ["pi-token-speed", "pi-loop-police", "pi-llama-cpp-stats"];
+const RETIRED_PACKAGE_NAMES = ["pi-token-speed", "pi-loop-police", "pi-llama-cpp-stats", "pi-web-access"];
 const MANAGED_RESOURCE_NAMES = [
-  "pi-single-slot-guard",
   "pi-llama-generation-speed",
   "pi-loop-police",
 ];
 // Remove old managed activation packages without touching custom add-ons.
-const RETIRED_RESOURCE_NAMES = ["pi-lens-all-tools"];
+const RETIRED_RESOURCE_NAMES = ["pi-lens-all-tools", "pi-single-slot-guard"];
 
 const BUILTIN_MODULES: Array<{
   id: BuiltinModuleId;
@@ -113,12 +111,6 @@ const BUILTIN_MODULES: Array<{
   kind: "package" | "resource";
   dependsOn?: BuiltinModuleId;
 }> = [
-  {
-    id: "pi-web-access",
-    name: "Web Access",
-    description: "Поиск и чтение веб-страниц.",
-    kind: "package",
-  },
   {
     id: "pi-tool-repair",
     name: "Tool Repair",
@@ -136,13 +128,6 @@ const BUILTIN_MODULES: Array<{
     name: "Pi Lens",
     description: "LSP, линтеры и анализ кода.",
     kind: "package",
-  },
-  {
-    id: "pi-single-slot-guard",
-    name: "Single Slot Guard",
-    description: "Защищает KV-кэш сервера с одним слотом.",
-    kind: "resource",
-    dependsOn: "pi-web-access",
   },
   {
     id: "pi-llama-generation-speed",
@@ -331,9 +316,6 @@ export class DataStore {
       await writeFile(appendSystemPath, DEFAULT_APPEND_SYSTEM_PROMPT, "utf8");
     }
     await this.migrateManagedMcpServers(path.join(this.agentDir, "mcp-adapter.json"));
-    await this.migrateLegacyWebSearchProvider(
-      path.join(this.agentDir, "web-search.json"),
-    );
     await this.migrateLegacySystemPrompt(appendSystemPath);
 
     const settingsPath = path.join(this.agentDir, "settings.json");
@@ -404,7 +386,7 @@ export class DataStore {
     settings.packages = [...managedPackages, ...customPackages];
     if (Array.isArray(settings.extensions)) {
       settings.extensions = settings.extensions.filter(item => typeof item !== "string" ||
-        !isManagedPackage(item.replace(/[\\/]index\.js$/i, ""), [], RETIRED_RESOURCE_NAMES));
+        !isManagedPackage(item.replace(/[\\/]index\.(?:[cm]?js|[cm]?ts)$/i, ""), RETIRED_PACKAGE_NAMES, RETIRED_RESOURCE_NAMES));
     }
     await atomicStateWrite(settingsPath, `${JSON.stringify(settings, null, 2)}\n`);
   }
@@ -577,28 +559,6 @@ export class DataStore {
     await writeFile(
       promptPath,
       "Before modifying any files, ask the user for permission.\n",
-      "utf8",
-    );
-  }
-
-  private async migrateLegacyWebSearchProvider(
-    configPath: string,
-  ): Promise<void> {
-    const config = JSON.parse(await readFile(configPath, "utf8")) as Record<
-      string,
-      unknown
-    >;
-    const keys = Object.keys(config).sort();
-    const isManagedExaDefault =
-      keys.length === 2 &&
-      keys[0] === "provider" &&
-      keys[1] === "workflow" &&
-      config.provider === "exa" &&
-      config.workflow === "none";
-    if (!isManagedExaDefault) return;
-    await writeFile(
-      configPath,
-      `${JSON.stringify({ provider: "duckduckgo", workflow: "none" }, null, 2)}\n`,
       "utf8",
     );
   }
@@ -1844,7 +1804,7 @@ function isManagedPackage(
     return true;
   return packageNames.some(
     (name) =>
-      normalized === `npm:${name}` ||
+      normalized === `npm:${name}` || normalized.startsWith(`npm:${name}@`) ||
       normalized.endsWith(`\\node_modules\\${name}`),
   );
 }

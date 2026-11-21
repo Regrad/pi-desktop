@@ -102,12 +102,11 @@ test("Pi 1.5.2 embedded SDK engine loads add-ons, preserves user input, runs too
     "resources/pi-comfyui/index.ts", "resources/tool-routing/index.js",
     "electron/goal-extension.ts", "electron/plan-extension.ts", "electron/notebook-extension.ts",
     "electron/browser-extension.ts",
-    "resources/pi-single-slot-guard/index.js",
     "resources/pi-llama-generation-speed/index.js", "resources/pi-loop-police/index.js",
   ].map(file => path.join(root, process.env.PI_TEST_APP_ROOT && file.startsWith("electron/")
     ? `dist-electron/${file.replace(/\.ts$/, ".js")}` : file));
   extensions.push(probePath, lensProbePath);
-  const packages = ["pi-web-access", "pi-tool-repair", "pi-mcp-adapter", "pi-lens"].map(name =>
+  const packages = ["pi-tool-repair", "pi-mcp-adapter", "pi-lens"].map(name =>
     name === "pi-mcp-adapter" && process.env.PI_TEST_MCP_PACKAGE
       ? path.resolve(process.env.PI_TEST_MCP_PACKAGE) : path.join(root, "node_modules", name));
   await writeFile(path.join(agent, "settings.json"), JSON.stringify({ packages, extensions,
@@ -177,9 +176,11 @@ test("Pi 1.5.2 embedded SDK engine loads add-ons, preserves user input, runs too
   assert.equal(unusedConnections, 0, "Starting Pi must not connect an unused HTTP server");
   assert.equal(existsSync(coldMarker), false, "Starting Pi must not spawn an unused stdio server");
   const inventory = await request("get_extension_state");
-  for (const name of ["get_goal", "update_checklist", "update_notebook", "browser", "mcp", "media_generate_image", "media_generate_music", "media_texture_3d"]) {
+  for (const name of ["get_goal", "update_checklist", "update_notebook", "browser", "mcp", "media_generate_image", "media_generate_music", "media_texture_3d", "web_search"]) {
     assert.ok(inventory.tools.some(tool => tool.name === name), `Missing ${name}: ${stderr}`);
   }
+  assert.ok(inventory.activeTools.includes("web_search"));
+  assert.ok(!inventory.tools.some(tool => ["fetch_content", "source_check", "get_search_content"].includes(tool.name)));
   assert.doesNotMatch(stderr, /Failed to load extension|TypeError|SyntaxError/);
   const modelsFile = path.join(agent, "models.json");
   const initialModels = JSON.parse(await readFile(modelsFile, "utf8"));
@@ -200,7 +201,7 @@ test("Pi 1.5.2 embedded SDK engine loads add-ons, preserves user input, runs too
   await writeFile(modelsFile, JSON.stringify(initialModels), "utf8");
   await request("desktop_refresh_models", { provider: "upgrade-test", modelId: "upgrade" });
   const retired=new Set(["tool_search","pi_lens_activate_tools","mcpScript","codemode"]);
-  const core=new Set(["read","bash","powershell","edit","write","grep","find","ls","get_goal","create_goal","update_goal","desktop_goal_report","update_checklist","update_notebook"]);
+  const core=new Set(["read","bash","powershell","edit","write","grep","find","ls","get_goal","create_goal","update_goal","desktop_goal_report","update_checklist","update_notebook","web_search"]);
   for(const tool of inventory.tools) if(!core.has(tool.name)&&!retired.has(tool.name)) assert.equal(tool.active,false,`Eager addon tool ${tool.name}`);
   const initialHistory = await request("get_messages");
   const firstPromptEventIndex = events.length;

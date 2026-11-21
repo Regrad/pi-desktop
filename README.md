@@ -24,6 +24,7 @@ The interface starts in English. Switch to Russian in **Settings → General →
 - Keep a working checklist in any chat, or use **Plan** mode to review an implementation plan before work begins.
 - Set a goal that the model can continue across turns. Pause it when needed or stop the current response.
 - Save useful details in a chat notebook and reuse instructions through skills.
+- Search the web and read relevant excerpts with clickable sources. Ask about a specific URL to open it directly.
 - Open a browser tab that both you and the model can use.
 - Attach images, paste them from the clipboard, open a larger preview, or copy them with a right click.
 
@@ -65,7 +66,9 @@ Archiving a chat keeps its files. Deleting it moves its own folder to the Window
 
 ## Extensions
 
-Manage built-in modules and custom extensions in **Settings → Modules**. The app includes web tools, MCP support, code analysis, and llama.cpp progress reporting. The embedded engine is updated with Pi Desktop. Supported third-party add-ons can be updated separately.
+Manage modules and custom extensions in **Settings → Modules**. The app includes MCP support, code analysis, and llama.cpp progress reporting. The embedded engine and web search are updated with Pi Desktop. Supported third-party add-ons can be updated separately.
+
+Web search uses public Exa search by default. To choose a provider, edit `data/agent/web-search.json`. Set `provider` to `searxng`, `tavily`, `serper`, or `keenable`. SearXNG uses `searxngBaseUrl` and requires JSON output on the instance. Tavily and Serper read `TAVILY_API_KEY` and `SERPER_API_KEY`. Pages are read directly. A configured Firecrawl service can recover pages that direct reading cannot extract.
 
 The app includes a computer-use MCP server. Configure additional MCP servers in `data/agent/mcp-adapter.json` for the adapter, or `data/agent/mcp.json` for the engine's native MCP support.
 

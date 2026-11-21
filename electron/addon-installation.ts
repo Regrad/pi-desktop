@@ -3,7 +3,6 @@ import path from "node:path";
 
 // Versions tested with this build's embedded Pi and compatibility patches.
 export const testedAddons = {
-  "pi-web-access": "0.48.0",
   "pi-tool-repair": "0.3.10",
   "pi-mcp-adapter": "7.0.1",
   "pi-lens": "4.5.1",

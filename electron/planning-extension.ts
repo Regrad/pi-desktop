@@ -44,12 +44,6 @@ export default function planningExtension(pi: ExtensionAPI, read = readDesktopPl
   });
   pi.on("tool_call", event => {
     if (!locked()) return;
-    if (event.toolName === "web_search") {
-      (event.input as Record<string, unknown>).workflow = "none";
-      (event.input as Record<string, unknown>).includeContent = false;
-    }
-    if (event.toolName === "fetch_content" && !(event.input as Record<string, unknown>).mode)
-      (event.input as Record<string, unknown>).mode = "raw";
     if (!planningToolAllowed(event.toolName, event.input)) return {
       block: true,
       reason: "Plan mode: action blocked. Read-only investigation and updates to the planning document are allowed; implementation requires user approval.",

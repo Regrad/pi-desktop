@@ -21,8 +21,10 @@ test("retired activation addon is removed from catalog, packages and explicit ex
   await mkdir(store.agentDir, { recursive: true });
   const settingsPath = path.join(store.agentDir, "settings.json");
   await writeFile(settingsPath, JSON.stringify({
-    packages: ["F:/Pi Desktop/resources/app.asar/resources/pi-lens-all-tools", "F:/Pi Desktop/local-packages/pi-lens-all-tools", "C:/my-addon"],
-    extensions: ["resources/pi-lens-all-tools/index.js", "F:/Pi Desktop/resources/app.asar/resources/pi-lens-all-tools/index.js", "C:/my-addon/index.js"],
+    packages: ["F:/Pi Desktop/resources/app.asar/resources/pi-lens-all-tools", "F:/Pi Desktop/local-packages/pi-lens-all-tools",
+      "npm:pi-web-access@0.48.0", "F:/Pi Desktop/data/runtime/node_modules/pi-web-access", "F:/Pi Desktop/local-packages/pi-single-slot-guard", "C:/my-addon"],
+    extensions: ["resources/pi-lens-all-tools/index.js", "F:/Pi Desktop/resources/app.asar/resources/pi-lens-all-tools/index.js",
+      "F:/Pi Desktop/data/runtime/node_modules/pi-web-access/index.ts", "resources/pi-single-slot-guard/index.js", "C:/my-addon/index.js"],
   }));
   await store.refreshManagedPackageConfiguration();
   const saved = JSON.parse(await readFile(settingsPath, "utf8"));
@@ -30,5 +32,7 @@ test("retired activation addon is removed from catalog, packages and explicit ex
   assert.deepEqual(saved.extensions, ["C:/my-addon/index.js"]);
   const catalog=constants.slice(constants.indexOf('const BUILTIN_MODULES'));
   assert.ok(!catalog.includes('pi-lens-all-tools'));
+  assert.ok(!catalog.includes('pi-web-access'));
+  assert.ok(!catalog.includes('pi-single-slot-guard'));
   assert.ok(!existsSync(new URL('../resources/pi-lens-all-tools/index.js',import.meta.url)));
 });

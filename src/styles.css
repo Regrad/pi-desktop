@@ -903,6 +903,32 @@ button:not(:disabled) {
   flex-direction: column;
   gap: 8px;
 }
+.web-search-sources {
+  margin: 0;
+  padding-inline-start: 24px;
+  display: grid;
+  gap: 12px;
+  overflow-wrap: anywhere;
+}
+.web-search-sources small {
+  display: block;
+  margin-top: 2px;
+  color: var(--text-muted, #777773);
+}
+.web-search-sources p {
+  margin: 4px 0 0;
+  white-space: pre-line;
+}
+.web-search-answer-sources {
+  margin: 0 0 10px;
+  font-size: 12px;
+}
+.web-search-answer-sources summary {
+  width: fit-content;
+  padding: 5px 0;
+  cursor: pointer;
+  color: var(--text-muted, #777773);
+}
 .tool-card-preview pre,
 .tool-card-body pre {
   margin: 0;

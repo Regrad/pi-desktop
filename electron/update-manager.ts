@@ -25,14 +25,12 @@ interface ComponentDefinition {
 }
 
 const COMPONENTS: ComponentDefinition[] = [
-  { id: "pi-web-access", packageName: "pi-web-access", name: "Web Access", description: "Поиск и чтение веб-страниц." },
   { id: "pi-tool-repair", packageName: "pi-tool-repair", name: "Tool Repair", description: "Исправление некорректных вызовов инструментов." },
   { id: "pi-mcp-adapter", packageName: "pi-mcp-adapter", name: "MCP Adapter", description: "Подключение MCP-серверов и их инструментов." },
   { id: "pi-lens", packageName: "pi-lens", name: "Pi Lens", description: "Динамический набор и отображение инструментов." },
 ];
 
 const LOCAL_COMPONENTS: Array<Omit<UpdateComponentStatus, "updateAvailable">> = [
-  { id: "pi-single-slot-guard", name: "Single Slot Guard", description: "Защищает KV-кэш при работе с одним слотом llama.cpp.", updateable: false, source: "local" },
   { id: "pi-llama-generation-speed", name: "Generation Speed", description: "Показывает текущую скорость генерации llama.cpp.", updateable: false, source: "local" },
   { id: "pi-loop-police", name: "Loop Police", description: "Локальная настроенная защита от реальных циклов.", updateable: false, source: "local" },
 ];

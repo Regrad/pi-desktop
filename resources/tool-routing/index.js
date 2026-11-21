@@ -3,7 +3,7 @@ export { guardExtensionHandler, assertPlanningModelAccess } from "./desktop-plan
 const directTools = new Set([
   "read", "bash", "powershell", "edit", "write", "grep", "find", "ls",
   "get_goal", "create_goal", "update_goal", "desktop_goal_report", "update_checklist", "update_plan", "update_notebook", "codemode",
-  "update_implementation_plan",
+  "update_implementation_plan", "web_search",
 ]);
 const retiredLoaders = new Set(["tool_search", "pi_lens_activate_tools", "mcpScript"]);
 const routed = Symbol("pi-desktop/routed-tool");
@@ -44,7 +44,6 @@ function toolNamespace(tool, source) {
     ["browser", "Browser", "Browser tabs, navigation, screenshots and page interaction."],
     ["comfy", "ComfyUI", "Local image, music, voice and 3D generation and editing."],
     ["pi-lens", "CodeAnalysis", "LSP, diagnostics, code navigation, linting and refactoring."],
-    ["pi-web-access", "Web", "Internet search and reading pages and documents."],
     ["mcp", "MCP", "MCP server discovery, configuration and tools, including computer control."],
     ["computer", "Computer", "Computer screenshots and interaction."],
   ];
@@ -77,7 +76,7 @@ export function declaredTools(names, inventory) {
   return names.filter(name => !retiredLoaders.has(name) && !["deferred", "codemode", "hidden"].includes(exposures.get(name)));
 }
 
-const policy = "Optional browser, web, ComfyUI, MCP, code-analysis and add-on tools are available through codemode, not missing. Find them with searchTools using English keywords, inspect describeTool/describeNamespace, then call tools.<name>(args). Discover only what this task needs. Core file, shell, goal, plan and notebook tools remain direct. Do not activate optional tool schemas: that can invalidate a local server's prompt cache. Nested calls retain validation, permission checks and cancellation. Read each tool's declared return type: structured results are already objects, not JSON strings. Browser/ComfyUI return fields directly; untyped add-ons use data/text; MCP retains its content envelope. Show image blocks with image(block), never print base64. Music and 3D output remains available in the desktop interface.";
+const policy = "Optional browser, ComfyUI, MCP, code-analysis and add-on tools are available through codemode. Find them with searchTools using English keywords, inspect describeTool/describeNamespace, then call tools.<name>(args). Discover only what this task needs. Core file, shell, web search, goal, plan and notebook tools remain direct. Do not activate optional tool schemas: that can invalidate a local server's prompt cache. Nested calls retain validation, permission checks and cancellation. Read each tool's declared return type: structured results are already objects, not JSON strings. Browser/ComfyUI return fields directly; untyped add-ons use data/text; MCP retains its content envelope. Show image blocks with image(block), never print base64. Music and 3D output remains available in the desktop interface.";
 
 export default function desktopToolRouting(pi) {
   const pendingMedia = new Map();

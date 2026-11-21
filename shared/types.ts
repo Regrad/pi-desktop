@@ -155,7 +155,6 @@ export interface ModelServerDiscoveryResult {
 
 export type UpdateComponentId =
   | "pi-core"
-  | "pi-web-access"
   | "pi-tool-repair"
   | "pi-mcp-adapter"
   | "pi-lens";
@@ -187,11 +186,9 @@ export interface UpdateResult {
 }
 
 export type BuiltinModuleId =
-  | "pi-web-access"
   | "pi-tool-repair"
   | "pi-mcp-adapter"
   | "pi-lens"
-  | "pi-single-slot-guard"
   | "pi-llama-generation-speed"
   | "pi-loop-police";
 

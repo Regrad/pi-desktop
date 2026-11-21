@@ -78,6 +78,7 @@ import { NotebookSettings } from "./NotebookSettings";
 import { BrowserPanel } from "./BrowserPanel";
 import { ComfySettingsPanel } from "./ComfySettings";
 import { WebAccessSettingsPanel } from "./WebAccessSettings";
+import { collectWebSearchSources, WebSearchSources, webSearchDetails } from "./WebSearchSources";
 import { collectComfyMedia, collectAnswerMedia, answerCanPublishMedia } from "./comfy-images";
 import { ComfyMedia } from "./ComfyMedia";
 import { MediaLink, markdownMediaUrl } from "./MediaLink";
@@ -1168,6 +1169,9 @@ function toolPresentation(
 } {
   const normalized = name.toLocaleLowerCase().replace(/^media_/, "comfyui_");
   const path = args.path ?? args.file ?? args.filePath;
+  if (normalized === "web_search") {
+    return { icon: "search", label: args.url ? t("Чтение страницы") : t("Веб-поиск"), summary: compactLine(args.url ?? args.query ?? "") };
+  }
   if (normalized.startsWith("comfyui_") || normalized === "desktop_show_image" || normalized === "desktop_get_image_path") {
     const labels: Record<string, string> = {
       desktop_show_image: t("Показать изображение"),
@@ -1333,6 +1337,8 @@ function ToolResultContent({
 }) {
   const object =
     result && typeof result === "object" ? (result as JsonObject) : undefined;
+  const webSources = name === "web_search" ? webSearchDetails(result)?.sources : undefined;
+  if (Array.isArray(webSources) && webSources.length) return <WebSearchSources sources={webSources} />;
   const diff =
     typeof object?.details?.diff === "string" ? object.details.diff : undefined;
   if (diff) return <ToolDiffPreview diff={diff} expanded={expanded} />;
@@ -1355,6 +1361,7 @@ function ToolCard({ tool, hideMedia = false }: { tool: ToolActivity; hideMedia?:
   const args = parsedToolArguments(tool.args);
   const presentation = toolPresentation(tool.name, args);
   const timing = shellTiming(tool.name, args, tool.result, tool.startedAt, tool.preparing);
+  const webPhase = tool.name === "web_search" ? webSearchDetails(tool.result)?.phase : undefined;
   const [expanded, setExpanded] = useState(false);
   const output = tool.result === undefined ? "" : toolOutputText(tool.result);
   const codeFragments = toolCodeFragments(
@@ -1398,7 +1405,7 @@ function ToolCard({ tool, hideMedia = false }: { tool: ToolActivity; hideMedia?:
           {tool.preparing
             ? t("Формируется…")
             : tool.running
-              ? t("Выполняется…")
+              ? webPhase === "searching" ? t("Поиск в интернете…") : webPhase === "reading" ? t("Чтение источников…") : t("Выполняется…")
               : tool.error
                 ? t("Ошибка")
                 : t("Готово")}
@@ -5797,6 +5804,7 @@ export default function App() {
       stopReason: answerMessage?.stopReason,
     });
     const published = collectAnswerMedia(imageTools, answerComplete, answerMessage ? messageText(answerMessage) : "");
+    const webSources = collectWebSearchSources(imageTools);
     const { calls, errors, thinking } = foldStats(display.process);
     const label =
       thinking && calls
@@ -5829,6 +5837,10 @@ export default function App() {
           </div>
         )}
         {renderTranscriptItem(display.answer, undefined, published.parts)}
+        {webSources.length > 0 && <details className="web-search-answer-sources">
+          <summary>{t("Источники")} · {webSources.length}</summary>
+          <WebSearchSources sources={webSources} />
+        </details>}
       </div>
     );
   };

@@ -127,7 +127,7 @@ export default function remoteExecution(pi: ExtensionAPI) {
       if (result.unsupported || result.data && result.data.length > 1400000) throw new Error(`Инструкции ${file} превышают 1 МБ`);
       if (result.exists) instructions.push(`Project instructions from CLIENT ${file}:\n${new TextDecoder("utf-8", { fatal: true }).decode(Buffer.from(result.data, "base64"))}`);
     }
-    return { systemPrompt: `${event.systemPrompt}\n\nEXECUTION TARGET: CLIENT Windows PC. Client working directory: ${cwd}. Client project directories: ${process.env.PI_DESKTOP_REMOTE_ROOTS ?? cwd}. All filesystem/command/computer tools target that client. Commands use PowerShell. The Pi host runs inference and ComfyUI only; its cwd is a session storage location, not the target workspace. Do not execute or search on the host. Arbitrary host addons are disabled unless explicitly remote-safe.\n${instructions.join("\n\n")}` };
+    return { systemPrompt: `${event.systemPrompt}\n\nEXECUTION TARGET: CLIENT Windows PC. Client working directory: ${cwd}. Client project directories: ${process.env.PI_DESKTOP_REMOTE_ROOTS ?? cwd}. All filesystem/command/computer tools target that client. Commands use PowerShell. The Pi host runs inference, ComfyUI and built-in public web research. Its cwd is session storage. Use web_search for public websites and client tools for project files. Arbitrary host addons are disabled unless explicitly remote-safe.\n${instructions.join("\n\n")}` };
   });
   const grantPaths = (value: unknown) => {
     if (typeof value === "string") {

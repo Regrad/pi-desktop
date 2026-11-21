@@ -13,6 +13,7 @@ import {
 } from "./bindings.mjs";
 import { runRpcMode } from "./protocol.js";
 import { preserveLensAdvisories } from "../pi-rpc-bridge/service-context.js";
+import { createWebSearch } from "../pi-web-search/index.mjs";
 
 function desktopContextExtension(pi) {
   pi.on("context_with_system", event => preserveLensAdvisories(event.messages, pi));
@@ -50,7 +51,7 @@ try {
       resourceLoaderOptions: {
         additionalExtensionPaths: options.extensions || [],
         disabledBuiltinExtensions: ["mcp"],
-        extensionFactories: [...builtInExtensions, desktopContextExtension],
+        extensionFactories: [...builtInExtensions, desktopContextExtension, createWebSearch(agentDir)],
         noExtensions: options.isolated, noSkills: options.isolated,
         noPromptTemplates: options.isolated, noThemes: options.isolated,
         noContextFiles: options.isolated,

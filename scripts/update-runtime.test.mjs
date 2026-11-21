@@ -10,7 +10,7 @@ import { fileURLToPath } from "node:url";
 import { UpdateManager } from "../dist-electron/electron/update-manager.js";
 import { addonPointer, resolveAddonPackage, testedAddons } from "../dist-electron/electron/addon-installation.js";
 
-const name = "pi-web-access";
+const name = "pi-tool-repair";
 async function fixture(t) {
   const root = await mkdtemp(path.join(tmpdir(), "pi-addon-update-"));
   t.after(async () => {
@@ -26,7 +26,7 @@ async function fixture(t) {
     await writeFile(path.join(directory, "package.json"), JSON.stringify({ version }));
   };
   const resolve = pkg => resolveAddonPackage(runtime, bundled(pkg), pkg);
-  await putPackage(bundled(name), "0.37.0");
+  await putPackage(bundled(name), "0.3.0");
   await putPackage(bundled("pi-lens"), testedAddons["pi-lens"]);
   const store = { runtimePackagesDir: runtime, getEffectivePackagePath: resolve, async refreshManagedPackageConfiguration() {} };
   const manager = new UpdateManager(store, app, process.execPath);
@@ -49,9 +49,9 @@ test("upstream releases requiring compatibility work are visible but cannot inst
   assert.equal(lens.requiresCompatibleBuild, true);
   assert.equal(lens.updateAvailable, false);
   assert.equal(lens.updateable, false);
-  const web = status.components.find(item => item.id === name);
-  assert.equal(web.latestVersion, testedAddons[name]);
-  assert.equal(web.updateable, true);
+  const repair = status.components.find(item => item.id === name);
+  assert.equal(repair.latestVersion, testedAddons[name]);
+  assert.equal(repair.updateable, true);
   assert.deepEqual((await manager.updateComponent("pi-lens")).updated, []);
 });
 

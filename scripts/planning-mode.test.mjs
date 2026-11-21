@@ -142,7 +142,7 @@ test("model can finish an approved document through the existing tool without re
 
 test("normal tools remain discoverable; direct and nested execution obey the live permission", () => {
   const f = fixture(), guard = f.handlers.get("tool_call");
-  for (const name of ["read", "grep", "find", "ls", "codemode", "web_search", "get_search_content"]) assert.equal(planningToolAllowed(name), true);
+  for (const name of ["read", "grep", "find", "ls", "codemode", "web_search"]) assert.equal(planningToolAllowed(name), true);
   for (const name of ["write", "edit", "bash", "powershell", "apply_patch", "manage_skills", "create_goal", "update_goal", "comfyui_run_workflow", "unknown_readonly_hint"]) {
     assert.equal(planningToolAllowed(name), false);
     for (const parentToolCallId of [undefined, "outer/1"]) assert.equal(guard({ toolName: name, input: {}, parentToolCallId }).block, true);
@@ -167,14 +167,14 @@ test("normal tools remain discoverable; direct and nested execution obey the liv
   assert.equal(f.handlers.get("user_bash")(), undefined);
 });
 
-test("web research uses existing tools with read-only operations", () => {
+test("plan mode allows built-in web searches and direct reads with the same parameters", () => {
   const guard = fixture().handlers.get("tool_call");
-  const search = { toolName: "web_search", input: { workflow: "summary-review", includeContent: true } };
-  assert.equal(guard(search), undefined);
-  assert.equal(search.input.workflow, "none"); assert.equal(search.input.includeContent, false);
-  const fetch = { toolName: "fetch_content", input: { url: "https://example.org" } };
-  assert.equal(guard(fetch), undefined); assert.equal(fetch.input.mode, "raw");
-  for (const input of [{ mode: "answer" }, { mode: "raw", forceClone: true }, { mode: "raw", frames: 3 }]) assert.equal(guard({ toolName: "fetch_content", input }).block, true);
+  for (const input of [{ query: "tool documentation" }, { url: "https://example.org" }]) {
+    const original = { ...input };
+    assert.equal(guard({ toolName: "web_search", input }), undefined);
+    assert.deepEqual(input, original);
+  }
+  assert.equal(guard({ toolName: "fetch_content", input: { url: "https://example.org" } }).block, true);
 });
 
 test("system prompt and tool contracts do not depend on the current mode", () => {
@@ -343,7 +343,7 @@ test("actual Pi changes permissions in the SAME process without changing HTTP sy
   const lens = path.join(folder, "node_modules/pi-lens"); mkdirSync(lens, { recursive: true });
   writeFileSync(path.join(lens, "package.json"), JSON.stringify({ name: "pi-lens", version: "0.0.0", type: "module", pi: { extensions: ["./index.mjs"] } }));
   writeFileSync(path.join(lens, "index.mjs"), `import{writeFileSync}from"node:fs";export default function(pi){pi.on("agent_settled",()=>writeFileSync(${JSON.stringify(canary)},"mutated"));}`);
-  writeFileSync(path.join(agentDir, "settings.json"), JSON.stringify({ packages: [path.resolve("node_modules/pi-web-access"), lens] }));
+  writeFileSync(path.join(agentDir, "settings.json"), JSON.stringify({ packages: [lens] }));
   const overlay = path.join(folder, "sources.mjs");
   writeFileSync(overlay, `import{registerHooks}from"node:module";import{patchToolRouting,patchCodemodePlanning}from${JSON.stringify(new URL("../resources/tool-routing/patch.js", import.meta.url).href)};
 registerHooks({resolve(s,c,n){return n(s.endsWith("desktop-tool-routing.js")?${JSON.stringify(new URL("../resources/tool-routing/index.js", import.meta.url).href)}:s.endsWith("desktop-service-context.js")?${JSON.stringify(new URL("../resources/pi-rpc-bridge/service-context.js", import.meta.url).href)}:s,c)},load(u,c,n){const r=n(u,c);const p=u.endsWith("/core/extensions/loader.js")?patchToolRouting:u.endsWith("/extensions/codemode/execute.js")?patchCodemodePlanning:undefined;return p?{...r,source:p(typeof r.source==="string"?r.source:Buffer.from(r.source).toString("utf8"))}:r}});`);
@@ -384,7 +384,7 @@ registerHooks({resolve(s,c,n){return n(s.endsWith("desktop-tool-routing.js")?${J
   try {
     await rpc.start(); const pid = rpc.process.pid;
     const initial = await rpc.request("get_extension_state", {}, 15000);
-    for (const name of ["read", "grep", "find", "ls", "bash", "write", "edit", "codemode", "update_implementation_plan"]) assert.ok(initial.activeTools.includes(name), name);
+    for (const name of ["read", "grep", "find", "ls", "bash", "write", "edit", "codemode", "update_implementation_plan", "web_search"]) assert.ok(initial.activeTools.includes(name), name);
     await prompt("Baseline question."); assert.equal(existsSync(canary), true); unlinkSync(canary);
     state.conversations[0].planning = controlPlanningState("start", 0); save();
     const shell = await rpc.request("bash", { command: "echo bad > unsafe.txt", excludeFromContext: true }, 2000); assert.equal(shell.exitCode, 1);
