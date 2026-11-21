@@ -9,6 +9,7 @@ import { patchCodemodeDiscoveryDescription, patchCodemodePlanning } from "../too
 import { patchDesktopContinuation } from "./continuation-patch.js";
 import { patchShellTimeout } from "./shell-timeout-patch.js";
 import { patchShellEnvironment } from "./shell-env-patch.js";
+import { patchWindowsBash } from "./windows-bash-patch.js";
 import { patchRequestDiagnostics } from "./request-diagnostics-patch.js";
 import { patchContextRecovery, patchTransportRecovery } from "./recovery-patch.js";
 import { SUPPORTED_PI_VERSION } from "../pi-engine/version.js";
@@ -40,6 +41,8 @@ export async function applyContextCompatibility(coreRoot) {
   await patchFile(path.join(directory, "agent-session.js"), patchDesktopContinuation);
   await patchFile(path.join(directory, "tools", "bash.js"), patchShellTimeout);
   await patchFile(path.join(directory, "tools", "bash.js"), patchShellEnvironment);
+  await copyFile(path.join(bridgeRoot, "windows-bash.js"), path.join(directory, "tools", "desktop-windows-bash.js"));
+  await patchFile(path.join(directory, "tools", "bash.js"), patchWindowsBash);
   await patchFile(path.join(coreRoot, "dist", "extensions", "codemode", "tool.js"), patchCodemodeDiscoveryDescription);
   await patchFile(path.join(coreRoot, "dist", "extensions", "codemode", "execute.js"), patchCodemodePlanning);
 }

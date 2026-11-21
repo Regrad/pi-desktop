@@ -182,6 +182,7 @@ async function syncBridgeOutputs() {
     "dist/core/compaction/compaction.js",
     "dist/core/agent-session.js",
     "dist/core/tools/bash.js",
+    "dist/core/tools/desktop-windows-bash.js",
     "dist/extensions/codemode/tool.js",
     "dist/extensions/codemode/execute.js",
     "dist/core/extensions/loader.js",
