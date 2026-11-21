@@ -2,7 +2,7 @@
 
 A standalone AI app for Windows, built on [Pi](https://github.com/earendil-works/pi). Work on code and files, organize chats by project, and generate images, audio, and 3D models through ComfyUI. The Pi engine is built from source and integrated into the app.
 
-[Download for Windows x64](https://github.com/Regrad/pi-desktop/releases/download/v0.1.0/Pi-Desktop-0.1.0-win-x64.zip) · [Releases](https://github.com/Regrad/pi-desktop/releases)
+[Download for Windows x64](https://github.com/Regrad/pi-desktop/releases/latest) · [Releases](https://github.com/Regrad/pi-desktop/releases)
 
 ![Pi Desktop](docs/assets/pi-desktop.png)
 
@@ -68,7 +68,7 @@ Archiving a chat keeps its files. Deleting it moves its own folder to the Window
 
 Manage modules and custom extensions in **Settings → Modules**. The app includes MCP support, code analysis, and llama.cpp progress reporting. The embedded engine and web search are updated with Pi Desktop. Supported third-party add-ons can be updated separately.
 
-**Settings → Web search** lets you choose the search provider (Serper, SearXNG, Tavily, or Keenable), page extractor (Firecrawl, Serper, Tavily Extract, or Keenable), and passage reranker (Jina, Cohere, or off) separately. Without configured services it uses the public Keenable endpoints and keeps passages in page order. Citations link to the source registered by the search, and each result shows whether its page was read.
+**Settings → Web search** lets you choose the search provider (Serper, SearXNG, Tavily, or Keenable), page extractor (Firecrawl, Serper, Tavily Extract, or Keenable), and passage reranker (Jina, Cohere, or off) separately. Without configured services it uses the public Keenable endpoints and keeps passages in page order. Citations link to the pages used in the answer. The search summary groups read pages by site and lists search snippets separately.
 
 The same settings live in `data/agent/web-search.json` under `searchProvider`, `scraperProvider`, and `rerankerType`. API keys can come from their usual environment variables or be saved in the desktop settings. SearXNG needs JSON output enabled. A custom private service configured in the file needs its host and port in `allowedAddresses`. The built-in search follows [LibreChat's provider configuration](https://www.librechat.ai/docs/configuration/librechat_yaml/object_structure/web_search).
 
