@@ -75,6 +75,8 @@ import { ShellTimeout } from "./ShellTimeout";
 import { shellTiming } from "./shell-timeout";
 import { historyHasLaterMessages } from "../shared/session-history";
 import { applyMessagePatch } from "../shared/message-sync";
+import { chatMessageWindow, type ChatHistoryMark, type ChatHistoryPage, type ChatHistoryRequest } from "../shared/chat-history";
+import { ChatTimeline } from "./ChatTimeline";
 import { NotebookSettings } from "./NotebookSettings";
 import { BrowserPanel } from "./BrowserPanel";
 import { ComfySettingsPanel } from "./ComfySettings";
@@ -229,9 +231,14 @@ function chatDotClass(chat: ConversationRecord): string {
 }
 
 function messageKey(message: JsonObject, index: number): string {
+  if (typeof message.historyEntryId === "string") return `history:${message.historyEntryId}`;
   // Several tool results can share a timestamp. Position in this session is
   // part of the identity, not just a fallback for messages without a timestamp.
   return `message:${index}:${String(message.id ?? message.timestamp ?? message.role)}`;
+}
+
+function historyMessageIdentity(message: JsonObject): string {
+  return JSON.stringify([message.role, transcriptTimestamp(message.timestamp, 0), message.toolCallId ?? message.tool_call_id ?? ""]);
 }
 
 function transcriptTimestamp(value: unknown, fallback: number): number {
@@ -388,12 +395,18 @@ function VirtualFilm<T>({
   renderItem,
   resetKey,
   scrollRef,
+  jump,
+  startAtBottom = false,
+  onViewportItem,
 }: {
   items: T[];
   itemKey: (item: T, index: number) => string;
   renderItem: (item: T, index: number) => ReactNode;
   resetKey: string;
   scrollRef: RefObject<HTMLDivElement | null>;
+  jump?: { key: string };
+  startAtBottom?: boolean;
+  onViewportItem?: (item: T) => void;
 }) {
   const filmRef = useRef<HTMLDivElement>(null);
   const layoutRef = useRef<VirtualFilmLayout>({
@@ -405,9 +418,23 @@ function VirtualFilm<T>({
   });
   const resizeAnchorRef = useRef<VirtualFilmAnchor | null>(null);
   const measurementFrameRef = useRef(0);
-  const [calibrating, setCalibrating] = useState(true);
   const [layoutRevision, setLayoutRevision] = useState(0);
-  const [range, setRange] = useState({ start: 0, end: items.length });
+  const [range, setRange] = useState(() => ({ start: startAtBottom ? Math.max(0, items.length - 18) : 0, end: startAtBottom ? items.length : 18 }));
+  const lastJump = useRef<typeof jump>(undefined);
+
+  const readAnchor = (scroll: HTMLElement, film: HTMLElement, current: VirtualFilmLayout) => {
+    const viewport = Math.max(0, scroll.scrollTop - filmScrollOffset(film, scroll));
+    let low = 0;
+    let high = current.offsets.length;
+    while (low < high) {
+      const index = (low + high) >> 1;
+      if (current.offsets[index] + current.heights[index] <= viewport) low = index + 1;
+      else high = index;
+    }
+    const index = Math.min(low, current.keys.length - 1);
+    return { key: current.keys[index], index, offset: Math.max(0, viewport - current.offsets[index]),
+      stickToBottom: startAtBottom && scroll.scrollHeight - scroll.scrollTop - scroll.clientHeight <= 24 };
+  };
 
   useLayoutEffect(() => () => {
     cancelAnimationFrame(measurementFrameRef.current);
@@ -424,46 +451,17 @@ function VirtualFilm<T>({
     };
   }
 
-  useLayoutEffect(() => {
-    layoutRef.current = {
-      resetKey,
-      keys: [],
-      heights: [],
-      offsets: [],
-      totalHeight: 0,
-    };
-    resizeAnchorRef.current = null;
-    setCalibrating(true);
-    setRange({ start: 0, end: items.length });
-  }, [resetKey]);
-
-  useLayoutEffect(() => {
-    if (!calibrating) return;
-    const film = filmRef.current;
-    if (!film) return;
-    const rows = [
-      ...film.querySelectorAll<HTMLElement>("[data-virtual-film-row]"),
-    ];
-    const keys = items.map(itemKey);
-    const heights = rows.map((row) => row.getBoundingClientRect().height);
-    const offsets: number[] = [];
-    let totalHeight = 0;
-    heights.forEach((height) => {
-      offsets.push(totalHeight);
-      totalHeight += height;
-    });
-    layoutRef.current = { resetKey, keys, heights, offsets, totalHeight };
-    setCalibrating(false);
-    setLayoutRevision((value) => value + 1);
-  }, [calibrating, items, itemKey, resetKey]);
-
   const layout = layoutRef.current;
-  if (!calibrating && layout.resetKey === resetKey) {
+  {
     const nextKeys = items.map(itemKey);
     if (
       nextKeys.length !== layout.keys.length ||
       nextKeys.some((key, index) => key !== layout.keys[index])
     ) {
+      const scroll = scrollRef.current;
+      const film = filmRef.current;
+      if (layout.keys.length && scroll && film && !resizeAnchorRef.current)
+        resizeAnchorRef.current = readAnchor(scroll, film, layout);
       // Regrouping can replace an earlier row while the last key stays intact.
       // A positional cache would then assign another message's height to it.
       const heightsByKey = new Map(
@@ -481,7 +479,6 @@ function VirtualFilm<T>({
   }
 
   const updateRange = useCallback(() => {
-    if (calibrating) return;
     const scroll = scrollRef.current;
     const film = filmRef.current;
     if (!scroll || !film || items.length === 0) return;
@@ -494,6 +491,9 @@ function VirtualFilm<T>({
     const viewportBottom =
       scroll.scrollTop - filmTop + scroll.clientHeight + overscan;
     const current = layoutRef.current;
+    const view = readAnchor(scroll, film, current);
+    const item = items[view.index];
+    if (item) onViewportItem?.(item);
     let low = 0;
     let high = current.offsets.length;
     while (low < high) {
@@ -514,19 +514,30 @@ function VirtualFilm<T>({
     setRange((value) =>
       value.start === start && value.end === end ? value : { start, end },
     );
-  }, [calibrating, items.length, scrollRef]);
+  }, [items, onViewportItem, scrollRef, startAtBottom]);
 
   useLayoutEffect(() => {
-    if (calibrating) return;
-    const anchor = resizeAnchorRef.current;
-    if (!anchor) return;
+    const scroll = scrollRef.current;
+    if (scroll && startAtBottom) scroll.scrollTop = scroll.scrollHeight;
+  }, [resetKey]);
+
+  useLayoutEffect(() => {
     const scroll = scrollRef.current;
     const film = filmRef.current;
     if (!scroll || !film) return;
     const current = layoutRef.current;
-    if (anchor.stickToBottom) {
+    const newJump = jump && lastJump.current !== jump ? jump : undefined;
+    const target = newJump ? current.keys.indexOf(newJump.key) : -1;
+    const anchor = resizeAnchorRef.current;
+    if (newJump?.key === "end") {
+      lastJump.current = jump;
       scroll.scrollTop = scroll.scrollHeight;
-    } else {
+    } else if (target >= 0) {
+      lastJump.current = jump;
+      scroll.scrollTop = filmScrollOffset(film, scroll) + current.offsets[target];
+    } else if (anchor?.stickToBottom) {
+      scroll.scrollTop = scroll.scrollHeight;
+    } else if (anchor) {
       const index = current.keys.indexOf(anchor.key);
       if (index >= 0) {
         const offset = Math.min(
@@ -541,10 +552,9 @@ function VirtualFilm<T>({
     }
     resizeAnchorRef.current = null;
     updateRange();
-  }, [calibrating, layoutRevision, scrollRef, updateRange]);
+  }, [jump, layoutRevision, scrollRef, updateRange]);
 
   useLayoutEffect(() => {
-    if (calibrating) return;
     updateRange();
     const scroll = scrollRef.current;
     if (!scroll) return;
@@ -561,30 +571,9 @@ function VirtualFilm<T>({
         const film = filmRef.current;
         const current = layoutRef.current;
         if (film && current.keys.length > 0) {
-          const viewportOffset = Math.max(0, scroll.scrollTop - filmScrollOffset(film, scroll));
-          let low = 0;
-          let high = current.offsets.length;
-          while (low < high) {
-            const middle = (low + high) >> 1;
-            if (
-              current.offsets[middle] + current.heights[middle] <=
-              viewportOffset
-            )
-              low = middle + 1;
-            else high = middle;
-          }
-          const index = Math.min(low, current.keys.length - 1);
-          resizeAnchorRef.current = {
-            key: current.keys[index],
-            offset: Math.max(0, viewportOffset - current.offsets[index]),
-            stickToBottom:
-              scroll.scrollHeight - scroll.scrollTop - scroll.clientHeight <=
-              24,
-          };
+          resizeAnchorRef.current = readAnchor(scroll, film, current);
         }
-        setRange({ start: 0, end: items.length });
-        setCalibrating(true);
-        return;
+        setLayoutRevision(value => value + 1);
       }
       schedule();
     });
@@ -594,10 +583,9 @@ function VirtualFilm<T>({
       scroll.removeEventListener("scroll", schedule);
       observer.disconnect();
     };
-  }, [calibrating, layoutRevision, scrollRef, updateRange]);
+  }, [layoutRevision, scrollRef, updateRange]);
 
   useLayoutEffect(() => {
-    if (calibrating) return;
     const film = filmRef.current;
     if (!film) return;
     const measureRows = (rows: HTMLElement[]) => {
@@ -605,27 +593,7 @@ function VirtualFilm<T>({
       const scroll = scrollRef.current;
       const current = layoutRef.current;
       let anchor: VirtualFilmAnchor | null = null;
-      if (scroll && current.keys.length > 0) {
-        const viewportOffset = Math.max(0, scroll.scrollTop - filmScrollOffset(film, scroll));
-        let low = 0;
-        let high = current.offsets.length;
-        while (low < high) {
-          const middle = (low + high) >> 1;
-          if (
-            current.offsets[middle] + current.heights[middle] <=
-            viewportOffset
-          )
-            low = middle + 1;
-          else high = middle;
-        }
-        const index = Math.min(low, current.keys.length - 1);
-        anchor = {
-          key: current.keys[index],
-          offset: Math.max(0, viewportOffset - current.offsets[index]),
-          stickToBottom:
-            scroll.scrollHeight - scroll.scrollTop - scroll.clientHeight <= 24,
-        };
-      }
+      if (scroll && current.keys.length > 0) anchor = readAnchor(scroll, film, current);
       for (const row of rows) {
         const index = Number(row.dataset.virtualIndex);
         const nextHeight = row.getBoundingClientRect().height;
@@ -667,18 +635,6 @@ function VirtualFilm<T>({
     rows.forEach((row) => observer.observe(row));
     return () => observer.disconnect();
   });
-
-  if (calibrating) {
-    return (
-      <div className="virtual-film-calibration" ref={filmRef}>
-        {items.map((item, index) => (
-          <div data-virtual-film-row key={itemKey(item, index)}>
-            {renderItem(item, index)}
-          </div>
-        ))}
-      </div>
-    );
-  }
 
   const visible: ReactNode[] = [];
   const start = Math.min(range.start, Math.max(0, items.length - 1));
@@ -3672,6 +3628,15 @@ export default function App() {
   const [activeConversationId, setActiveConversationId] = useState<string>();
   const [snapshot, setSnapshot] = useState<ConversationSnapshot>();
   const [messages, setMessages] = useState<JsonObject[]>([]);
+  const messageOffsetRef = useRef(0);
+  const [historyPage, setHistoryPage] = useState<ChatHistoryPage>();
+  const [historyJump, setHistoryJump] = useState<{ key: string }>();
+  const [historyPosition, setHistoryPosition] = useState(0);
+  const [historyLoading, setHistoryLoading] = useState(false);
+  const historyLoadingRef = useRef(false);
+  const historyRequestRef = useRef(0);
+  const awaitingHistoryPreviewRef = useRef(false);
+  const readingHistory = Boolean(historyPage?.after);
   const [streamingMessage, setStreamingMessage] = useState<JsonObject | null>(
     null,
   );
@@ -4116,10 +4081,65 @@ export default function App() {
     glideFrameRef.current = requestAnimationFrame(stepFrame);
   }, [stopConversationGlide]);
 
+  const loadChatHistory = async (request?: ChatHistoryRequest, refresh = false) => {
+    const id = activeIdRef.current;
+    if (!id || historyLoadingRef.current && (refresh || request && request.direction !== "at")) return;
+    const seq = ++historyRequestRef.current;
+    historyLoadingRef.current = true;
+    setHistoryLoading(true);
+    try {
+      const page = await window.piDesktop.getChatHistory(id, request);
+      if (activeIdRef.current !== id || seq !== historyRequestRef.current) return;
+      if (refresh) {
+        setHistoryPage(current => {
+          if (current?.after) return current;
+          const join = current?.rows.findIndex(row => row.id === page.rows[0]?.id) ?? -1;
+          if (current && join >= 0) return { ...page, before: current.before, rows: [...current.rows.slice(0, join), ...page.rows] };
+          return autoScrollRef.current || !current ? page : current;
+        });
+      } else if (!request) {
+        autoScrollRef.current = true;
+        setHistoryPage(page);
+        setHistoryJump({ key: "end" });
+      } else if (request.direction === "at") {
+        autoScrollRef.current = false;
+        setHistoryPage(page);
+        setHistoryJump({ key: `history:${request.id}:whole` });
+      } else {
+        const before = request.direction === "before";
+        setHistoryPage(current => {
+          if (!current || !(before ? current.before : current.after) || (before ? current.before : current.after) !== request.id) return current;
+          return { ...page, rows: before ? [...page.rows, ...current.rows] : [...current.rows, ...page.rows],
+            before: before ? page.before : current.before, after: before ? current.after : page.after };
+        });
+      }
+    } catch (error) {
+      if (activeIdRef.current === id && seq === historyRequestRef.current) addNotice(String(error), "error");
+    } finally {
+      if (seq === historyRequestRef.current) {
+        historyLoadingRef.current = false;
+        setHistoryLoading(false);
+      }
+    }
+  };
+
+  const selectHistoryMark = (mark: ChatHistoryMark) => {
+    stopConversationGlide();
+    autoScrollRef.current = false;
+    if (mark.id.startsWith("message:")) setHistoryJump({ key: `${mark.id}:whole` });
+    else if (historyPage?.rows.some(row => row.id === mark.id)) setHistoryJump({ key: `history:${mark.id}:whole` });
+    else void loadChatHistory({ direction: "at", id: mark.id });
+  };
+
+  const jumpToChatEnd = () => {
+    if (readingHistory) void loadChatHistory();
+    else scrollConversationToBottomSmooth();
+  };
+
   useEffect(() => () => stopConversationGlide(), [stopConversationGlide]);
 
   useEffect(() => {
-    if (!autoScrollRef.current) return;
+    if (!autoScrollRef.current || readingHistory) return;
     const frame = requestAnimationFrame(() => {
       scrollConversationToBottom();
       syncScrollToBottomHint();
@@ -4132,6 +4152,8 @@ export default function App() {
     working,
     requestPending,
     workingMessage,
+    historyPage,
+    readingHistory,
     scrollConversationToBottom,
     syncScrollToBottomHint,
   ]);
@@ -4141,7 +4163,7 @@ export default function App() {
     const scroll = conversationScrollRef.current;
     if (!thread || !scroll) return;
     const observer = new ResizeObserver(() => {
-      if (autoScrollRef.current) scrollConversationToBottom();
+      if (autoScrollRef.current && !readingHistory) scrollConversationToBottom();
       syncScrollToBottomHint();
     });
     observer.observe(thread);
@@ -4149,6 +4171,8 @@ export default function App() {
     return () => observer.disconnect();
   }, [
     activeConversationId,
+    loading,
+    readingHistory,
     scrollConversationToBottom,
     syncScrollToBottomHint,
   ]);
@@ -4169,25 +4193,28 @@ export default function App() {
     syncScrollToBottomHint,
   ]);
 
-  const handleConversationScroll = useCallback(() => {
+  const handleConversationScroll = () => {
     const element = conversationScrollRef.current;
     if (!element) return;
     const distanceFromBottom =
       element.scrollHeight - element.scrollTop - element.clientHeight;
-    if (distanceFromBottom <= 24) autoScrollRef.current = true;
+    if (distanceFromBottom <= 24 && !readingHistory) autoScrollRef.current = true;
     else if (userScrollInteractionRef.current) autoScrollRef.current = false;
     syncScrollToBottomHint();
-  }, [syncScrollToBottomHint]);
+    if (!autoScrollRef.current && !historyLoading && historyPage?.before && element.scrollTop <= 360)
+      void loadChatHistory({ direction: "before", id: historyPage.before });
+    else if (readingHistory && !historyLoading && historyPage?.after && distanceFromBottom <= 300)
+      void loadChatHistory({ direction: "after", id: historyPage.after });
+  };
 
-  const handleConversationWheel = useCallback(
-    (event: React.WheelEvent<HTMLDivElement>) => {
+  const handleConversationWheel = (event: React.WheelEvent<HTMLDivElement>) => {
       if (event.deltaY < 0) {
         stopConversationGlide();
         autoScrollRef.current = false;
+        if (event.currentTarget.scrollTop <= 360 && historyPage?.before)
+          void loadChatHistory({ direction: "before", id: historyPage.before });
       }
-    },
-    [stopConversationGlide],
-  );
+  };
 
   const handleConversationPointerDown = useCallback(
     (event: React.PointerEvent<HTMLDivElement>) => {
@@ -4213,6 +4240,10 @@ export default function App() {
   }, []);
 
   const handlePiEvent = (event: JsonObject) => {
+    if (event.type === "desktop_history_preview") {
+      if (awaitingHistoryPreviewRef.current) setHistoryPage(event.history);
+      return;
+    }
     if (event.type === "desktop_models_update") {
       setSnapshot(current => current ? { ...current, models: event.models ?? current.models,
         state: event.state ?? { ...current.state, model: event.model, thinkingLevel: event.thinkingLevel ?? current.state.thinkingLevel },
@@ -4258,7 +4289,7 @@ export default function App() {
     } else if (event.type === "desktop_plan_activity") {
       setSnapshot(current => current ? { ...current, planWorkingRevision: event.revision } : current);
     } else if (event.type === "desktop_history_rewound" && event.snapshot) {
-      applyRuntimeSnapshot(event.snapshot as ConversationSnapshot);
+      applyRuntimeSnapshot(event.snapshot as ConversationSnapshot, true);
       setWorking(false);
       setTools({});
       setRunDiff(undefined);
@@ -4283,20 +4314,32 @@ export default function App() {
         startedAtRef.current = undefined;
       }
       setTools({});
-      if (Array.isArray(event.messages)) setMessages(event.messages);
-      else setMessages((current) => {
-        try {
-          const next = event.messagePatch ? applyMessagePatch<JsonObject>(current, event.messagePatch) : current;
-          if (typeof event.messageCount === "number" && next.filter(message => !message.optimistic).length !== event.messageCount)
-            throw new Error("Message stream needs synchronization");
-          return next;
-        } catch {
-          // Opening a chat mid-run can miss events. Recover explicitly rather
-          // than silently dropping messages or restoring every history each turn.
-          queueMicrotask(() => void recoverConversationHistory());
-          return current;
-        }
-      });
+      const previousOffset = messageOffsetRef.current;
+      const patch = event.messagePatch;
+      if (Array.isArray(event.messages)) {
+        messageOffsetRef.current = 0;
+        setMessages(event.messages);
+      } else {
+        const resetsWindow = patch && patch.startIndex < previousOffset;
+        const offset = resetsWindow ? Math.max(patch.startIndex, patch.startIndex + patch.messages.length - chatMessageWindow) : previousOffset;
+        messageOffsetRef.current = offset;
+        setMessages((current) => {
+          try {
+            const startIndex = patch ? patch.startIndex - offset : current.length;
+            if (!resetsWindow && startIndex > current.length) throw new Error("Message stream needs synchronization");
+            const next = !patch ? current : resetsWindow ? patch.messages.slice(offset - patch.startIndex) :
+              applyMessagePatch<JsonObject>(startIndex === current.length ? current : current.slice(0, startIndex), { ...patch, startIndex });
+            if (typeof event.messageCount === "number" && offset + next.filter((message: JsonObject) => !message.optimistic).length !== event.messageCount)
+              throw new Error("Message stream needs synchronization");
+            return next;
+          } catch {
+            queueMicrotask(() => void recoverConversationHistory());
+            return current;
+          }
+        });
+      }
+      if (patch?.startIndex === 0 && patch.messages.slice(0, 4).some((message: JsonObject) => message.role === "compactionSummary"))
+        void loadChatHistory(undefined, true);
       if (event.state) {
         setSnapshot((current) =>
           current
@@ -4526,8 +4569,23 @@ export default function App() {
     }
   };
 
+  const resetHistoryView = () => {
+    ++historyRequestRef.current;
+    awaitingHistoryPreviewRef.current = false;
+    historyLoadingRef.current = false;
+    setHistoryLoading(false);
+    setHistoryPage(undefined);
+    setHistoryJump(undefined);
+    setHistoryPosition(0);
+    messageOffsetRef.current = 0;
+    autoScrollRef.current = true;
+    stopConversationGlide();
+  };
+
   const openConversation = async (conversationId: string) => {
     const navigationSequence = ++navigationSequenceRef.current;
+    resetHistoryView();
+    awaitingHistoryPreviewRef.current = true;
     const parked = parkDraft();
     activeIdRef.current = conversationId;
     setActiveConversationId(conversationId);
@@ -4558,10 +4616,13 @@ export default function App() {
     setRunDiff(undefined);
     setDiffOpen(false);
     try {
-      const next = await window.piDesktop.openConversation(conversationId);
+      const next = await window.piDesktop.openConversation(conversationId, true);
       if (navigationSequenceRef.current !== navigationSequence) return;
+      awaitingHistoryPreviewRef.current = false;
       restoreDraft(conversationId, parked);
       setSnapshot(next);
+      setHistoryPage(next.history);
+      messageOffsetRef.current = next.messageOffset ?? 0;
       setActiveProjectId(next.conversation.projectId);
       setMessages(next.messages as JsonObject[]);
       setStreamingMessage(
@@ -4621,13 +4682,16 @@ export default function App() {
         "error",
       );
     } finally {
-      if (navigationSequenceRef.current === navigationSequence)
+      if (navigationSequenceRef.current === navigationSequence) {
+        awaitingHistoryPreviewRef.current = false;
         setLoading(false);
+      }
     }
   };
 
   const newChat = async (projectId?: string) => {
     const navigationSequence = ++navigationSequenceRef.current;
+    resetHistoryView();
     const parked = parkDraft();
     activeIdRef.current = undefined;
     setSnapshot(undefined);
@@ -4978,6 +5042,7 @@ export default function App() {
     const submittedAttachments = quick ? [] : attachments;
     const submittedAsGoal = !quick && goalMode;
     if (!working && !beginRequest(conversationId)) return;
+    if (readingHistory) void loadChatHistory();
     autoScrollRef.current = true;
     if (!quick) {
       changeInput("");
@@ -5249,7 +5314,16 @@ export default function App() {
     }
   };
 
-  const applyRuntimeSnapshot = (next: ConversationSnapshot) => {
+  const applyRuntimeSnapshot = (next: ConversationSnapshot, branchChanged = false) => {
+    messageOffsetRef.current = next.messageOffset ?? 0;
+    if (branchChanged) {
+      ++historyRequestRef.current;
+      historyLoadingRef.current = false;
+      setHistoryLoading(false);
+      setHistoryPage(next.history);
+      setHistoryJump(undefined);
+      void loadChatHistory();
+    }
     setSnapshot(next);
     setMessages(next.messages as JsonObject[]);
     setStreamingMessage(null);
@@ -5272,9 +5346,11 @@ export default function App() {
     historyRecoveryRef.current = id;
     const navigation = navigationSequenceRef.current;
     try {
-      const next = await window.piDesktop.openConversation(id);
+      const next = await window.piDesktop.openConversation(id, true);
       if (activeIdRef.current !== id || navigationSequenceRef.current !== navigation) return;
+      messageOffsetRef.current = next.messageOffset ?? 0;
       setMessages(next.messages as JsonObject[]);
+      setHistoryPage(current => current ?? next.history);
       setSnapshot(current => current ? { ...current, entries: next.entries, historyTargets: next.historyTargets } : next);
     } catch (error) {
       addNotice(error instanceof Error ? error.message : String(error), "error");
@@ -5292,7 +5368,7 @@ export default function App() {
         await window.piDesktop.editLastMessage(action.conversationId, action.entryId, action.text);
       } else {
         const next = await window.piDesktop.rewindConversation(action.conversationId, action.entryId);
-        if (activeIdRef.current === action.conversationId) applyRuntimeSnapshot(next);
+        if (activeIdRef.current === action.conversationId) applyRuntimeSnapshot(next, true);
       }
       if (activeIdRef.current === action.conversationId) setHistoryAction(undefined);
     } catch (error) {
@@ -5451,15 +5527,31 @@ export default function App() {
       );
     }
   };
+  const displayMessages = useMemo<JsonObject[]>(() => {
+    if (!historyPage) return messages;
+    const stored = historyPage.rows.flatMap<JsonObject>(row => row.message ? [{ ...row.message, historyEntryId: row.id, historyPosition: row.position, historyEditable: row.editable }] : []);
+    if (readingHistory) return stored;
+    const boundary = stored.reduce((latest, message) => Math.max(latest, transcriptTimestamp(message.timestamp, 0)), 0);
+    const seen = new Set(stored.map(historyMessageIdentity));
+    return [...stored, ...messages.filter(message => !["system", "compactionSummary", "branchSummary"].includes(message.role) &&
+      transcriptTimestamp(message.timestamp, Number.MAX_SAFE_INTEGER) >= boundary && !seen.has(historyMessageIdentity(message)))];
+  }, [historyPage, messages, readingHistory]);
   const historicalTranscriptItems = useMemo(() => {
-    const visibleExtensionEntries = (snapshot?.entries ?? []).filter(
+    const storedEntries = historyPage?.rows.flatMap(row => row.entry ? [{ ...row.entry, historyPosition: row.position }] : []) ?? [];
+    const known = new Set(storedEntries.map(entry => entry.id));
+    const visibleEntries = [
+      ...storedEntries,
+      ...(readingHistory ? [] : (snapshot?.entries ?? []).filter(entry => !known.has(entry.id) &&
+        (!historyPage || transcriptTimestamp(entry.timestamp, 0) > transcriptTimestamp(historyPage.rows.at(-1)?.entry?.timestamp ?? historyPage.rows.at(-1)?.message?.timestamp, 0)))),
+    ];
+    const visibleExtensionEntries = visibleEntries.filter(
       (entry) => entry.renderedLines?.length,
     );
-    const compactionEntries = (snapshot?.entries ?? []).filter(
+    const compactionEntries = visibleEntries.filter(
       (entry) => entry.type === "compaction",
     );
     return [
-      ...messages.map(
+      ...displayMessages.map(
         (message, sourceIndex): TranscriptTimelineItem => ({
           kind: "message",
           message,
@@ -5502,14 +5594,14 @@ export default function App() {
       (left, right) =>
         left.timestamp - right.timestamp || left.order - right.order,
     );
-  }, [messages, snapshot?.entries, snapshot?.compactions]);
-  const transcriptItems: TranscriptTimelineItem[] = streamingMessage
+  }, [displayMessages, historyPage, readingHistory, snapshot?.entries, snapshot?.compactions]);
+  const transcriptItems: TranscriptTimelineItem[] = streamingMessage && !readingHistory
     ? [
         ...historicalTranscriptItems,
         {
           kind: "message",
           message: streamingMessage,
-          sourceIndex: messages.length,
+          sourceIndex: displayMessages.length,
           timestamp: Number.MAX_SAFE_INTEGER,
           order: Number.MAX_SAFE_INTEGER,
         },
@@ -5530,7 +5622,7 @@ export default function App() {
   const historicalToolIndex = useMemo(() => {
     const results = new Map<string, JsonObject>();
     const calls = new Set<string>();
-    messages.forEach((message, messageIndex) => {
+    displayMessages.forEach((message, messageIndex) => {
       if (message.role === "toolResult" || message.role === "tool") {
         const id = toolResultIdentifier(message);
         if (id) results.set(id, message);
@@ -5542,7 +5634,7 @@ export default function App() {
       });
     });
     return { results, calls };
-  }, [messages]);
+  }, [displayMessages]);
   const webCitationSources = useMemo(() => indexWebCitations([
     ...Array.from(historicalToolIndex.results.values(), message => ({
       name: String(message.toolName ?? message.name ?? ""), result: resultMessagePayload(message),
@@ -5550,12 +5642,12 @@ export default function App() {
     ...Object.values(tools),
   ]), [historicalToolIndex, tools]);
   const streamingToolIds = new Set<string>();
-  if (streamingMessage) {
+  if (streamingMessage && !readingHistory) {
     toolCallParts(streamingMessage).forEach((call, callIndex) => {
       streamingToolIds.add(
         toolCallIdentifier(
           call,
-          `message-${messages.length}-tool-${callIndex}`,
+          `message-${displayMessages.length}-tool-${callIndex}`,
         ),
       );
     });
@@ -5676,9 +5768,13 @@ export default function App() {
     const calls = toolCallParts(message);
     const originalMessage = item.sourceMessage ?? message;
     const isStreamingMessage = originalMessage === streamingMessage;
-    const historyTarget = item.historyActions !== false && !isStreamingMessage && !message.optimistic
-      ? snapshot?.historyTargets?.find(target => target.messageIndex === index) : undefined;
-    const canRewind = Boolean(historyTarget) && historyHasLaterMessages(messages, index);
+    const entryId = message.historyEntryId;
+    const canSelectStored = (message.role === "user" || message.role === "assistant") && !toolCallParts(originalMessage).length;
+    const historyTarget = !loading && item.historyActions !== false && !isStreamingMessage && !message.optimistic
+      ? entryId && canSelectStored ? { entryId, editable: Boolean(message.historyEditable) && !displayMessages.slice(index + 1).some(item => item.role === "user") }
+        : snapshot?.historyTargets?.find(target => target.messageIndex === messages.indexOf(originalMessage) + messageOffsetRef.current)
+      : undefined;
+    const canRewind = Boolean(historyTarget) && (readingHistory || historyHasLaterMessages(displayMessages, index));
     return (
       <>
         {visibleMessage && (
@@ -5725,7 +5821,22 @@ export default function App() {
     () => buildTranscriptDisplay(transcriptItems),
     [transcriptItems],
   );
-  const currentTurnStart = messages.reduce((last, message, index) => message.role === "user" ? index : last, -1);
+  const markList = useMemo(() => {
+    const persisted = historyPage?.marks ?? [];
+    const live = displayMessages.flatMap((message, index) => message.role === "user" && !message.historyEntryId ? [{
+      id: messageKey(message, index), position: (historyPage?.total ?? 0) + index,
+      timestamp: transcriptTimestamp(message.timestamp, 0),
+    }] : []);
+    const marks = [...persisted, ...live];
+    return marks.length <= 52 ? marks : Array.from({ length: 52 }, (_, index) => marks[Math.round(index * (marks.length - 1) / 51)]);
+  }, [displayMessages, historyPage]);
+  const showTimeline = markList.length > 1 || Boolean(historyPage?.before || historyPage?.after);
+  const reportTranscriptPosition = useCallback((display: TranscriptDisplayItem) => {
+    const item = display.display === "single" ? display.item : display.process[0] ?? display.answer;
+    const known = item.kind === "message" ? item.message.historyPosition : item.entry.historyPosition;
+    setHistoryPosition(typeof known === "number" ? known : (historyPage?.total ?? 0) + item.sourceIndex);
+  }, [historyPage?.total]);
+  const currentTurnStart = displayMessages.reduce((last, message, index) => message.role === "user" ? index : last, -1);
   const [expandedProcessFolds, setExpandedProcessFolds] = useState<Set<string>>(
     () => new Set(),
   );
@@ -6118,8 +6229,12 @@ export default function App() {
                 )}
               </header>
 
+              <div className={`conversation-body${showTimeline && !loading ? " has-timeline" : ""}`}>
+              {showTimeline && !loading && <ChatTimeline marks={markList} position={historyPosition}
+                atEnd={!readingHistory && !showScrollToBottom} onSelect={selectHistoryMark} onEnd={jumpToChatEnd} />}
               <div
                 className="conversation-scroll"
+                tabIndex={0}
                 ref={conversationScrollRef}
                 onContextMenu={(event) => {
                   if (event.target instanceof HTMLImageElement) return;
@@ -6137,7 +6252,7 @@ export default function App() {
                 onPointerUp={handleConversationPointerEnd}
                 onPointerCancel={handleConversationPointerEnd}
               >
-                {loading ? (
+                {loading && !historyPage?.rows.length ? (
                   <div className="chat-loading" role="status" aria-live="polite">
                     <span className="spinner" />
                     <strong>{bootstrap ? t("Загрузка чата…") : t("Запуск приложения…")}</strong>
@@ -6165,6 +6280,10 @@ export default function App() {
                   </div>
                 ) : (
                   <div className="thread" ref={conversationThreadRef}>
+                    {historyPage?.before && !loading && <button className="history-page-button" type="button" disabled={historyLoading}
+                      onClick={() => void loadChatHistory({ direction: "before", id: historyPage.before! })}>
+                      {historyLoading ? t("Загрузка истории…") : t("Более ранние сообщения")}
+                    </button>}
                     {headerLines.length > 0 && (
                       <div className="extension-frame header-frame">
                         {headerLines.map((line, index) => (
@@ -6174,24 +6293,32 @@ export default function App() {
                     )}
                     <WebCitations.Provider value={webCitationSources}>
                       <VirtualFilm
+                        key={activeConversationId}
                         items={transcriptDisplay}
                         itemKey={displayItemKey}
                         renderItem={renderDisplayItem}
                         resetKey={activeConversationId}
                         scrollRef={conversationScrollRef}
+                        jump={historyJump}
+                        startAtBottom={!readingHistory}
+                        onViewportItem={reportTranscriptPosition}
                       />
                     </WebCitations.Provider>
-                    {orphanTools.map((tool) => (
+                    {historyPage?.after && <button className="history-page-button" type="button" disabled={historyLoading}
+                      onClick={() => void loadChatHistory({ direction: "after", id: historyPage.after! })}>
+                      {historyLoading ? t("Загрузка истории…") : t("Более поздние сообщения")}
+                    </button>}
+                    {!readingHistory && orphanTools.map((tool) => (
                       <ToolCard key={tool.id} tool={tool} />
                     ))}
-                    {footerLines.length > 0 && (
+                    {!readingHistory && footerLines.length > 0 && (
                       <div className="extension-frame footer-frame">
                         {footerLines.map((line, index) => (
                           <div key={`${index}-${line}`}>{line}</div>
                         ))}
                       </div>
                     )}
-                    {working && (
+                    {!readingHistory && working && (
                       <div
                         className="run-activity"
                         role="status"
@@ -6209,7 +6336,7 @@ export default function App() {
                         </div>
                       </div>
                     )}
-                    {!working && requestPending && (
+                    {!readingHistory && !working && requestPending && (
                       <div className="run-activity" role="status" aria-live="polite">
                         <div className="run-activity-phase">
                           <WorkingIndicator />
@@ -6217,13 +6344,13 @@ export default function App() {
                         </div>
                       </div>
                     )}
-                    {!working && !requestPending && snapshot?.run?.error && (
+                    {!readingHistory && !working && !requestPending && snapshot?.run?.error && (
                       <div className="run-error" role="alert">
                         <strong>{t("Работа прервана из-за ошибки")}</strong>
                         <div>{snapshot.run.error}</div>
                       </div>
                     )}
-                    {!working && !requestPending && lastDuration !== undefined && (
+                    {!readingHistory && !working && !requestPending && lastDuration !== undefined && (
                       <div className="run-complete">
                         <span>
                           <Clock3 size={13} />{t(" Запрос занял")}{" "}
@@ -6287,6 +6414,7 @@ export default function App() {
                 )}
               </div>
 
+              </div>
               {activeConversationId && planning && planningOpen && <aside className="conversation-plan conversation-notebook" aria-label={t("План реализации текущего чата")}>
                 <PlanningPanel key={`planning-${activeConversationId}`} planning={planning} working={working || requestPending} onAction={changePlanning} onClose={() => setPlanningOpen(false)} />
               </aside>}
@@ -6303,13 +6431,13 @@ export default function App() {
                 <div
                   className={`composer-wrap${modelMenuOpen || thinkingMenuOpen || addMenuOpen || slashCommands.length > 0 ? " dropdown-open" : ""}`}
                 >
-                  {showScrollToBottom && (
+                  {(showScrollToBottom || readingHistory) && (
                     <button
                       className="scroll-to-bottom"
                       type="button"
                       title={t("К концу чата")}
                       aria-label={t("Прокрутить чат до конца")}
-                      onClick={() => scrollConversationToBottomSmooth()}
+                      onClick={jumpToChatEnd}
                     >
                       <ArrowDown size={17} />
                     </button>

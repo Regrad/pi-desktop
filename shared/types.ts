@@ -339,6 +339,9 @@ export interface SessionHistoryTarget {
 }
 
 export interface ConversationSnapshot {
+  /** UI-only message window. Live RPC patches use the original absolute indices. */
+  messageOffset?: number;
+  history?: import("./chat-history.js").ChatHistoryPage;
   planWorkingRevision?: number;
   historyTargets?: SessionHistoryTarget[];
   conversation: ConversationRecord;
@@ -448,7 +451,8 @@ export interface PiDesktopApi {
     folderPaths: string[],
   ): Promise<ProjectRecord>;
   createConversation(projectId?: string): Promise<ConversationSnapshot>;
-  openConversation(conversationId: string): Promise<ConversationSnapshot>;
+  openConversation(conversationId: string, tail?: boolean): Promise<ConversationSnapshot>;
+  getChatHistory(conversationId: string, request?: import("./chat-history.js").ChatHistoryRequest): Promise<import("./chat-history.js").ChatHistoryPage>;
   deleteConversation(conversationId: string): Promise<boolean>;
   archiveConversation(conversationId: string): Promise<void>;
   restoreConversation(conversationId: string): Promise<void>;

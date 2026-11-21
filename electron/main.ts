@@ -229,8 +229,11 @@ function registerIpc(): void {
   ipcMain.handle("desktop:create-conversation", (_event, projectId?: string) =>
     piManager.createConversation(projectId),
   );
-  ipcMain.handle("desktop:open-conversation", (_event, conversationId: string) =>
-    piManager.openConversation(conversationId),
+  ipcMain.handle("desktop:open-conversation", (_event, conversationId: string, tail?: boolean) =>
+    piManager.openConversation(conversationId, tail),
+  );
+  ipcMain.handle("desktop:chat-history", (_event, conversationId: string, request?: import("../shared/chat-history.js").ChatHistoryRequest) =>
+    piManager.getChatHistory(conversationId, request),
   );
   ipcMain.handle("desktop:delete-conversation", async (_event, conversationId: string) => {
     const conversation = store.getConversation(conversationId);

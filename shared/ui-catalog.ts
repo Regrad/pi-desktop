@@ -2,6 +2,12 @@
 // Keep placeholders identical in both languages; never put model or user text here.
 export const englishUi: Readonly<Record<string, string>> = {
   "Новый чат": "New chat",
+  "Навигация по чату": "Chat navigation",
+  "К сообщению от {0}": "Jump to message from {0}",
+  "В конец чата": "Jump to end",
+  "Загрузка истории…": "Loading history…",
+  "Более ранние сообщения": "Earlier messages",
+  "Более поздние сообщения": "Newer messages",
   "Сжать контекст текущей сессии": "Compact the current session's context",
   "Перезагрузить расширения, навыки, промпты и настройки Pi": "Reload Pi extensions, skills, prompts, and settings",
   "Веб-поиск": "Web search",

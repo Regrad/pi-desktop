@@ -43,7 +43,8 @@ import {
   type ModelFileSnapshot,
 } from "./run-diff-tracker.js";
 import { getSessionManager } from "./pi-sdk.js";
-import { readSessionPreview, stopSessionReads } from "./session-read.js";
+import { readChatHistory, readChatTail, readSessionPreview, stopSessionReads } from "./session-read.js";
+import { chatMessageWindow, type ChatHistoryRequest } from "../shared/chat-history.js";
 import { applyAssistantMessageDelta } from "../shared/live-message.js";
 
 type JsonObject = Record<string, unknown>;
@@ -228,11 +229,20 @@ export class PiManager {
     await sync;
   }
 
-  async inspectConversation(conversationId: string): Promise<ConversationSnapshot> {
+  async inspectConversation(conversationId: string, tail = false): Promise<ConversationSnapshot> {
     const runtime = this.runtimes.get(conversationId);
     return runtime?.snapshot
-      ? this.snapshotWithLiveState(runtime)
-      : this.previewConversation(this.store.getConversation(conversationId));
+      ? this.snapshotWithLiveState(runtime, tail ? await this.getChatHistory(conversationId) : undefined)
+      : this.previewConversation(this.store.getConversation(conversationId), undefined, tail);
+  }
+
+  async getChatHistory(conversationId: string, request?: ChatHistoryRequest): Promise<NonNullable<ConversationSnapshot["history"]>> {
+    if (request && (typeof request.id !== "string" || !["before", "after", "at"].includes(request.direction)))
+      throw new Error("Некорректная позиция в истории чата.");
+    const conversation = this.store.getConversation(conversationId);
+    if (!conversation.sessionFile || !existsSync(conversation.sessionFile)) return { rows: [], marks: [], total: 0 };
+    const cwd = await this.store.getConversationWorkingDirectory(conversation);
+    return readChatHistory(this.store.assertManagedSessionFile(conversation.sessionFile), cwd, this.store.getSessionDir(cwd, conversationId), request);
   }
 
   hasActiveWork(): boolean {
@@ -241,6 +251,7 @@ export class PiManager {
 
   async openConversation(
     conversationId: string,
+    tail = false,
   ): Promise<ConversationSnapshot> {
     this.openingPreview?.abort();
     const controller = new AbortController();
@@ -250,15 +261,26 @@ export class PiManager {
     // Opening a chat is what acknowledges the work it reported earlier.
     if (this.store.getConversation(conversationId).resultUnseen)
       await this.updateConversation(conversationId, { resultUnseen: undefined });
+    const conversation = this.store.getConversation(conversationId);
+    if (tail && conversation.sessionFile && existsSync(conversation.sessionFile)) {
+      // A small byte-range can be painted while the worker indexes the full branch.
+      void readChatTail(this.store.assertManagedSessionFile(conversation.sessionFile), controller.signal)
+        .then(history => {
+          if (history && !controller.signal.aborted)
+            this.publish("pi:event", { conversationId, event: { type: "desktop_history_preview", history } });
+        }).catch(() => { /* The authoritative full read remains available. */ });
+    }
     const running = this.runtimes.get(conversationId);
     if (running?.snapshot) {
       if (running.snapshot.state.isStreaming)
         await this.refreshRuntimeSnapshot(running);
       running.snapshot.queuedPrompts =
         this.store.getQueuedPrompts(conversationId);
-      return this.snapshotWithLiveState(running);
+      const history = tail ? await this.getChatHistory(conversationId) : undefined;
+      controller.signal.throwIfAborted();
+      return this.snapshotWithLiveState(running, history);
     }
-    return this.previewConversation(this.store.getConversation(conversationId), controller.signal);
+    return this.previewConversation(conversation, controller.signal, tail);
   }
 
   async deleteConversation(conversationId: string): Promise<void> {
@@ -1422,6 +1444,7 @@ export class PiManager {
   private async previewConversation(
     conversation: ConversationRecord,
     signal?: AbortSignal,
+    tail = false,
   ): Promise<ConversationSnapshot> {
     const configuration = await this.store.getAgentConfiguration();
     signal?.throwIfAborted();
@@ -1433,13 +1456,15 @@ export class PiManager {
     let sessionThinkingLevel: ThinkingLevel | undefined;
     let sessionName: string | undefined;
     let historyTargets: ConversationSnapshot["historyTargets"] = [];
+    let history: ConversationSnapshot["history"];
+    let messageOffset = 0;
 
     if (conversation.sessionFile && existsSync(conversation.sessionFile)) {
       const cwd =
         await this.store.getConversationWorkingDirectory(conversation);
       const preview = await readSessionPreview(
         this.store.assertManagedSessionFile(conversation.sessionFile), cwd,
-        this.store.getSessionDir(cwd, conversation.id), signal,
+        this.store.getSessionDir(cwd, conversation.id), signal, tail,
       );
       messages = preview.messages;
       entries = preview.entries;
@@ -1447,6 +1472,8 @@ export class PiManager {
       sessionThinkingLevel = isThinkingLevel(preview.thinkingLevel) ? preview.thinkingLevel : undefined;
       sessionName = preview.sessionName;
       historyTargets = preview.historyTargets;
+      history = preview.history;
+      messageOffset = preview.messageOffset ?? 0;
       navigationTimestamp = preview.navigationTimestamp;
     }
 
@@ -1478,13 +1505,15 @@ export class PiManager {
         sessionFile: conversation.sessionFile,
         sessionId: conversation.id,
         sessionName,
-        messageCount: messages.length,
+        messageCount: messageOffset + messages.length,
         pendingMessageCount: 0,
         steeringMessages: [],
         followUpMessages: [],
         workingVisible: true,
       },
       messages,
+      messageOffset,
+      history,
       historyTargets,
       queuedPrompts: this.store.getQueuedPrompts(conversation.id),
       models: configuration.models,
@@ -2323,8 +2352,10 @@ export class PiManager {
     };
   }
 
-  private snapshotWithLiveState(runtime: RuntimeRecord): ConversationSnapshot {
-    const snapshot = structuredClone(runtime.snapshot!);
+  private snapshotWithLiveState(runtime: RuntimeRecord, history?: ConversationSnapshot["history"]): ConversationSnapshot {
+    const current = runtime.snapshot!;
+    const messageOffset = history ? Math.max(0, current.messages.length - chatMessageWindow) : 0;
+    const snapshot = structuredClone({ ...current, messages: current.messages.slice(messageOffset), messageOffset, history });
     snapshot.run = runtime.activeRun ? structuredClone(runtime.activeRun) : snapshot.run;
     snapshot.liveMessage = runtime.liveMessage
       ? structuredClone(runtime.liveMessage)

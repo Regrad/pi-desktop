@@ -87,16 +87,28 @@ const handlerStart = app.indexOf("  const handlePiEvent = (event: JsonObject) =>
 const handlerBody = app.indexOf("=> {", handlerStart) + 4;
 const handlerEnd = app.indexOf("\n  };", handlerBody);
 const handlerSource = stripTypeScriptTypes(`function handle(event) {${app.slice(handlerBody, handlerEnd)}\n}`);
-function renderer() {
+function renderer(offset = 0) {
   let messages = [], recoveries = 0;
   const noop = () => {};
   const bindings = { setMessages: update => { messages = typeof update === "function" ? update(messages) : update; }, setStreamingMessage: noop,
     setWorking: noop, setWorkingMessage: noop, setTools: noop, setSnapshot: noop, setElapsed: noop, setLastDuration: noop,
-    startedAtRef: {}, messageText: message => String(message.content), applyMessagePatch,
+    startedAtRef: {}, messageOffsetRef: { current: offset }, chatMessageWindow: 60, messageText: message => String(message.content), applyMessagePatch,
     queueMicrotask: callback => callback(), recoverConversationHistory: () => { recoveries++; } };
   const handle = new Function(...Object.keys(bindings), `${handlerSource}; return handle;`)(...Object.values(bindings));
   return { handle, get messages() { return messages; }, get recoveries() { return recoveries; } };
 }
+
+test("renderer applies absolute runtime patches to the latest message window", () => {
+  const view = renderer(1000);
+  const tool = { role: "toolResult", content: "result", toolCallId: "id" };
+  view.handle({ type: "message_end", message: tool });
+  view.handle({ type: "agent_settled", messagePatch: { startIndex: 1000, messages: [tool] }, messageCount: 1001 });
+  assert.deepEqual(view.messages, [tool]);
+  assert.equal(view.recoveries, 0);
+  view.handle({ type: "agent_settled", messagePatch: { startIndex: 0, messages: [{ role: "system", content: "summary" }] }, messageCount: 1 });
+  assert.equal(view.messages[0].content, "summary");
+  assert.equal(view.recoveries, 0);
+});
 
 test("renderer commits tool results once and no-op settlement keeps the transcript identity", () => {
   const view = renderer();

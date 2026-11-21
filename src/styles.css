@@ -488,13 +488,68 @@ button:not(:disabled) {
   overflow-anchor: none;
   overscroll-behavior: contain;
 }
+.conversation-body {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+}
+.conversation-body.has-timeline .conversation-scroll { scrollbar-width: none; }
+.conversation-scroll:focus:not(:focus-visible) { outline: none; }
+.chat-timeline {
+  position: absolute;
+  inset-inline-start: 3px;
+  inset-block-start: 50%;
+  transform: translateY(-50%);
+  z-index: 2;
+  display: flex;
+  flex-direction: column;
+  height: min(68%, 470px);
+  width: 26px;
+  padding: 3px 0;
+  border-radius: 9px;
+}
+.chat-timeline button {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  align-items: center;
+  padding: 0 0 0 5px;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+}
+.chat-timeline button span {
+  display: block;
+  width: 8px;
+  height: 2px;
+  border-radius: 2px;
+  background: #aaada8;
+  transition: width 160ms ease, background-color 160ms ease;
+}
+.chat-timeline button[aria-current] span { width: 15px; background: #477265; }
+.chat-timeline button[data-near="2"] span { width: 11px; }
+.chat-timeline button[data-near="1"] span { width: 15px; }
+.chat-timeline button[data-near="0"] span, .chat-timeline button:focus-visible span { width: 21px; background: #31584e; }
+.chat-timeline button:last-child span { height: 3px; }
+.history-page-button {
+  display: block;
+  margin: 0 auto 10px;
+  padding: 4px 10px;
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  background: #fafaf8;
+  color: #626760;
+  font-size: 12px;
+}
+@media (prefers-reduced-motion: reduce) {
+  .chat-timeline button span { transition: none; }
+}
 .thread {
   width: min(760px, calc(100% - 48px));
   margin: 0 auto;
   padding: 46px 0 28px;
-}
-.virtual-film-calibration > [data-virtual-film-row] {
-  display: flow-root;
 }
 .virtual-film {
   position: relative;

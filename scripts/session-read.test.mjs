@@ -6,7 +6,7 @@ import path from "node:path";
 import { stripTypeScriptTypes } from "node:module";
 import { SessionManager } from "../node_modules/@earendil-works/pi-coding-agent/dist/core/session-manager.js";
 import { sessionHistoryTargets } from "../shared/session-history.ts";
-import { readSessionPreview, listSessions, stopSessionReads } from "../dist-electron/electron/session-read.js";
+import { readChatHistory, readChatTail, readSessionPreview, listSessions, stopSessionReads } from "../dist-electron/electron/session-read.js";
 
 async function history(t) {
   const directory = await mkdtemp("C:/AI_Temp/pi-history-worker-");
@@ -62,12 +62,51 @@ test("preview migrates legacy entries in memory without rewriting the file", asy
   assert.equal(await readFile(file, "utf8"), legacy);
 });
 
+test("opening sends the tail and paging preserves messages on both sides of compactions", async t => {
+  const { file, directory } = await history(t);
+  const records = (await readFile(file, "utf8")).trim().split("\n").map(JSON.parse);
+  const timestamp = "2026-11-13T08:00:00.000Z";
+  for (const at of [90, 250]) {
+    const following = records.findIndex(entry => entry.id === `e${at}`);
+    const id = `compact${at}`;
+    records.splice(following, 0, { type: "compaction", id, parentId: `e${at - 1}`, timestamp,
+      summary: "Model summary", firstKeptEntryId: `e${at - 6}`, tokensBefore: 200000 });
+    records[following + 1].parentId = id;
+  }
+  const original = records.map(entry => JSON.stringify(entry)).join("\n") + "\n";
+  await writeFile(file, original, "utf8");
+  const tail = await readSessionPreview(file, directory, directory, undefined, true);
+  const quick = await readChatTail(file);
+  assert.equal(quick.rows.length, 18);
+  assert.deepEqual(quick.rows.map(row => row.id), tail.history.rows.slice(-18).map(row => row.id));
+  assert.deepEqual(tail.messages, []);
+  assert.ok(tail.messageOffset < 100, "the model context still honors compaction");
+  assert.equal(tail.history.total, 302);
+  assert.equal(tail.history.rows.length, 60);
+  assert.equal(tail.history.rows.at(-1).id, "e299");
+  assert.equal(tail.history.after, undefined);
+  assert.equal(tail.history.marks[0].id, "e0");
+  assert.equal(tail.history.marks.at(-1).id, "e298");
+  const earlier = await readChatHistory(file, directory, directory, { direction: "before", id: tail.history.before });
+  assert.equal(earlier.rows.at(-1).position + 1, tail.history.rows[0].position);
+  const jump = await readChatHistory(file, directory, directory, { direction: "at", id: "e80" });
+  assert.equal(jump.rows[0].id, "e80");
+  assert.equal(jump.rows[10].entry.type, "compaction");
+  assert.equal(jump.rows[11].id, "e90");
+  const next = await readChatHistory(file, directory, directory, { direction: "after", id: jump.after });
+  assert.equal(next.rows[0].position, jump.rows.at(-1).position + 1);
+  assert.equal(await readFile(file, "utf8"), original);
+  const appended = { type: "message", id: "e300", parentId: "position", timestamp, message: { role: "user", content: "New turn", timestamp: 300 } };
+  await writeFile(file, original + JSON.stringify(appended) + "\n", "utf8");
+  assert.equal((await readChatHistory(file, directory, directory)).rows.at(-1).id, "e300");
+});
+
 test("opening another chat cancels the first load without waiting for its history", async () => {
   const source = readFileSync(new URL("../electron/pi-manager.ts", import.meta.url), "utf8");
   const start = source.indexOf("  async openConversation(");
   const begin = source.indexOf("): Promise<ConversationSnapshot> {", start) + "): Promise<ConversationSnapshot> {".length;
   const end = source.indexOf("\n  }", begin);
-  const code = stripTypeScriptTypes(`async function open(conversationId) {${source.slice(begin,end)}\n}`);
+  const code = stripTypeScriptTypes(`async function open(conversationId, tail = false) {${source.slice(begin,end)}\n}`);
   const open = new Function(`${code}; return open;`)();
   const reads = [];
   const host = { runtimes: new Map(), store: { async activateConversation() {}, getConversation: id => ({id}) },

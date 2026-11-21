@@ -33,7 +33,8 @@ const api: PiDesktopApi = {
   setProjectFolders: (projectId, folderPaths) =>
     ipcRenderer.invoke("desktop:set-project-folders", projectId, folderPaths),
   createConversation: (projectId) => ipcRenderer.invoke("desktop:create-conversation", projectId),
-  openConversation: (conversationId) => ipcRenderer.invoke("desktop:open-conversation", conversationId),
+  openConversation: (conversationId, tail) => ipcRenderer.invoke("desktop:open-conversation", conversationId, tail),
+  getChatHistory: (conversationId, request) => ipcRenderer.invoke("desktop:chat-history", conversationId, request),
   deleteConversation: (conversationId) => ipcRenderer.invoke("desktop:delete-conversation", conversationId),
   archiveConversation: (conversationId) => ipcRenderer.invoke("desktop:archive-conversation", conversationId),
   restoreConversation: (conversationId) => ipcRenderer.invoke("desktop:restore-conversation", conversationId),
