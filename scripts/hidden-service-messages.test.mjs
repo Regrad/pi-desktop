@@ -7,9 +7,9 @@ const source = readFileSync(new URL("../src/App.tsx", import.meta.url), "utf8");
 const start = source.indexOf("function buildTranscriptDisplay(");
 const end = source.indexOf("\nfunction ", start + 1);
 assert.ok(start >= 0 && end > start);
-const build = new Function("hasAnswerText", "splitThinkingFromAnswer", "splitAssistantTimelineItem", "messageKey",
+const build = new Function("hasAnswerText", "splitThinkingFromAnswer", "splitAssistantTimelineItem", "messageKey", "toolCallParts",
   `${stripTypeScriptTypes(source.slice(start, end))}; return buildTranscriptDisplay;`
-)(() => true, item => ({ item }), item => [item], (_message, index) => String(index));
+)(() => true, item => ({ item }), item => [item], (_message, index) => String(index), () => []);
 const item = (role, extra = {}) => ({ kind: "message", sourceIndex: 0, message: { role, ...extra } });
 
 test("hidden service messages never enter transcript rows or virtual layout", () => {

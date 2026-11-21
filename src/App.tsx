@@ -208,7 +208,7 @@ type TranscriptDisplayItem =
       display: "fold";
       key: string;
       process: TranscriptTimelineItem[];
-      answer: TranscriptTimelineItem;
+      answer?: TranscriptTimelineItem;
     };
 
 const THINKING_LABELS: Record<ThinkingLevel, string> = {
@@ -984,8 +984,18 @@ function buildTranscriptDisplay(
 ): TranscriptDisplayItem[] {
   const result: TranscriptDisplayItem[] = [];
   let buffer: TranscriptTimelineItem[] = [];
+  const webFoldKey = () => {
+    for (const item of buffer) {
+      if (item.kind !== "message") continue;
+      const call = toolCallParts(item.message).find(value => value.name === "web_search");
+      if (call) return `web:${toolCallIdentifier(call, messageKey(item.message, item.sourceIndex))}`;
+      if (item.message.toolName === "web_search") return `web:${toolResultIdentifier(item.message) ?? messageKey(item.message, item.sourceIndex)}`;
+    }
+  };
   const flush = () => {
-    for (const item of buffer) result.push({ display: "single", item });
+    const key = webFoldKey();
+    if (key) result.push({ display: "fold", key, process: buffer });
+    else for (const item of buffer) result.push({ display: "single", item });
     buffer = [];
   };
   for (const item of items.flatMap(splitAssistantTimelineItem)) {
@@ -1013,7 +1023,7 @@ function buildTranscriptDisplay(
       buffer.push(item);
       continue;
     }
-    const key = `fold:${messageKey(item.message, item.sourceIndex)}:${item.fragmentIndex ?? "whole"}`;
+    const key = webFoldKey() ?? `fold:${messageKey(item.message, item.sourceIndex)}:${item.fragmentIndex ?? "whole"}`;
     if (buffer.length) {
       result.push({
         display: "fold",
@@ -1320,7 +1330,7 @@ function ToolCard({ tool, hideMedia = false }: { tool: ToolActivity; hideMedia?:
   const args = parsedToolArguments(tool.args);
   const [expanded, setExpanded] = useState(false);
   const output = tool.result === undefined ? "" : toolOutputText(tool.result);
-  if (tool.name === "web_search") return <WebSearchActivity {...tool} args={args} output={output} />;
+  if (tool.name === "web_search") return <WebSearchActivity calls={[{ ...tool, args, output }]} />;
   const presentation = toolPresentation(tool.name, args);
   const timing = shellTiming(tool.name, args, tool.result, tool.startedAt, tool.preparing);
   const codeFragments = toolCodeFragments(
@@ -5832,7 +5842,7 @@ export default function App() {
   }, [displayMessages, historyPage]);
   const showTimeline = markList.length > 1 || Boolean(historyPage?.before || historyPage?.after);
   const reportTranscriptPosition = useCallback((display: TranscriptDisplayItem) => {
-    const item = display.display === "single" ? display.item : display.process[0] ?? display.answer;
+    const item = display.display === "single" ? display.item : display.process[0];
     const known = item.kind === "message" ? item.message.historyPosition : item.entry.historyPosition;
     setHistoryPosition(typeof known === "number" ? known : (historyPage?.total ?? 0) + item.sourceIndex);
   }, [historyPage?.total]);
@@ -5913,11 +5923,12 @@ export default function App() {
         }
       }
     }
-    const answerMessage = display.answer.kind === "message" ? display.answer.message : undefined;
+    const answer = display.answer;
+    const answerMessage = answer?.kind === "message" ? answer.message : undefined;
     const answerComplete = answerCanPublishMedia({
-      streaming: display.answer.kind === "message" && (display.answer.sourceMessage ?? answerMessage) === streamingMessage,
+      streaming: answer?.kind === "message" && (answer.sourceMessage ?? answerMessage) === streamingMessage,
       working,
-      currentTurn: display.answer.sourceIndex >= currentTurnStart,
+      currentTurn: Boolean(answer && answer.sourceIndex >= currentTurnStart),
       stopReason: answerMessage?.stopReason,
     });
     const published = collectAnswerMedia(imageTools, answerComplete, answerMessage ? messageText(answerMessage) : "");
@@ -5953,8 +5964,10 @@ export default function App() {
             ))}
           </div>
         )}
-        {[...webTools.values()].map(tool => <ToolCard key={tool.id} tool={tool} />)}
-        {renderTranscriptItem(display.answer, undefined, published.parts)}
+        {webTools.size > 0 && <WebSearchActivity calls={[...webTools.values()].map(tool => ({
+          ...tool, args: parsedToolArguments(tool.args), output: tool.result === undefined ? "" : toolOutputText(tool.result),
+        }))} />}
+        {answer && renderTranscriptItem(answer, undefined, published.parts)}
       </div>
     );
   };

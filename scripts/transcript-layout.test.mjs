@@ -14,13 +14,28 @@ function extract(name) {
 const messageKey = new Function(`${extract("messageKey")}; return messageKey;`)();
 const hasAnswer = new Function(`${extract("hasAnswerText")}; return hasAnswerText;`)();
 const split = new Function("hasAnswerText", `${extract("splitAssistantTimelineItem")}; return splitAssistantTimelineItem;`)(hasAnswer);
+const webFoldHelpers = ["toolCallParts", "toolCallIdentifier", "toolResultIdentifier"].map(extract).join("\n");
 const build = new Function("messageKey", "splitAssistantTimelineItem", "hasAnswerText",
-  `${extract("buildTranscriptDisplay")}; return buildTranscriptDisplay;`)(messageKey, split, hasAnswer);
+  `${webFoldHelpers}\n${extract("buildTranscriptDisplay")}; return buildTranscriptDisplay;`)(messageKey, split, hasAnswer);
 const offset = new Function(`${extract("filmScrollOffset")}; return filmScrollOffset;`)();
 const item = (sourceIndex, role, content, timestamp = 100) => ({
   kind: "message", sourceIndex, message: { role, timestamp, content },
 });
 const key = entry => `${messageKey(entry.message, entry.sourceIndex)}:${entry.fragment ?? "whole"}:${entry.fragmentIndex ?? "whole"}`;
+
+test("web research keeps one stable row when further calls and the answer arrive", () => {
+  const first = item(0, "assistant", [{ type: "toolCall", name: "web_search", id: "first", arguments: {} }]);
+  const other = item(1, "assistant", [{ type: "toolCall", name: "web_search", id: "second", arguments: {} }]);
+  const answer = item(2, "assistant", "Answer with citations");
+  const [live] = build([first]);
+  const completed = build([first, other, answer]);
+  assert.equal(live.display, "fold");
+  assert.equal(live.answer, undefined);
+  assert.equal(completed.length, 1);
+  assert.equal(completed[0].key, live.key);
+  assert.deepEqual(completed[0].process, [first, other]);
+  assert.equal(completed[0].answer, answer);
+});
 
 test("tool-use commentary remains visible when the next assistant reply arrives", () => {
   const first = item(0, "assistant", [

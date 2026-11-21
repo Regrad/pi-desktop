@@ -1,11 +1,20 @@
 import { MediaLink } from "./MediaLink";
 import { t } from "./i18n";
-import { createContext } from "react";
+import { createContext, useId, useRef, useState } from "react";
 import { Check, ChevronRight, Globe, Link2, Search } from "lucide-react";
 import type { CitationSource } from "./web-citations";
 
 type Source = { url: string; title: string; status: string; anchor?: string; kind?: string; date?: string; preview?: string; reason?: string };
 type ToolSources = { name: string; result?: unknown }[];
+type SearchCall = {
+  id: string;
+  result?: unknown;
+  args: { query?: unknown; url?: unknown };
+  running: boolean;
+  preparing?: boolean;
+  error?: boolean;
+  output: string;
+};
 type SearchReport = {
   phase?: string;
   query?: string;
@@ -60,14 +69,11 @@ function domain(url: string): string {
 
 function WebSearchSources({ sources }: { sources: Source[] }) {
   return <ol className="web-search-sources" aria-label={t("Источники")}>
-    {sources.map((source, index) => (
-      <li key={`${source.kind}:${index}`}>
-        <span className="web-source-icon" aria-hidden="true"><Link2 size={14} /></span>
+    {sources.map(source => (
+      <li key={source.url}>
         <div className="web-source-copy">
           <MediaLink href={/^https?:\/\//i.test(source.url) ? source.url : undefined}>{source.title || domain(source.url) || source.url}</MediaLink>
-          <small>{[domain(source.url), source.kind === "news" ? t("Новости") : "", source.date].filter(Boolean).join(" · ")}</small>
-          {source.preview && <p>{source.preview}</p>}
-          {source.reason && <small>{source.reason}</small>}
+          <small>{domain(source.url)}</small>
         </div>
         <span className="web-source-state" data-status={source.status}>
           {source.status === "read" && <Check size={13} aria-hidden="true" />}{sourceStatus(source)}
@@ -77,61 +83,67 @@ function WebSearchSources({ sources }: { sources: Source[] }) {
   </ol>;
 }
 
-export function WebSearchActivity({ result, args, running, preparing, error, output }: {
-  result?: unknown;
-  args: { query?: unknown; url?: unknown };
-  running: boolean;
-  preparing?: boolean;
-  error?: boolean;
-  output: string;
-}) {
-  const report = webSearchDetails(result);
-  const sources = report?.sources ?? [];
-  const query = report?.query || (typeof args.query === "string" ? args.query : "");
-  const url = report?.url || (typeof args.url === "string" ? args.url : "");
-  const active = running || preparing;
+const sourcePriority: Record<string, number> = { read: 4, reading: 3, snippet: 2, result: 1, unavailable: 0 };
+
+export function WebSearchActivity({ calls }: { calls: SearchCall[] }) {
+  const id = useId();
+  const panel = useRef<HTMLDivElement>(null);
+  const [open, setOpen] = useState(false);
+  const reports = calls.map(call => webSearchDetails(call.result));
+  const waitingFor = calls.findIndex(call => call.running || call.preparing);
+  const active = waitingFor !== -1;
+  const report = reports[active ? waitingFor : reports.length - 1];
   const phase = report?.phase;
-  const interrupted = phase ? phase !== "done" : !output;
-  const label = active
-    ? preparing ? t("Готовлю поиск…") : phase === "ranking" ? t("Отбор выдержек…") :
-      phase === "reading" || url ? t("Чтение источников…") : t("Поиск в интернете…")
-    : error ? t("Ошибка веб-поиска") : interrupted ? t("Поиск прерван") :
-      url ? t("Страница проверена") : t("Поиск завершён");
-  const provider = providerNames[(phase === "reading" ? report?.scraper : phase === "ranking" ? report?.reranker : report?.provider || report?.scraper) ?? ""];
-  const Icon = url ? Link2 : active ? Search : Globe;
-  const header = <>
-    <span className="web-activity-icon" aria-hidden="true"><Icon size={15} /></span>
-    <span className="web-activity-label">{label}</span>
-    {provider && <small>{provider}</small>}
-  </>;
-  const target = <>
-    {query && <span className="web-activity-target" dir="auto">{query}</span>}
-    {url && <span className="web-activity-target" dir="auto">{url}</span>}
-  </>;
-
-  if (active) return (
-    <section className="web-activity live" aria-label={t("Веб-поиск")}>
-      <div className="web-activity-heading" role="status">
-        {header}
-        {phase === "reading" && report?.total ? <small className="web-activity-count">{report.completed ?? 0}/{report.total}</small> : null}
-      </div>
-      {target}
-      {sources.length > 0 && <WebSearchSources sources={sources} />}
-    </section>
-  );
-
-  return <details className="web-activity settled">
-    <summary className="web-activity-heading">
-      {header}
+  const error = calls.every(call => call.error);
+  const interrupted = !active && calls.every(call => !call.output);
+  const label = active ? phase === "reading" ? t("Чтение источников…") : phase === "ranking" ? t("Отбор выдержек…") : t("Поиск в интернете…")
+    : error ? t("Ошибка веб-поиска") : interrupted ? t("Поиск прерван") : t("Поиск завершён");
+  const provider = providerNames[(report?.provider || report?.scraper) ?? ""];
+  const unique = new Map<string, Source>();
+  for (const result of reports) {
+    for (const source of result?.sources ?? []) {
+      const previous = unique.get(source.url);
+      if (!previous || (sourcePriority[source.status] ?? 0) > (sourcePriority[previous.status] ?? 0)) unique.set(source.url, source);
+    }
+  }
+  const sources = [...unique.values()];
+  const readDomains = new Map<string, Source>();
+  for (const source of sources) {
+    const host = domain(source.url);
+    if (host && source.status === "read" && /^https?:\/\//i.test(source.url) && !readDomains.has(host)) readDomains.set(host, source);
+  }
+  const targets = [...new Set(calls.map((call, index) => {
+    const result = reports[index];
+    return result?.url || (typeof call.args.url === "string" ? call.args.url : "") ||
+      result?.query || (typeof call.args.query === "string" ? call.args.query : "");
+  }).filter(Boolean))];
+  const Icon = active ? Search : Globe;
+  return <div className={`web-activity ${active ? "live" : "settled"}`}>
+    <button className="web-activity-heading" type="button" popoverTarget={id} aria-expanded={open} aria-controls={id}
+      onClick={event => {
+        const bounds = event.currentTarget.getBoundingClientRect();
+        const below = window.innerHeight - bounds.bottom - 14;
+        const above = bounds.top - 14;
+        panel.current?.style.setProperty("--source-left", `${Math.max(8, Math.min(bounds.left, window.innerWidth - 444))}px`);
+        panel.current?.style.setProperty("--source-edge", `${below >= Math.min(250, above) ? bounds.bottom + 6 : window.innerHeight - bounds.top + 6}px`);
+        panel.current?.style.setProperty("--source-height", `${Math.max(72, Math.min(300, Math.max(above, below)))}px`);
+        if (panel.current) panel.current.dataset.side = below >= Math.min(250, above) ? "below" : "above";
+      }}>
+      <span className="web-activity-icon" aria-hidden="true"><Icon size={15} /></span>
+      <span className="web-activity-label" aria-live="polite">{label}</span>
       {sources.length > 0 && <small className="web-activity-count">{t("Источники")} · {sources.length}</small>}
-      <ChevronRight className="web-activity-chevron" size={14} aria-hidden="true" />
-    </summary>
-    <div className="web-activity-details">
-      {target}
-      {sources.length > 0 && <WebSearchSources sources={sources} />}
-      {sources.length === 0 && (output || (phase === "done" && t("Источники не найдены"))) && (
-        <p className="web-activity-target">{phase === "done" && !error ? t("Источники не найдены") : output}</p>
-      )}
+      <ChevronRight className="web-activity-chevron" size={13} aria-hidden="true" />
+    </button>
+    <div className="web-activity-sites" aria-label={t("Прочитанные сайты")}>
+      {[...readDomains].slice(0, 2).map(([host, source]) => <MediaLink key={host} href={source.url} title={source.title || host}>{host}</MediaLink>)}
     </div>
-  </details>;
+    <div id={id} ref={panel} popover="auto" className="web-activity-details" aria-label={t("Источники")}
+      onToggle={event => setOpen(event.currentTarget.matches(":popover-open"))}>
+      <div className="web-activity-panel-head"><strong>{t("Источники")}</strong>{provider && <small>{provider}</small>}</div>
+      {targets.length > 0 && <p className="web-activity-target" dir="auto">{targets.join(" · ")}</p>}
+      {sources.length > 0 ? <WebSearchSources sources={sources} /> : <p className="web-activity-target">
+        {active ? t("Источники появятся после поиска") : error ? calls.find(call => call.error)?.output : t("Источники не найдены")}
+      </p>}
+    </div>
+  </div>;
 }

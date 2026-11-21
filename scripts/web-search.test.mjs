@@ -203,7 +203,7 @@ test("citation IDs survive reopening and the renderer resolves only known anchor
   await writeFile(path.join(dir, "web-search.json"), JSON.stringify({ scraperProvider: "keenable", keenableFetchUrl: mock.base + "/extract",
     allowedAddresses: mock.allowedAddresses, rerankerType: "none" }));
   const tools = [];
-  createWebSearch(dir)({ registerTool: tool => tools.push(tool) });
+  createWebSearch(dir)({ on() {}, registerTool: tool => tools.push(tool) });
   assert.equal(tools.length, 1);
   const [tool] = tools;
   const previous = { type: "message", message: { role: "toolResult", details: { webResearch: { turn: 6 } } } };
@@ -231,6 +231,35 @@ test("citation IDs survive reopening and the renderer resolves only known anchor
   assert.match(html, /class="web-citation"/);
   assert.match(html, /href="https:\/\/93\.184\.215\.14\/first"/);
   assert.match(html, />\[1\]<\/a>/);
+});
+
+test("parallel duplicate queries and focused URL followups reuse the page until the next user request", async t => {
+  const dir = await mkdtemp(path.join(tmpdir(), "pi-web-reuse-"));
+  t.after(() => rm(dir, { recursive: true, force: true }));
+  const page = "Moscow weekly forecast. " + "The site navigation and general introduction. ".repeat(100) +
+    "\n27 ноября прогноз по Москве: поздний снег и мороз.\n";
+  const mock = await server(t, {
+    "/search": () => ({ results: [{ url: firstPage, title: "Forecast" }] }),
+    "/extract": ({ url }) => ({ url: url.searchParams.get("url"), title: "Forecast", content: page }),
+  });
+  await writeFile(path.join(dir, "web-search.json"), JSON.stringify({ searchProvider: "keenable", scraperProvider: "keenable", rerankerType: "none",
+    keenableApiUrl: mock.base + "/search", keenableFetchUrl: mock.base + "/extract", allowedAddresses: mock.allowedAddresses }));
+  let tool;
+  let start;
+  createWebSearch(dir)({ registerTool(value) { tool = value; }, on(event, fn) { if (event === "before_agent_start") start = fn; } });
+  const [first, duplicate] = await Promise.all([tool.execute("1", { query: "Moscow weather" }), tool.execute("2", { query: "Moscow  weather" })]);
+  assert.equal(first.isError, false);
+  assert.equal(duplicate.isError, false);
+  assert.doesNotMatch(first.content[0].text, /поздний снег/);
+  assert.notEqual(first.details.webResearch.sources[0].anchor, duplicate.details.webResearch.sources[0].anchor);
+  const focused = await tool.execute("3", { url: firstPage + "?utm_source=fixture", query: "27 ноября снег" });
+  assert.match(focused.content[0].text, /поздний снег/);
+  assert.deepEqual(mock.requests.map(request => request.url.pathname), ["/search", "/extract"]);
+  await tool.execute("4", { url: secondPage });
+  assert.equal(mock.requests.filter(request => request.url.pathname === "/extract").length, 2, "different pages of the same site are still read");
+  start();
+  await tool.execute("5", { query: "Moscow weather" });
+  assert.deepEqual(mock.requests.map(request => request.url.pathname), ["/search", "/extract", "/extract", "/search", "/extract"]);
 });
 
 test("desktop settings persist independent selections while keeping API keys out of IPC reads", async t => {

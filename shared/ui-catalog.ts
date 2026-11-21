@@ -22,6 +22,8 @@ export const englishUi: Readonly<Record<string, string>> = {
   "Страница проверена": "Page checked",
   "Источники не найдены": "No sources found",
   "Источники": "Sources",
+  "Прочитанные сайты": "Pages read",
+  "Источники появятся после поиска": "Sources will appear as the search runs",
   "Страница прочитана": "Page read",
   "Фрагмент из выдачи": "Search snippet",
   "Страница недоступна": "Page unavailable",

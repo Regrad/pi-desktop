@@ -39,6 +39,22 @@ async function rank(query, documents, settings, signal) {
   }
 }
 
+function focusedExcerpt(content, query, limit) {
+  const terms = new Set((query.toLowerCase().match(/[\p{L}\p{N}]+/gu) ?? []).filter(term => term.length >= 3 || /^\d{2}$/.test(term)));
+  if (!terms.size) return content.slice(0, limit);
+  const blocks = [];
+  for (let start = 0; start < content.length; start += 360) {
+    const text = content.slice(start, start + 500);
+    const words = new Set(text.toLowerCase().match(/[\p{L}\p{N}]+/gu));
+    let score = 0;
+    for (const term of terms) if (words.has(term)) score += /^\d{2}$/.test(term) ? 3 : 1;
+    if (score) blocks.push({ text, score });
+  }
+  blocks.sort((a, b) => b.score - a.score);
+  if (!blocks.length) return content.slice(0, limit);
+  return expand(content, blocks.slice(0, topResults).map(block => block.text), limit);
+}
+
 // As in LibreChat, retain surrounding text and merge overlapping highlights.
 // The result is kept in relevance order, with complete duplicate ranges removed.
 function expand(text, highlights, limit) {
@@ -70,8 +86,9 @@ function expand(text, highlights, limit) {
 
 export async function excerpts(text, query, settings, signal, limit, wholePage = false) {
   const content = cleanPageText(text);
-  if (wholePage && !query) return { excerpt: content.slice(0, limit) };
+  const fallback = () => wholePage && query ? focusedExcerpt(content, query, limit) : content.slice(0, limit);
+  if (!query || settings.rerankerType === "none") return { excerpt: fallback() };
   const documents = await split.splitText(content);
   const ranked = await rank(query, documents, settings, signal);
-  return { excerpt: expand(content, ranked.texts, limit), fallback: ranked.fallback };
+  return { excerpt: ranked.fallback ? fallback() : expand(content, ranked.texts, limit), fallback: ranked.fallback };
 }
