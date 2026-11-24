@@ -23,6 +23,7 @@ app.whenReady().then(async () => {
       extensionUi: { statuses: {}, widgets: [], headerLines: [], footerLines: [], workingVisible: true, pendingDialogs: [] } };
     ipcMain.handle("desktop:bootstrap", () => ({ interfaceLanguage: "ru", projects: [], conversations: [conversation], archivedConversations: [], activeConversationId: conversation.id, dataDir: temporary, sessionsDir: temporary }));
     ipcMain.handle("desktop:open-conversation", () => snapshot);
+    ipcMain.handle("desktop:project-location-issues", () => []);
     ipcMain.handle("pi:set-editor-text", () => undefined);
     ipcMain.handle("desktop:get-model-servers", () => []);
     ipcMain.handle("desktop:get-notebook-limit", () => 12000);
@@ -101,15 +102,29 @@ app.whenReady().then(async () => {
     const layout = () => window.webContents.executeJavaScript(`(()=>{
       const plan=document.querySelector('.conversation-plan'),panel=document.querySelector('.plan-panel'),body=document.querySelector('.plan-body'),composer=document.querySelector('.composer-wrap'),scroll=document.querySelector('.conversation-scroll');
       const p=plan.getBoundingClientRect(),c=composer.getBoundingClientRect(),s=scroll.getBoundingClientRect();
-      return {right:p.left>=c.right && p.left>=s.right,internalScroll:body.scrollHeight>body.clientHeight,outerScroll:composer.scrollHeight>composer.clientHeight+1,visible:panel.getBoundingClientRect().bottom<=innerHeight && c.bottom<=innerHeight,overflow:getComputedStyle(composer).overflowY};
+      const thread=document.querySelector('.thread').getBoundingClientRect();
+      return {
+        right:p.left>=c.right && p.left>=s.right && p.left>=thread.right,
+        aligned:Math.abs(thread.left-c.left)<=1 && Math.abs(thread.right-c.right)<=1,
+        internalScroll:body.scrollHeight>body.clientHeight,
+        visible:panel.getBoundingClientRect().bottom<=innerHeight && c.bottom<=innerHeight,
+        overflow:getComputedStyle(composer).overflowY,
+      };
     })()`);
     let geometry = await layout();
     assert.equal(geometry.right, true, "Wide layout puts plan beside chat and composer");
+    assert.equal(geometry.aligned, true, "Messages and composer share a column");
     assert.equal(geometry.internalScroll, true, "Long plan scrolls inside card");
     assert.equal(geometry.visible, true, "Plan and composer stay within viewport");
     assert.equal(geometry.overflow, "visible", "Composer has no outer scrollbar");
     phase = "capture right panel";
     writeFileSync(path.join(temporary, "plan-right.png"), (await window.webContents.capturePage()).toPNG());
+    phase = "check medium window";
+    window.setContentSize(1410, 860);
+    await waitFor("Math.abs(innerWidth - 1410) < 4 && getComputedStyle(document.querySelector('.conversation-plan')).position === 'absolute'");
+    geometry = await layout();
+    assert.equal(geometry.right, true, "The checklist clears the messages in a non-maximized window");
+    assert.equal(geometry.aligned, true, "Messages reflow beside the checklist");
     window.setSize(1100, 600);
     await waitFor("getComputedStyle(document.querySelector('.conversation-plan')).position !== 'absolute'");
     await new Promise(resolve => setTimeout(resolve, 300));

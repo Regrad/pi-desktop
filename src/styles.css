@@ -416,6 +416,10 @@ button:not(:disabled) {
 }
 
 .main-panel {
+  --chat-content-gutter: 48px;
+  --chat-side-panel-width: 320px;
+  --chat-side-panel-inset: 16px;
+  --chat-side-panel-space: calc(var(--chat-side-panel-width) + 2 * var(--chat-side-panel-inset));
   container-type: inline-size;
   min-width: 0;
   flex: 1;
@@ -547,7 +551,7 @@ button:not(:disabled) {
   .chat-timeline button span { transition: none; }
 }
 .thread {
-  width: min(760px, calc(100% - 48px));
+  width: min(760px, calc(100% - var(--chat-content-gutter)));
   margin: 0 auto;
   padding: 46px 0 28px;
 }
@@ -1470,7 +1474,7 @@ a.web-citation {
   display: flex;
   flex-direction: column;
   flex: 0 0 auto;
-  width: min(760px, calc(100% - 48px));
+  width: min(760px, calc(100% - var(--chat-content-gutter)));
   margin: 0 auto 14px;
   overflow: visible;
   padding: 1px 1px 0;
@@ -1560,13 +1564,13 @@ a.web-citation {
   flex-shrink: 1;
   min-height: 0;
 }
-@container (min-width: 1160px) {
-  .main-panel.has-plan > .conversation-plan {
+@container (min-width: 1040px) {
+  .main-panel > .conversation-plan {
     position: absolute;
     top: 64px;
-    right: 16px;
+    inset-inline-end: var(--chat-side-panel-inset);
     bottom: 16px;
-    width: 320px;
+    width: var(--chat-side-panel-width);
     max-height: none;
     margin: 0;
   }
@@ -1588,12 +1592,12 @@ a.web-citation {
   .conversation-plan .plan-step-status {
     margin-left: 26px;
   }
-  .main-panel.has-plan > .conversation-scroll {
-    margin-right: 352px;
+  .main-panel > .conversation-body:has(~ .conversation-plan) {
+    margin-inline-end: var(--chat-side-panel-space);
   }
-  .main-panel.has-plan > .composer-wrap {
-    width: min(760px, calc(100% - 400px));
-    left: -176px;
+  .main-panel > .conversation-plan ~ .composer-wrap {
+    width: min(760px, calc(100% - var(--chat-content-gutter) - var(--chat-side-panel-space)));
+    inset-inline-start: calc(var(--chat-side-panel-space) / -2);
   }
 }
 .composer-wrap.dropdown-open {
@@ -3606,10 +3610,13 @@ button.secondary.large {
   .path-button {
     display: none;
   }
+  .main-panel {
+    --chat-content-gutter: 28px;
+  }
   .thread,
   .composer-wrap,
   .conversation-plan {
-    width: calc(100% - 28px);
+    width: calc(100% - var(--chat-content-gutter));
   }
   .diff-panel {
     position: absolute;

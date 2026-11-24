@@ -6272,7 +6272,7 @@ export default function App() {
               </aside>
             )}
 
-            <main className={`main-panel${activeConversationId && (notebookOpen || (planningOpen && planning) || snapshot?.conversation.plan?.steps.length) ? " has-plan" : ""}`}
+            <main className="main-panel"
               onDragEnter={(event) => {
                 if (!Array.from(event.dataTransfer.types).includes("Files")) return;
                 event.preventDefault();
