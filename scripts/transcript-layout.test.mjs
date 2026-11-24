@@ -17,6 +17,8 @@ const split = new Function("hasAnswerText", `${extract("splitAssistantTimelineIt
 const webFoldHelpers = ["toolCallParts", "toolCallIdentifier", "toolResultIdentifier"].map(extract).join("\n");
 const build = new Function("messageKey", "splitAssistantTimelineItem", "hasAnswerText",
   `${webFoldHelpers}\n${extract("buildTranscriptDisplay")}; return buildTranscriptDisplay;`)(messageKey, split, hasAnswer);
+const webProcess = new Function("messageKey",
+  `${webFoldHelpers}\n${extract("groupWebProcess")}; return groupWebProcess;`)(messageKey);
 const offset = new Function(`${extract("filmScrollOffset")}; return filmScrollOffset;`)();
 const item = (sourceIndex, role, content, timestamp = 100) => ({
   kind: "message", sourceIndex, message: { role, timestamp, content },
@@ -35,6 +37,47 @@ test("web research keeps one stable row when further calls and the answer arrive
   assert.equal(completed[0].key, live.key);
   assert.deepEqual(completed[0].process, [first, other]);
   assert.equal(completed[0].answer, answer);
+});
+
+test("web search appears between earlier thoughts and the reasoning that follows it", () => {
+  const before = { type: "thinking", thinking: "Preparing a search" };
+  const search = { type: "toolCall", name: "web_search", id: "search-1" };
+  const after = { type: "thinking", thinking: "Evaluating citations" };
+  const call = { id: search.id, name: "web_search" };
+  const calls = new Map([[call.id, call]]);
+  const message = item(0, "assistant", [before, search, after]);
+  const sections = webProcess([message], calls, new Map());
+  assert.deepEqual(sections.map(section => section.kind), ["work", "search", "work"]);
+  assert.deepEqual(sections[0].items[0].message.content, [before]);
+  assert.deepEqual(sections[1].calls, [call]);
+  assert.deepEqual(sections[2].items[0].message.content, [after]);
+  assert.equal(sections[2].items[0].sourceMessage, message.message);
+
+  const first = item(0, "assistant", [before, search]);
+  const result = item(1, "toolResult", []);
+  result.message.toolCallId = call.id;
+  const next = item(2, "assistant", [after]);
+  const [fold] = build([first, result, next]);
+  const continued = webProcess(fold.process, calls, new Map());
+  assert.deepEqual(continued.map(section => section.kind), ["work", "search", "work"]);
+  assert.deepEqual(continued[1].calls, [call]);
+  assert.equal(continued[2].items[0], next);
+});
+
+test("adjacent direct and nested web calls share a section until later reasoning", () => {
+  const a = { id: "web-1", name: "web_search" };
+  const b = { id: "web-2", name: "web_search" };
+  const c = { id: "web-3", name: "web_search" };
+  const parent = item(0, "assistant", [{ type: "toolCall", name: "codemode", id: "parent" }]);
+  const direct = item(1, "assistant", [{ type: "toolCall", ...b }]);
+  const reasoning = item(2, "assistant", [{ type: "thinking", thinking: "Check a missing fact" }]);
+  const last = item(3, "assistant", [{ type: "toolCall", ...c }]);
+  const result = webProcess([parent, direct, reasoning, last], new Map([a, b, c].map(tool => [tool.id, tool])),
+    new Map([["parent", [a]]]));
+  assert.deepEqual(result.map(section => section.kind), ["work", "search", "work", "search"]);
+  assert.deepEqual(result[1].calls, [a, b]);
+  assert.deepEqual(result[3].calls, [c]);
+  assert.equal(result[2].items[0], reasoning);
 });
 
 test("tool-use commentary remains visible when the next assistant reply arrives", () => {

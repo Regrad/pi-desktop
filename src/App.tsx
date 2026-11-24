@@ -211,6 +211,10 @@ type TranscriptDisplayItem =
       answer?: TranscriptTimelineItem;
     };
 
+type TranscriptProcessSection =
+  | { kind: "work"; items: TranscriptTimelineItem[] }
+  | { kind: "search"; calls: ToolActivity[] };
+
 const THINKING_LABELS: Record<ThinkingLevel, string> = {
   off: "Без рассуждений",
   minimal: "Минимально",
@@ -1038,6 +1042,75 @@ function buildTranscriptDisplay(
   }
   flush();
   return result;
+}
+
+function groupWebProcess(
+  items: TranscriptTimelineItem[],
+  webTools: ReadonlyMap<string, ToolActivity>,
+  nestedSearches: ReadonlyMap<string, ToolActivity[]>,
+): TranscriptProcessSection[] {
+  const sections: TranscriptProcessSection[] = [];
+  const placed = new Set<string>();
+  const addWork = (item: TranscriptTimelineItem) => {
+    const last = sections.at(-1);
+    if (last?.kind === "work") last.items.push(item);
+    else sections.push({ kind: "work", items: [item] });
+  };
+  const addSearch = (tool: ToolActivity) => {
+    if (placed.has(tool.id)) return;
+    placed.add(tool.id);
+    const last = sections.at(-1);
+    if (last?.kind === "search") last.calls.push(tool);
+    else sections.push({ kind: "search", calls: [tool] });
+  };
+  for (const item of items) {
+    if (item.kind !== "message") {
+      addWork(item);
+      continue;
+    }
+    const { message, sourceIndex } = item;
+    const key = messageKey(message, sourceIndex);
+    if (message.role === "toolResult" || message.role === "tool") {
+      const tool = webTools.get(toolResultIdentifier(message) ?? key);
+      if (tool) addSearch(tool);
+      else addWork(item);
+      continue;
+    }
+    const idAt = (call: JsonObject, index: number) => toolCallIdentifier(call, `${key}-${index}`);
+    if (!toolCallParts(message).some((call, index) => webTools.has(idAt(call, index)) || nestedSearches.has(idAt(call, index)))) {
+      addWork(item);
+      continue;
+    }
+    let work: JsonObject[] = [];
+    let start = 0;
+    let callIndex = 0;
+    const flush = () => {
+      if (!work.length) return;
+      addWork({ ...item, sourceMessage: item.sourceMessage ?? message,
+        fragmentIndex: (item.fragmentIndex ?? 0) + start, message: { ...message, content: work } });
+      work = [];
+    };
+    const push = (part: JsonObject, index: number) => {
+      if (!work.length) start = index;
+      work.push(part);
+    };
+    (message.content as JsonObject[]).forEach((part, index) => {
+      if (part?.type !== "toolCall" && part?.type !== "tool_call") {
+        push(part, index);
+        return;
+      }
+      const id = idAt(part, callIndex++);
+      const direct = webTools.get(id);
+      const nested = nestedSearches.get(id);
+      if (!direct) push({ ...part, id }, index);
+      if (!direct && !nested) return;
+      flush();
+      if (direct) addSearch(direct);
+      nested?.forEach(addSearch);
+    });
+    flush();
+  }
+  return sections;
 }
 
 function resultMessagePayload(message: JsonObject): JsonObject {
@@ -5899,9 +5972,9 @@ export default function App() {
   };
   const renderDisplayItem = (display: TranscriptDisplayItem): ReactNode => {
     if (display.display === "single") return renderTranscriptItem(display.item);
-    const expanded = expandedProcessFolds.has(display.key);
     const imageTools: { id: string; name: string; result?: unknown; args?: unknown }[] = [];
     const webTools = new Map<string, ToolActivity>();
+    const nestedSearches = new Map<string, ToolActivity[]>();
     for (const item of display.process) {
       if (item.kind !== "message") continue;
       const message = item.message;
@@ -5909,9 +5982,9 @@ export default function App() {
         const tool = buildToolActivity(call, `${messageKey(message, item.sourceIndex)}-${index}`);
         imageTools.push(tool);
         if (tool.name === "web_search") webTools.set(tool.id, tool);
-        for (const child of nestedFor(tool.id)) {
-          if (child.name === "web_search") webTools.set(child.id, child);
-        }
+        const nested = nestedFor(tool.id).filter(child => child.name === "web_search");
+        if (nested.length) nestedSearches.set(tool.id, nested);
+        for (const child of nested) webTools.set(child.id, child);
       });
       if (message.role === "toolResult" || message.role === "tool") {
         const id = toolResultIdentifier(message) ?? messageKey(message, item.sourceIndex);
@@ -5932,41 +6005,57 @@ export default function App() {
       stopReason: answerMessage?.stopReason,
     });
     const published = collectAnswerMedia(imageTools, answerComplete, answerMessage ? messageText(answerMessage) : "");
-    const { calls, errors, thinking } = foldStats(display.process, webTools);
-    const showFold = webTools.size === 0 || calls > 0 || thinking || display.process.some(item => item.kind !== "message" || item.message.role === "custom");
-    const label =
-      thinking && calls
-        ? t("Размышления и инструменты")
-        : thinking
-          ? t("Размышления")
-          : calls
-            ? t("Инструменты")
-            : t("Ход работы");
-    const summary = [label];
-    if (calls) summary.push(t("вызовов: {0}", calls));
-    if (errors) summary.push(t("с ошибками: {0}", errors));
-    return (
-      <div className="process-fold">
-        {showFold && <button
+    const sections: TranscriptProcessSection[] = webTools.size
+      ? groupWebProcess(display.process, webTools, nestedSearches)
+      : [{ kind: "work", items: display.process }];
+    const renderWork = (items: TranscriptTimelineItem[], key: string) => {
+      if (!items.length) return null;
+      const { calls, errors, thinking } = foldStats(items, webTools);
+      const showFold = !webTools.size || calls > 0 || thinking ||
+        items.some(item => item.kind !== "message" || item.message.role === "custom");
+      if (!showFold) return null;
+      const expanded = expandedProcessFolds.has(key);
+      const label = thinking && calls ? t("Размышления и инструменты")
+        : thinking ? t("Размышления") : calls ? t("Инструменты") : t("Ход работы");
+      const summary = [label];
+      if (calls) summary.push(t("вызовов: {0}", calls));
+      if (errors) summary.push(t("с ошибками: {0}", errors));
+      return <>
+        <button
           type="button"
           className={`process-fold-head ${expanded ? "open" : ""}`}
-          onClick={() => toggleProcessFold(display.key)}
+          aria-expanded={expanded}
+          onClick={() => toggleProcessFold(key)}
         >
           <ChevronRight size={14} />
           <span>{summary.join(" · ")}</span>
-        </button>}
-        {showFold && expanded && (
-          <div className="process-fold-body">
-            {display.process.map((item, index) => (
-              <Fragment key={transcriptItemKey(item, index)}>
-                {renderTranscriptItem(item, published.toolIds, undefined, webTools)}
-              </Fragment>
-            ))}
-          </div>
-        )}
-        {webTools.size > 0 && <WebSearchActivity calls={[...webTools.values()].map(tool => ({
-          ...tool, args: parsedToolArguments(tool.args), output: tool.result === undefined ? "" : toolOutputText(tool.result),
-        }))} />}
+        </button>
+        {expanded && <div className="process-fold-body">
+          {items.map((item, index) => (
+            <Fragment key={transcriptItemKey(item, index)}>
+              {renderTranscriptItem(item, published.toolIds, undefined, webTools)}
+            </Fragment>
+          ))}
+        </div>}
+      </>;
+    };
+    return (
+      <div className="process-fold">
+        {sections.map((section, index) => {
+          if (section.kind === "search") return <WebSearchActivity key={`search:${section.calls[0].id}`} calls={section.calls.map(tool => ({
+            ...tool, args: parsedToolArguments(tool.args), output: tool.result === undefined ? "" : toolOutputText(tool.result),
+          }))} />;
+          const tail = section.items.at(-1);
+          const liveThinking = webTools.size > 0 && index === sections.length - 1 && !answer && hasStreamingThinking &&
+            tail?.kind === "message" && tail.message.role === "assistant" &&
+            (tail.sourceMessage ?? tail.message) === streamingMessage &&
+            !toolCallParts(tail.message).length;
+          const key = webTools.size ? `work:${transcriptItemKey(section.items[0], 0)}` : display.key;
+          return <Fragment key={key}>
+            {renderWork(liveThinking ? section.items.slice(0, -1) : section.items, key)}
+            {liveThinking && tail && renderTranscriptItem(tail)}
+          </Fragment>;
+        })}
         {answer && renderTranscriptItem(answer, undefined, published.parts)}
       </div>
     );
