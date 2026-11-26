@@ -41,7 +41,7 @@ test("embedded build installs request, summary and media bridges idempotently", 
   await put(target, "package.json", JSON.stringify({ name: "@earendil-works/pi-coding-agent", version: "1.5.2", type: "module" }));
   await put(targetProvider, "package.json", JSON.stringify({ name: "@earendil-works/pi-ai", version: "1.5.2", type: "module", main: "index.js" }));
   await put(targetProvider, "index.js", "export {};\n");
-  for (const file of ["dist/core/messages.js", "dist/core/compaction/compaction.js", "dist/extensions/codemode/tool.js", "dist/extensions/codemode/execute.js", "dist/core/agent-session.js", "dist/core/tools/bash.js"])
+  for (const file of ["dist/core/messages.js", "dist/core/system-prompt.js", "dist/core/compaction/compaction.js", "dist/extensions/codemode/tool.js", "dist/extensions/codemode/execute.js", "dist/core/agent-session.js", "dist/core/tools/bash.js"])
     await put(target, file, await readFile(path.join(core, file), "utf8"));
   await put(targetProvider, "dist/api/openai-completions.js", await readFile(path.join(provider, "dist/api/openai-completions.js"), "utf8"));
   for (const file of ["dist/utils/overflow.js", "dist/utils/retry.js"])
@@ -56,7 +56,7 @@ test("embedded build installs request, summary and media bridges idempotently", 
   assert.match(before[1], /serializeDesktopSummary/);
   assert.match(before[3], /toolResultMsg\.content = \[/);
   assert.match(before[4], /text\(await searchTools/);
-  assert.match(before[5], /messages = await this\._prepareRun\(trigger\)/);
+  assert.match(before[5], /messages = contextOnly \? \[\] : await this\._prepareRun\(trigger\)/);
   assert.match(before[5], /messageType: "custom", message: appMessage/);
   assert.match(before[6], /timeout = defaultShellTimeout\(command\)/);
   assert.match(before[6], /Execution may be partial/);
@@ -79,4 +79,9 @@ test("addon updates retain the MCP configuration bridge", async t => {
   await applyAddonRequestCompatibility(name, target);
   assert.deepEqual(await Promise.all(files.map(file => readFile(path.join(target, file), "utf8"))), before);
   await access(path.join(target, "desktop-config.js"));
+  await access(path.join(target, "catalog.js"));
+  const marker = await readFile(path.join(target, "desktop-compatibility.json"), "utf8");
+  assert.match(JSON.parse(marker).fingerprint, /^[a-f0-9]{64}$/);
+  await applyAddonRequestCompatibility(name, target);
+  assert.equal(await readFile(path.join(target, "desktop-compatibility.json"), "utf8"), marker);
 });

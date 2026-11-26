@@ -7,6 +7,7 @@ const snapshots = new Set([
   "desktop_implementation_plan_state",
   "desktop_access_state",
   "desktop_lens_advisory",
+  "desktop_mcp_catalog_state",
 ]);
 
 export function desktopContextEnabled() {

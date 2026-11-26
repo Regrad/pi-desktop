@@ -41,8 +41,17 @@ export function resolveAddonPackage(runtime: string, bundled: string, name: stri
   const bundledVersion = packageVersion(bundled);
   const permitted = (location: string) => {
     const version = packageVersion(location);
-    return version && (!bundledVersion || !versionIsNewer(bundledVersion, version))
-      && (version === testedAddons[addon] || version === bundledVersion);
+    if (!version || (bundledVersion && versionIsNewer(bundledVersion, version))
+      || (version !== testedAddons[addon] && version !== bundledVersion)) return false;
+    // Upstream versions do not identify our integration fixes. An older managed
+    // copy with the same version must not shadow the current bundled bridge.
+    if (addon === "pi-mcp-adapter") {
+      try {
+        const marker = "desktop-compatibility.json";
+        return readFileSync(path.join(location, marker), "utf8") === readFileSync(path.join(bundled, marker), "utf8");
+      } catch { return false; }
+    }
+    return true;
   };
   try {
     const generation = JSON.parse(readFileSync(addonPointer(runtime, addon), "utf8")).generation;

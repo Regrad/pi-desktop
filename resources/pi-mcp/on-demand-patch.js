@@ -8,7 +8,7 @@ function replaceOnce(source, from, to) {
 }
 
 export function patchMcpOnDemandIndex(source, version = "5.1.0") {
-  if (source.includes(indexMarker.trim())) return source;
+  if (source.includes(indexMarker.trim())) return patchMcpCatalog(source);
   const crlf = source.includes("\r\n");
   let result = source.replace(/\r\n/g, "\n");
   result = replaceOnce(result, "withConfigInfo, diagnosticError }", "withConfigInfo, diagnosticError, withDeferredServers }");
@@ -47,6 +47,39 @@ export function patchMcpOnDemandIndex(source, version = "5.1.0") {
   const search = `proxyModes.executeSearch(proxyState, params.search, params.regex, params.server, params.includeSchemas, params.limit, params.offset, params.searchMode, signal${version === "7.0.1" ? ", _ctx?.modelRegistry" : ""})`;
   result = replaceOnce(result, `const result = await ${search};`, `const result = withDeferredServers(await ${search}, proxyState);`);
   result = indexMarker + result;
+  return patchMcpCatalog(crlf ? result.replace(/\n/g, "\r\n") : result);
+}
+
+// Separate migration so existing installations already carrying v1 also upgrade.
+function patchMcpCatalog(source) {
+  const marker = "// Pi Desktop MCP capability catalog v1\n";
+  if (source.includes(marker.trim())) return source;
+  const crlf = source.includes("\r\n");
+  let result = source.replace(/\r\n/g, "\n");
+  result = replaceOnce(result, '  function registerProxyTool(description:', `  let desktopCatalog = [];
+  pi.on("context", event => {
+    if (!process.env.PI_DESKTOP_CONVERSATION_ID) return;
+    return { messages: catalogContext(event.messages, desktopCatalog, pi) };
+  });
+
+  function registerProxyTool(description:`);
+  result = replaceOnce(result, '      const description = desktopMcpDescription;', `      const description = desktopMcpDescription + (process.env.PI_DESKTOP_TOOL_ROUTING === "1" ? "\\n\\n" + catalogText(desktopCatalog) : "");`);
+  result = replaceOnce(result, '  function syncProxyTool(config: McpConfig, cache: MetadataCache | null, directSpecs: DirectToolSpec[]): void {',
+    `  function syncProxyTool(config: McpConfig, cache: MetadataCache | null, directSpecs: DirectToolSpec[]): void {
+    const nextCatalog = mcpCatalog(config, (name, definition) => {
+      const entry = cache?.servers?.[name];
+      return entry && isServerCacheValid(entry, definition) ? entry.tools : undefined;
+    });
+    const catalogChanged = JSON.stringify(nextCatalog) !== JSON.stringify(desktopCatalog);
+    desktopCatalog = nextCatalog;`);
+  result = replaceOnce(result, '      name: "mcp",\n      label: "MCP",\n      description,', `      name: "mcp",
+      label: "MCP",
+      description,
+      namespace: { name: "MCP", description: catalogText(desktopCatalog, 64000) },`);
+  result = replaceOnce(result, 'if (!proxyToolRegistered || proxyToolDescription !== description)',
+    'if (!proxyToolRegistered || proxyToolDescription !== description || catalogChanged)');
+  result = replaceOnce(result, ', proxyState);\n          assertRuntimeGuard(proxyGuard);\n          if (lazyDirectTools', ', proxyState, params);\n          assertRuntimeGuard(proxyGuard);\n          if (lazyDirectTools');
+  result = marker + 'import { mcpCatalog, catalogText, catalogContext } from "./catalog.js";\n' + result;
   return crlf ? result.replace(/\n/g, "\r\n") : result;
 }
 

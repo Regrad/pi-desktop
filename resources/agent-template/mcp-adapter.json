@@ -4,10 +4,12 @@
   },
   "mcpServers": {
     "godot-ai": {
+      "description": "Use the Godot editor to inspect and edit scenes, nodes, scripts and game projects.",
       "url": "http://127.0.0.1:8000/mcp",
       "directTools": false
     },
     "computer-use": {
+      "description": "Control desktop applications: view the screen, take screenshots, move and click the mouse, type and press keyboard keys on this computer.",
       "command": "${PI_DESKTOP_EXECUTABLE}",
       "args": ["${PI_DESKTOP_MCP_ENTRY}"],
       "env": {

@@ -78,6 +78,28 @@ test("RPC passes appRoot through to the add-on dependency resolver", () => {
   assert.match(rpc, /PI_DESKTOP_APP_ROOT: this\.options\.appRoot/);
 });
 
+test("same-version MCP overrides must match the bundled integration fingerprint", async t => {
+  const { bundled, runtime, resolve } = await fixture(t);
+  const name = "pi-mcp-adapter", marker = "desktop-compatibility.json";
+  const legacy = path.join(runtime, "node_modules", name);
+  const generation = "generation-ABC123";
+  const active = path.join(runtime, "desktop-addons", name, generation, "node_modules", name);
+  for (const directory of [bundled(name), legacy, active]) {
+    await mkdir(directory, { recursive: true });
+    await writeFile(path.join(directory, "package.json"), JSON.stringify({ version: testedAddons[name] }));
+  }
+  const current = JSON.stringify({ format: 1, fingerprint: "current" });
+  await writeFile(path.join(bundled(name), marker), current);
+  assert.equal(resolve(name), bundled(name), "unpatched legacy copy must not hide the bundled fix");
+  await writeFile(path.join(legacy, marker), current);
+  assert.equal(resolve(name), legacy);
+  await writeFile(addonPointer(runtime, name), JSON.stringify({ generation }));
+  await writeFile(path.join(active, marker), current);
+  assert.equal(resolve(name), active);
+  await writeFile(path.join(bundled(name), marker), JSON.stringify({ format: 1, fingerprint: "next-build" }));
+  assert.equal(resolve(name), bundled(name), "a newer bridge takes effect even with the same upstream version");
+});
+
 test("ComfyUI resolves bundled jiti with appRoot even outside node_modules", () => {
   const root = fileURLToPath(new URL("..", import.meta.url));
   const addonHost = new URL("../resources/pi-comfyui/lib/host.ts", import.meta.url).href;

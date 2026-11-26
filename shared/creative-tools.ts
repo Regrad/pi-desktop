@@ -10,9 +10,9 @@ export function creativeMcpServers(appRoot: string, executable: string) {
     lifecycle: "lazy",
     requestTimeoutMs: 300_000,
     description: {
-      blender: "Create, edit, render and export 3D models in Blender.",
-      aseprite: "Draw and animate pixel-art sprites in Aseprite.",
-      froxel: "Sculpt, rig, animate and export voxel models in Froxel.",
+      blender: "Use the Blender application to create, edit, render and export 3D models.",
+      aseprite: "Use the Aseprite editor to draw pixel art and create sprites and animations.",
+      froxel: "Use the Froxel editor to sculpt, rig, animate and export voxel models.",
     }[name],
   }]));
 }

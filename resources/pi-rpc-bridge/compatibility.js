@@ -1,4 +1,5 @@
 import { copyFile, readFile, writeFile } from "node:fs/promises";
+import { createHash } from "node:crypto";
 import { findPackageJSON } from "node:module";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -84,5 +85,10 @@ export async function applyAddonRequestCompatibility(name, root) {
     await patchFile(path.join(root, "server-manager.ts"), source => patchMcpOnDemandManager(source, version));
     await patchFile(path.join(root, "proxy-modes.ts"), patchMcpProxy);
     await copyFile(path.join(bridgeRoot, "..", "pi-mcp", "desktop-config.js"), path.join(root, "desktop-config.js"));
+    await copyFile(path.join(bridgeRoot, "..", "pi-mcp", "catalog.js"), path.join(root, "catalog.js"));
+    const sources = await Promise.all(["config-patch.js", "on-demand-patch.js", "desktop-config.js", "catalog.js"]
+      .map(file => readFile(path.join(bridgeRoot, "..", "pi-mcp", file), "utf8")));
+    const fingerprint = createHash("sha256").update(JSON.stringify(sources)).digest("hex");
+    await writeFile(path.join(root, "desktop-compatibility.json"), `${JSON.stringify({ format: 1, version, fingerprint })}\n`, "utf8");
   }
 }

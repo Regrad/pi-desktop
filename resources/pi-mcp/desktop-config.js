@@ -1,17 +1,17 @@
 import { readFileSync } from "node:fs";
 import stripJsonComments from "strip-json-comments";
+import { mcpCatalog, searchCatalog } from "./catalog.js";
 
-// Keep the model-facing tool definition independent of connection metadata.
-// Discovery stays live through tool results, without invalidating the prompt prefix.
+// Direct HTTP schemas stay stable. Deferred discovery can include the catalog.
 export const desktopMcpDescription = `MCP gateway: server status, discovery, configuration, URL installation, authentication, and single MCP tool calls. Use codemode for discovery and scripts, not mcpScript. Core file and shell tools remain direct.
-Discover current servers and capabilities through results, not a static inventory. Read server instructions before using unfamiliar tools.
+The capability catalog describes configured programs, not a guarantee they are running. Read server instructions before using unfamiliar tools.
 Connections open on demand. Status and global searches use saved metadata; mcp({server: "name"}) discovers that server when needed.
 Usage:
   mcp({}) -> Current server status
   mcp({action: "config", server: "name"}) -> Actual configuration paths and safe connection parameters (server optional)
   mcp({action: "install", url: "https://example.com/mcp", target: "global"}) -> Install and connect an MCP URL through normal trust/authentication checks; only with user authorization
   mcp({server: "name"}) -> List current server tools
-  mcp({search: "query"}) -> Search tools by name/description
+  mcp({search: "query"}) -> Search tools and configured server capabilities, including servers not yet connected
   mcp({describe: "tool_name", server: "name"}) -> Tool details and parameters (server optional)
   mcp({instructions: "name"}) -> Full server usage instructions
   mcp({connect: "name"}) -> Reread actual configuration, reconnect, and refresh metadata
@@ -30,13 +30,16 @@ export function safeEndpoint(value) {
   } catch { return "[invalid URL]"; }
 }
 
-export function withDeferredServers(result, state) {
-  const servers = Object.entries(state.config.mcpServers ?? {})
-    .filter(([name, definition]) => definition.disabled !== true && definition.enabled !== false && !state.toolMetadata.has(name))
-    .map(([name, definition]) => ({ name, ...(typeof definition.description === "string" ? { description: definition.description } : {}) }));
-  if (!servers.length) return result;
-  return { ...result, details: { ...result.details, undiscoveredServers: servers }, content: [...result.content,
-    { type: "text", text: `Tools from these servers have not been discovered yet: ${servers.map(server => server.name).join(", ")}. Use mcp({server: "NAME"}) to discover the server relevant to the task.` }] };
+export function withDeferredServers(result, state, search) {
+  const candidates = mcpCatalog(state.config, name => state.toolMetadata.get(name));
+  const matches = search ? searchCatalog(candidates, search.search, search) : candidates;
+  const servers = matches
+    .filter(entry => !state.toolMetadata.has(entry.name))
+    .map(({ name, description, source }) => ({ name, ...(source !== "unknown" ? { description } : {}) }));
+  const serverMatches = search ? matches : undefined;
+  if (!servers.length && !serverMatches?.length) return result;
+  return { ...result, details: { ...result.details, ...(serverMatches ? { serverMatches } : {}), undiscoveredServers: servers }, content: [...result.content,
+    { type: "text", text: `Matching MCP servers (metadata, not additional tools):\n${JSON.stringify(matches)}\nUse mcp({server: "NAME"}) to discover the server relevant to the task.` }] };
 }
 
 export function connectionSummary(definition = {}) {

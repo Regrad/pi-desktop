@@ -547,6 +547,9 @@ export class DataStore {
         ],
         env: { ELECTRON_RUN_AS_NODE: "1" },
         directTools: directToolsEnabled,
+        description: typeof computerUse?.description === "string" && computerUse.description.trim()
+          ? computerUse.description
+          : "Control desktop applications: view the screen, take screenshots, move and click the mouse, type and press keyboard keys on this computer.",
       };
     }
     await writeFile(configPath, `${JSON.stringify(config, null, 2)}\n`, "utf8");
