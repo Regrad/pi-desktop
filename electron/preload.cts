@@ -47,6 +47,7 @@ const api: PiDesktopApi = {
   removeQueuedPrompt: (conversationId, promptId) =>
     ipcRenderer.invoke("desktop:remove-queued-prompt", conversationId, promptId),
   abort: (conversationId) => ipcRenderer.invoke("pi:abort", conversationId),
+  pauseConversation: (conversationId) => ipcRenderer.invoke("pi:pause", conversationId),
   resumeConversation: (conversationId) => ipcRenderer.invoke("pi:resume", conversationId),
   rewindConversation: (conversationId, entryId) => ipcRenderer.invoke("pi:rewind", conversationId, entryId),
   editLastMessage: (conversationId, entryId, text) => ipcRenderer.invoke("pi:edit-last-message", conversationId, entryId, text),

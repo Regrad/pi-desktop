@@ -1931,6 +1931,14 @@ a.web-citation {
   border-radius: 16px;
   white-space: nowrap;
 }
+.run-pause-status {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 0 10px 8px;
+  color: #73766f;
+  font-size: 12px;
+}
 .status-line {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));

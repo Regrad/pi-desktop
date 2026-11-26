@@ -407,6 +407,7 @@ export interface ExtensionUiRequest {
 }
 
 export interface ConversationRun {
+  pause?: "requested" | "paused";
   interruption?: { planRevision?: number; goalId?: string };
   error?: string;
   startedAt: string;
@@ -467,6 +468,7 @@ export interface PiDesktopApi {
   sendQueuedPrompt(conversationId: string, promptId: string): Promise<QueuedPrompt[]>;
   removeQueuedPrompt(conversationId: string, promptId: string): Promise<QueuedPrompt[]>;
   abort(conversationId: string): Promise<void>;
+  pauseConversation(conversationId: string): Promise<void>;
   resumeConversation(conversationId: string): Promise<void>;
   rewindConversation(conversationId: string, entryId: string): Promise<ConversationSnapshot>;
   editLastMessage(conversationId: string, entryId: string, text: string): Promise<void>;

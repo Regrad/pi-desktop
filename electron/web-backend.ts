@@ -42,6 +42,7 @@ export function webBackend(store: DataStore, manager: PiManager, options?: { met
     sendQueuedPrompt: (id: string, prompt: string) => manager.sendQueuedPrompt(id, prompt),
     removeQueuedPrompt: (id: string, prompt: string) => manager.removeQueuedPrompt(id, prompt),
     abort: (id: string) => manager.abort(id),
+    pauseConversation: (id: string) => manager.pauseConversation(id),
     resumeConversation: (id: string) => manager.resumeConversation(id),
     setGoal: (id: string, objective: string, attachments: Attachment[]) => manager.setGoal(id, objective, attachments),
     controlGoal: (id: string, action: "pause" | "resume" | "remove") => manager.controlGoal(id, action),

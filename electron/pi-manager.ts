@@ -372,6 +372,8 @@ export class PiManager {
   ): Promise<void> {
     if (typeof message !== "string" || (!message.trim() && !attachments.length))
       throw new Error("Сообщение не может быть пустым.");
+    const pausedRun = this.runtimes.get(conversationId)?.activeRun ?? await this.historyAwareRun(this.store.getConversation(conversationId));
+    const resumePaused = Boolean(pausedRun?.pause && behavior === "resume");
     this.store.getConversation(conversationId);
     if (attachments.length) attachments = await storeChatAttachments(this.store.dataDir, conversationId, attachments);
     if (this.planningTransitions.has(conversationId)) throw new Error("Дождитесь переключения режима.");
@@ -404,6 +406,10 @@ export class PiManager {
       && !runtime.snapshot?.extensionState.activeTools.includes("update_implementation_plan"))
       throw new Error("Защита режима «План» не загрузилась. Работа запрещена; проверьте ошибки расширений.");
     await this.reloadPendingInstructions(conversationId, runtime);
+    if (pausedRun?.pause && behavior !== "resume") {
+      const changes = this.pausedWorkChanges(conversationId, pausedRun);
+      if (Object.keys(changes).length) await this.updateConversation(conversationId, changes);
+    }
     if (
       expectedGoalId &&
       (this.store.getConversation(conversationId).goal?.id !== expectedGoalId ||
@@ -556,7 +562,7 @@ export class PiManager {
         if (runtime.runAborted) throw new Error("Продолжение отменено пользователем.");
         runtime.pendingPlanStartRevision = conversation.plan?.execution === "active" ? conversation.plan.revision : undefined;
         runtime.planContinuationQueued = conversation.plan?.execution === "active";
-        await runtime.rpc.request("desktop_run_resume");
+        await runtime.rpc.request(resumePaused ? "desktop_pause_resume" : "desktop_run_resume");
       }
       else if (behavior === "steer") await runtime.rpc.request("steer", payload);
       else if (behavior === "followUp")
@@ -607,6 +613,10 @@ export class PiManager {
   ): Promise<QueuedPrompt[]> {
     if (typeof message !== "string" || (!message.trim() && !attachments.length))
       throw new Error("Сообщение не может быть пустым.");
+    if (this.runtimes.get(conversationId)?.activeRun?.pause) {
+      await this.sendPrompt(conversationId, message, attachments, "steer", undefined, false, requestPlan);
+      return this.store.getQueuedPrompts(conversationId);
+    }
     this.store.getConversation(conversationId);
     if (attachments.length) attachments = await storeChatAttachments(this.store.dataDir, conversationId, attachments);
     const queued = await this.store.queuePrompt(
@@ -660,6 +670,24 @@ export class PiManager {
     return queued;
   }
 
+  async pauseConversation(conversationId: string): Promise<void> {
+    const runtime = this.runtimes.get(conversationId);
+    if (!runtime?.activeRun || runtime.activeRun.completedAt || runtime.activeRun.pause) return;
+    runtime.activeRun = { ...runtime.activeRun, pause: "requested" };
+    if (runtime.snapshot) runtime.snapshot.run = structuredClone(runtime.activeRun);
+    this.publish("pi:event", { conversationId, event: { type: "desktop_run_state", run: runtime.activeRun } });
+    try {
+      await runtime.rpc.request("desktop_pause");
+    } catch (error) {
+      if (runtime.activeRun.pause === "requested") {
+        runtime.activeRun = { ...runtime.activeRun, pause: undefined };
+        if (runtime.snapshot) runtime.snapshot.run = structuredClone(runtime.activeRun);
+        this.publish("pi:event", { conversationId, event: { type: "desktop_run_state", run: runtime.activeRun } });
+      }
+      throw error;
+    }
+  }
+
   async abort(conversationId: string): Promise<void> {
     this.invalidateStartup(conversationId);
     this.cancelBrowserRequests?.(conversationId);
@@ -686,6 +714,18 @@ export class PiManager {
     await Promise.all([cancellation, persistence, runPersistence]);
   }
 
+  private pausedWorkChanges(conversationId: string, run?: ConversationRun): Partial<ConversationRecord> {
+    const conversation = this.store.getConversation(conversationId);
+    const changes: Partial<ConversationRecord> = {};
+    if (isPlanning(conversation.planning)) return changes;
+    // Resume only states paused by this run, preserving newer manual edits.
+    if (run?.interruption?.planRevision === conversation.plan?.revision && conversation.plan?.execution === "paused")
+      changes.plan = updatedPlan({ execution: "active", explanation: "" }, conversation.plan);
+    if (run?.interruption?.goalId === conversation.goal?.id && conversation.goal?.status === "paused")
+      changes.goal = { ...conversation.goal, status: "active", stalledSteps: 0, updatedAt: new Date().toISOString() };
+    return changes;
+  }
+
   async resumeConversation(conversationId: string): Promise<void> {
     if (this.resumingRuns.has(conversationId)) return;
     this.resumingRuns.add(conversationId);
@@ -700,18 +740,9 @@ export class PiManager {
         throw new Error("Дождитесь остановки текущего прогона.");
       if (!canResumeRun(snapshot.run)) throw new Error("Нет прерванной работы для продолжения.");
       previousRun = snapshot.run;
-      const conversation = this.store.getConversation(conversationId);
-      const changes: Partial<ConversationRecord> = {};
-      // Restore only the state paused by this interruption, never unrelated
-      // manually paused work or a checklist edited after the interruption.
-      if (!isPlanning(conversation.planning) && previousRun?.interruption?.planRevision === conversation.plan?.revision && conversation.plan?.execution === "paused") {
-        changes.plan = updatedPlan({ execution: "active", explanation: "" }, conversation.plan);
-        resumedPlanRevision = changes.plan.revision;
-      }
-      if (!isPlanning(conversation.planning) && previousRun?.interruption?.goalId === conversation.goal?.id && conversation.goal?.status === "paused") {
-        changes.goal = { ...conversation.goal, status: "active", stalledSteps: 0, updatedAt: new Date().toISOString() };
-        resumedGoalId = changes.goal.id;
-      }
+      const changes = this.pausedWorkChanges(conversationId, previousRun);
+      resumedPlanRevision = changes.plan?.revision;
+      resumedGoalId = changes.goal?.id;
       if (Object.keys(changes).length) await this.updateConversation(conversationId, changes);
       await this.sendPrompt(conversationId, "Продолжить прерванную работу.", [], "resume");
     } catch (error) {
@@ -1780,6 +1811,13 @@ export class PiManager {
   ): Promise<void> {
     const runtime = this.runtimes.get(conversationId);
     if (!runtime) return;
+    if (event.type === "desktop_pause_state" && runtime.activeRun) {
+      runtime.activeRun = { ...runtime.activeRun, pause: event.pause === "requested" || event.pause === "paused" ? event.pause : undefined };
+      if (runtime.snapshot) runtime.snapshot.run = structuredClone(runtime.activeRun);
+      await this.store.saveConversationRun(conversationId, runtime.activeRun);
+      this.publish("pi:event", { conversationId, event: { ...event, run: runtime.activeRun } });
+      return;
+    }
     // Track this run's outcome from events, not the last projected message:
     // Pi may omit a failed attempt from model history before retry is cancelled.
     if (event.type === "message_end" && (event.message as JsonObject | undefined)?.role === "assistant") {
@@ -1824,6 +1862,7 @@ export class PiManager {
       if (runtime.snapshot) runtime.snapshot.state.isStreaming = true;
       await this.updateConversation(conversationId, { status: "working" });
     } else if (event.type === "agent_settled") {
+      if (runtime.activeRun?.pause && event.aborted === true) runtime.runAborted = true;
       runtime.planWorkingRevision = undefined;
       // A finished run stays marked until the chat is opened again: whoever is
       // reading another chat needs to see which one reported back.
@@ -1919,7 +1958,7 @@ export class PiManager {
                 status: "paused" as const,
                 updatedAt: new Date().toISOString(),
                 evidence:
-                  "Ответ прерван или завершился ошибкой. Проверьте чат перед продолжением.",
+                  runtime.activeRun?.pause ? "Работа приостановлена пользователем." : "Ответ прерван или завершился ошибкой. Проверьте чат перед продолжением.",
               }
             : settleGoal(settledGoal, runtime.goalProgressAtStart ?? "");
         await this.updateConversation(conversationId, { goal: next });
@@ -1929,7 +1968,7 @@ export class PiManager {
       const hasQueued = this.store.getQueuedPrompts(conversationId).length > 0;
       const currentPlan = this.store.getConversation(conversationId).plan;
       if (!completedNormally && currentPlan?.execution === "active") {
-        const pausedPlan = updatedPlan({ execution: "paused", explanation: "Автопродолжение приостановлено: ошибка или прерывание. Проверьте чат и дайте команду продолжить." }, currentPlan);
+        const pausedPlan = updatedPlan({ execution: "paused", explanation: runtime.activeRun?.pause ? "Работа приостановлена пользователем." : "Автопродолжение приостановлено: ошибка или прерывание. Проверьте чат и дайте команду продолжить." }, currentPlan);
         await this.updateConversation(conversationId, { plan: pausedPlan });
         if (runtime.activeRun)
           runtime.activeRun = { ...runtime.activeRun, interruption: { ...runtime.activeRun.interruption, planRevision: pausedPlan.revision } };

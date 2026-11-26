@@ -13,6 +13,7 @@
 import * as crypto from "node:crypto";
 import { readFileSync, realpathSync, statSync } from "node:fs";
 import path from "node:path";
+import { createRunPause } from "./pause.js";
 import { estimateTokens } from '@earendil-works/pi-coding-agent';
 import { KeybindingsManager, flushRawStdout, takeOverStdout, waitForRawStdoutBackpressure, writeRawStdout,
     killTrackedDetachedChildren, getTheme, toJsonEvent, attachJsonlLineReader, serializeJsonLine } from './bindings.mjs';
@@ -148,6 +149,8 @@ export async function runRpcMode(runtimeHost) {
     const theme = getTheme();
     takeOverStdout();
     let session = runtimeHost.session;
+    let pause;
+    let unsubscribePause;
     let titleController;
     let messageSync = createMessageSync();
     let unsubscribe;
@@ -540,6 +543,8 @@ export async function runRpcMode(runtimeHost) {
         }
         unsubscribe?.();
         unsubscribeBackpressure?.();
+        unsubscribePause?.();
+        pause = createRunPause(session, output);
         pendingModelFileMutations.clear();
         unsubscribe = session.subscribe((event) => {
             let desktopEvent = toDesktopJsonEvent(event);
@@ -584,9 +589,11 @@ export async function runRpcMode(runtimeHost) {
             }
             output(desktopEvent);
             if (event.type === "agent_settled") {
+                pause.observe(event);
                 void checkShutdownRequested();
             }
         });
+        unsubscribePause = session.agent.subscribe(event => pause.observe(event));
         unsubscribeBackpressure = session.agent.subscribe(async () => {
             await waitForRawStdoutBackpressure();
         });
@@ -611,6 +618,17 @@ export async function runRpcMode(runtimeHost) {
     const handleCommand = async (command) => {
         const id = command.id;
         switch (command.type) {
+            case "desktop_pause": {
+                titleController?.abort(new Error("Отправка приостановлена пользователем."));
+                await pause.request();
+                return success(id, command.type);
+            }
+            case "desktop_pause_resume": {
+                if (session.isStreaming || session.isCompacting) return error(id, command.type, "Thread is not idle");
+                pause.clear();
+                await session.desktopContinue();
+                return success(id, command.type);
+            }
             case "desktop_plan_continue":
             case "desktop_plan_implement":
             case "desktop_goal_continue":
@@ -643,6 +661,7 @@ export async function runRpcMode(runtimeHost) {
                 }
             }
             case "prompt": {
+                if (!session.isStreaming) pause.clear();
                 // Start prompt handling immediately, but emit the authoritative response only after
                 // prompt preflight succeeds. Queued and immediately handled prompts also count as success.
                 let preflightSucceeded = false;
@@ -664,7 +683,10 @@ export async function runRpcMode(runtimeHost) {
                 return undefined;
             }
             case "steer": {
-                const disposition = await session.steer(command.message, command.images, { source: "rpc" });
+                const disposition = session.isStreaming
+                    ? await session.steer(command.message, command.images, { source: "rpc" })
+                    : await session.prompt(command.message, { images: command.images, source: "rpc" });
+                pause.clear();
                 return success(id, "steer", { disposition });
             }
             case "follow_up": {
@@ -697,6 +719,7 @@ export async function runRpcMode(runtimeHost) {
                     model: session.model,
                     thinkingLevel: session.thinkingLevel,
                     isStreaming: session.isStreaming,
+                    pause: pause.state,
                     isCompacting: session.isCompacting,
                     steeringMode: session.steeringMode,
                     followUpMode: session.followUpMode,
@@ -1039,6 +1062,7 @@ export async function runRpcMode(runtimeHost) {
         }
         unsubscribe?.();
         unsubscribeBackpressure?.();
+        unsubscribePause?.();
         await runtimeHost.dispose();
         detachInput();
         process.stdin.pause();

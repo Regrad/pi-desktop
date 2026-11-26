@@ -279,6 +279,7 @@ function registerIpc(): void {
     piManager.removeQueuedPrompt(conversationId, promptId),
   );
   ipcMain.handle("pi:abort", (_event, conversationId: string) => piManager.abort(conversationId));
+  ipcMain.handle("pi:pause", (_event, conversationId: string) => piManager.pauseConversation(conversationId));
   ipcMain.handle("pi:resume", (_event, conversationId: string) => piManager.resumeConversation(conversationId));
   ipcMain.handle("pi:set-goal", (_event, id: string, objective: string, attachments: Attachment[], requestPlan?: boolean) =>
     piManager.setGoal(id, objective, attachments, requestPlan === true));

@@ -27,6 +27,7 @@ import {
   MoreHorizontal,
   PanelLeft,
   Paperclip,
+  Pause,
   Plus,
   Play,
   Search,
@@ -3710,6 +3711,7 @@ export default function App() {
   const [activeProjectId, setActiveProjectId] = useState<string>();
   const [activeConversationId, setActiveConversationId] = useState<string>();
   const [snapshot, setSnapshot] = useState<ConversationSnapshot>();
+  const [runControlPending, setRunControlPending] = useState<string>();
   const [messages, setMessages] = useState<JsonObject[]>([]);
   const messageOffsetRef = useRef(0);
   const [historyPage, setHistoryPage] = useState<ChatHistoryPage>();
@@ -5063,6 +5065,18 @@ export default function App() {
     });
   };
   const primaryAction = composerAction(working, Boolean(input.trim() || attachments.length || historyQuotes.length), snapshot?.run);
+  const forceStop = snapshot?.run?.pause === "requested" || snapshot?.state.isCompacting;
+  const controlRun = async () => {
+    if (!activeConversationId || runControlPending === activeConversationId) return;
+    const id = activeConversationId;
+    setRunControlPending(id);
+    try {
+      if (forceStop) await window.piDesktop.abort(id);
+      else await window.piDesktop.pauseConversation(id);
+    } catch (error) {
+      addNotice(error instanceof Error ? error.message : String(error), "error");
+    } finally { setRunControlPending(undefined); }
+  };
   const resumeExecution = async () => {
     if (!activeConversationId || !beginRequest(activeConversationId)) return;
     const id = activeConversationId;
@@ -6551,6 +6565,10 @@ export default function App() {
                       working={working}
                     />
                   )}
+                  {snapshot?.run?.pause && <div className="run-pause-status" role="status" aria-live="polite">
+                    <Pause size={13} />
+                    <span>{working ? t("Пауза после завершения инструмента") : t("На паузе")}</span>
+                  </div>}
                   {working && runDiff && runDiff.files.length > 0 && (
                       <div className="live-diff-summary">
                         <button
@@ -6946,7 +6964,7 @@ export default function App() {
                         <>
                           <button
                             className="send-button"
-                            title={t("Поставить в очередь")}
+                            title={snapshot?.run?.pause ? t("Отправить сейчас") : t("Поставить в очередь")}
                             disabled={!input.trim() && !attachments.length && !historyQuotes.length}
                             onClick={() => void submit()}
                           >
@@ -6954,12 +6972,12 @@ export default function App() {
                           </button>
                           <button
                             className="send-button stop"
-                            title={t("Остановить")}
-                            onClick={() =>
-                              void window.piDesktop.abort(activeConversationId).catch(error => addNotice(String(error), "error"))
-                            }
+                            title={forceStop ? t("Прервать сейчас") : t("Пауза")}
+                            aria-label={forceStop ? t("Прервать сейчас") : t("Пауза")}
+                            disabled={runControlPending === activeConversationId}
+                            onClick={() => void controlRun()}
                           >
-                            <CircleStop size={18} />
+                            {forceStop ? <CircleStop size={18} /> : <Pause size={18} />}
                           </button>
                         </>
                       ) : (

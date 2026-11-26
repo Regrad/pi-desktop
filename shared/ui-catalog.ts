@@ -1,6 +1,9 @@
 // Application UI strings. Russian source keys preserve the original wording.
 // Keep placeholders identical in both languages; never put model or user text here.
 export const englishUi: Readonly<Record<string, string>> = {
+  "Пауза после завершения инструмента": "Pausing after the tool finishes",
+  "Прервать сейчас": "Stop immediately",
+  "Отправить сейчас": "Send now",
   "Новый чат": "New chat",
   "Навигация по чату": "Chat navigation",
   "К сообщению от {0}": "Jump to message from {0}",
@@ -578,7 +581,7 @@ export const englishUi: Readonly<Record<string, string>> = {
   "Встроенные workflows работают локально. Облачные API-узлы ComfyUI запрещены. Импортируйте только доверенные workflows и custom nodes: произвольные сторонние узлы могут самостоятельно обращаться в интернет.": "Built-in workflows run locally. ComfyUI cloud API nodes are blocked. Import only trusted workflows and custom nodes: third-party nodes may access the internet independently.",
   "Сохранено. Настройки действуют при следующем вызове инструмента.": "Saved. Settings apply to the next tool call.",
   "Работает": "Working",
-  "Пауза": "Paused",
+  "Пауза": "Pause",
   "Нужен ваш ответ": "Needs your input",
   "Выполнено": "Completed",
   "Лимит токенов": "Token limit",
