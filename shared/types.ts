@@ -52,7 +52,8 @@ export interface ConversationAccess {
   phase: "idle" | "review" | "approved";
   revision: number;
   started?: boolean;
-  proposal?: { description: string; targets: string[]; risks: string };
+  proposal?: { description: string; targets: string[]; risks: string;
+    source?: { messageId: string; userMessageId: string; toolCallId: string } };
 }
 
 export type PlanStatus = "pending" | "in_progress" | "waiting" | "skipped" | "completed";

@@ -8,6 +8,7 @@ import * as access from "../shared/access.ts";
 import { isPlanning, planningToolAllowed, revisePlanning, completePlanning, controlPlanningState } from "../shared/planning.ts";
 import { desktopPlanningLocked, assertPlanningModelAccess, guardExtensionHandler } from "../resources/tool-routing/desktop-planning-permissions.js";
 import { discardDelayedStateSnapshots, projectDesktopServiceContext } from "../resources/pi-rpc-bridge/service-context.js";
+import { getApprovalMessage, installApprovalBoundary } from "../resources/pi-engine/approval.js";
 
 const hook = registerHooks({ resolve(specifier, context, next) {
   if (specifier.startsWith(".") && specifier.endsWith(".js") && context.parentURL?.startsWith("file:")) {
@@ -46,7 +47,11 @@ function fixture(initial = access.defaultAccess(), planning) {
   let current = initial;
   const handlers = new Map(), tools = new Map(), messages = [];
   planningExtension({ on(name, fn) { handlers.set(name, fn); }, registerTool(tool) { tools.set(tool.name, tool); }, sendMessage(m) { messages.push(m); } },
-    () => planning, async (name, params) => { assert.equal(name, "request_changes"); current = access.proposeAccess(params, current); return { access: current }; }, () => current);
+    () => planning, async (name, params) => {
+      assert.equal(name, "request_changes"); assert.deepEqual(params, { toolCallId: "id" });
+      current = access.proposeAccess(proposal, current);
+      return { access: { mode: current.mode, phase: current.phase, revision: current.revision } };
+    }, () => current);
   return { handlers, tools, messages, get state() { return current; }, set state(next) { current = next; } };
 }
 
@@ -57,7 +62,10 @@ test("the same gate protects direct and nested writes; plan mode remains indepen
   for (const name of ["write", "edit", "bash", "powershell", "mcp", "media_generate_3d", "update_checklist", "create_goal"]) {
     assert.equal(call(name, name === "update_checklist" ? { execution: "active" } : {}).block, true, name);
   }
-  await f.tools.get("request_changes").execute("id", proposal);
+  assert.deepEqual(f.tools.get("request_changes").parameters.properties, {});
+  assert.equal(f.tools.get("request_changes").parameters.additionalProperties, false);
+  const result = await f.tools.get("request_changes").execute("id", {});
+  assert.equal(result.content[0].text.includes(proposal.description), false);
   assert.equal(call("write").block, true, "the proposal cannot approve itself");
   f.state = access.controlAccess("approve", f.state.revision, f.state);
   assert.equal(call("write"), undefined);
@@ -149,10 +157,77 @@ test("permission can be revoked while a tool runs, locking access before abort c
 test("host never accepts a checklist as approval, even if an extension calls it directly", async () => {
   const handle = hostMethod("  private async handleGoalRequest(", "async function run(conversationId, request)");
   const conversation = {};
-  const host = { store: { getConversation: () => conversation }, runtimes: new Map(), planningTransitions: new Set(), async updateConversation(_id, changes) { Object.assign(conversation, changes); } };
+  const source = { text: proposal.description, messageId: "assistant", userMessageId: "user", toolCallId: "call" };
+  const host = { store: { getConversation: () => conversation }, runtimes: new Map([["chat", { rpc: { async request() { return source; } } }]]), planningTransitions: new Set(), async updateConversation(_id, changes) { Object.assign(conversation, changes); } };
   await assert.rejects(handle.call(host, "chat", { action: "update_checklist", params: { execution: "active", plan: [] } }), /запрещены/);
-  const result = await handle.call(host, "chat", { action: "request_changes", params: proposal });
-  assert.equal(result.access.phase, "review"); assert.equal(access.accessLocked(result.access), true);
+  await assert.rejects(handle.call(host, "chat", { action: "request_changes", params: proposal }), /параметров/);
+  const result = await handle.call(host, "chat", { action: "request_changes", params: { toolCallId: "call" } });
+  assert.equal(result.access.phase, "review"); assert.equal(access.accessLocked(conversation.access), true);
+  assert.equal(result.access.proposal, undefined, "acknowledgment does not repeat the proposal");
+  assert.equal(conversation.access.proposal.description, source.text);
+  assert.deepEqual(conversation.access.proposal.source, { messageId: "assistant", userMessageId: "user", toolCallId: "call" });
+});
+
+function proposalSession(callId = "call") {
+  const branch = [{ type: "message", id: "u", message: { role: "user", content: "draw" } },
+    { type: "message", id: "a", message: { role: "assistant", content: [
+      { type: "thinking", thinking: "private draft" }, { type: "text", text: proposal.description },
+      { type: "toolCall", id: callId, name: "request_changes", arguments: {} }] } }];
+  return { branch, sessionManager: { getBranch: () => branch } };
+}
+
+test("approval captures only visible text from the current reply and supports nested calls", () => {
+  const f = proposalSession();
+  assert.deepEqual(getApprovalMessage(f.sessionManager, "call"), { messageId: "a", userMessageId: "u", toolCallId: "call", text: proposal.description });
+  assert.equal(getApprovalMessage(f.sessionManager, "call/request_changes/1").messageId, "a");
+  assert.throws(() => getApprovalMessage(f.sessionManager, "other"), /current reply/);
+  f.branch[1].message.content = f.branch[1].message.content.filter(x => x.type !== "text");
+  assert.throws(() => getApprovalMessage(f.sessionManager, "call"), /Explain/);
+  f.branch.push({ type: "message", id: "u2", message: { role: "user", content: "change scope" } });
+  assert.throws(() => getApprovalMessage(f.sessionManager, "call"), /current reply/);
+});
+
+test("the approval boundary ends only the bound turn, preserving SDK hooks and cleanup", async () => {
+  const f = proposalSession(), events = [];
+  let hooks = 0, current = access.proposeAccess(proposal);
+  current.proposal.source = getApprovalMessage(f.sessionManager, "call");
+  const previous = async () => { hooks++; return { action: "continue" }; };
+  const session = { sessionManager: f.sessionManager, agent: { finishTurn: previous } };
+  const remove = installApprovalBoundary(session, () => current, event => events.push(event));
+  const turn = { message: f.branch[1].message };
+  assert.deepEqual(await session.agent.finishTurn(turn), { action: "end" });
+  assert.equal(hooks, 1); assert.deepEqual(events, [{ type: "desktop_approval_wait", revision: 1 }]);
+  assert.deepEqual(await session.agent.finishTurn(turn, { aborted: true }), { action: "continue" });
+  current = access.closeAccess(current);
+  assert.deepEqual(await session.agent.finishTurn(turn), { action: "continue" });
+  assert.equal(events.length, 1, "cancelled requests cannot end another turn");
+  remove(); assert.equal(session.agent.finishTurn, previous);
+});
+
+test("a changed history branch cannot approve a bound proposal or dispatch generation", async () => {
+  const control = hostMethod("  async controlAccess(", "async function run(conversationId, action, expectedRevision)");
+  const conversation = { access: access.proposeAccess(proposal) };
+  conversation.access.proposal.source = { messageId: "a", userMessageId: "u", toolCallId: "call" };
+  const host = { planningTransitions: new Set(), runtimes: new Map([["chat", { rpc: { async request() { throw new Error("stale branch"); } } }]]),
+    startingRuntimes: new Map(), store: { getConversation: () => conversation, getQueuedPrompts: () => [] },
+    async updateConversation() { assert.fail("must not grant permission"); }, async sendPrompt() { assert.fail("must not generate"); } };
+  await assert.rejects(control.call(host, "chat", "approve", 1), /stale branch/);
+  assert.equal(access.accessLocked(conversation.access), true);
+});
+
+test("host treats the bound approval wait as a normal finish without masking cancellation or stale events", async () => {
+  const handle = hostMethod("  private async handleEvent(", "async function run(conversationId, event)");
+  const conversation = { access: access.proposeAccess(proposal) };
+  const runtime = { runStopReason: "toolUse" };
+  const host = { runtimes: new Map([["chat", runtime]]), store: { getConversation: () => conversation }, publish() {} };
+  await handle.call(host, "chat", { type: "desktop_approval_wait", revision: 1 });
+  assert.equal(runtime.runStopReason, "stop");
+  runtime.runStopReason = "toolUse";
+  await handle.call(host, "chat", { type: "desktop_approval_wait", revision: 0 });
+  assert.equal(runtime.runStopReason, "toolUse");
+  runtime.runAborted = true; runtime.runStopReason = "aborted";
+  await handle.call(host, "chat", { type: "desktop_approval_wait", revision: 1 });
+  assert.equal(runtime.runStopReason, "aborted");
 });
 
 test("real Pi blocks direct and nested changes before UI approval, then executes in the same runtime", { timeout: 30000 }, async () => {
@@ -196,5 +271,69 @@ test("real Pi blocks direct and nested changes before UI approval, then executes
     assert.equal(readFileSync(direct, "utf8"), "approved"); assert.equal(readFileSync(nested, "utf8"), "approved");
     assert.equal(rpc.process.pid, pid);
     assert.deepEqual(captured[2].tools, schemas); assert.deepEqual(captured[2].messages.filter(m => m.role === "system"), system);
+  } finally { await rpc.stop(); await new Promise(resolve => server.close(resolve)); }
+});
+
+for (const nested of [false, true]) test(`real Pi requests approval ${nested ? "through codemode" : "directly"} with one inference and a normal settlement`, { timeout: 30000 }, async () => {
+  const code = stripTypeScriptTypes(readFileSync("electron/pi-rpc-process.ts", "utf8"), { mode: "transform" });
+  const { PiRpcProcess } = await import(`data:text/javascript;base64,${Buffer.from(code).toString("base64")}`);
+  const dir = mkdtempSync("C:/AI_Temp/pi-approval-boundary-"), agentDir = path.join(dir, "agent"); mkdirSync(agentDir);
+  const file = path.join(dir, "state.json"), conversation = { id: "chat", access: access.defaultAccess() };
+  const save = () => writeFileSync(file, JSON.stringify({ conversations: [conversation] })); save();
+  const captured = [], events = [];
+  let phase = "propose", workCalls = 0, settled;
+  const target = path.join(dir, "approved.txt");
+  const server = http.createServer(async (req, res) => {
+    const bytes = []; for await (const chunk of req) bytes.push(chunk);
+    captured.push(JSON.parse(Buffer.concat(bytes).toString("utf8")));
+    let choice;
+    if (phase === "propose") {
+      const name = nested ? "codemode" : "request_changes";
+      const args = nested ? { code: "text(await tools.request_changes({}));" } : {};
+      choice = { delta: { role: "assistant", content: proposal.description, tool_calls: [{ index: 0, id: "approval-call", type: "function", function: { name, arguments: JSON.stringify(args) } }] }, finish_reason: "tool_calls" };
+      phase = "unexpected";
+    } else if (phase === "work" && workCalls++ === 0) {
+      choice = { delta: { role: "assistant", tool_calls: [{ index: 0, id: "write-call", type: "function", function: { name: "write", arguments: JSON.stringify({ path: target, content: "approved" }) } }] }, finish_reason: "tool_calls" };
+    } else choice = { delta: { role: "assistant", content: phase === "unexpected" ? "UNEXPECTED WAITING REPLY" : "Done." }, finish_reason: "stop" };
+    res.writeHead(200, { "Content-Type": "text/event-stream" });
+    res.end(`data: ${JSON.stringify({ id: "test", object: "chat.completion.chunk", choices: [{ index: 0, ...choice }] })}\n\ndata: [DONE]\n\n`);
+  });
+  await new Promise(resolve => server.listen(0, "127.0.0.1", resolve));
+  writeFileSync(path.join(agentDir, "models.json"), JSON.stringify({ providers: { "approval-test": { baseUrl: `http://127.0.0.1:${server.address().port}/v1`, api: "openai-completions", apiKey: "test-only",
+    models: [{ id: "test", name: "test", reasoning: false, input: ["text"], cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, contextWindow: 32768, maxTokens: 1024 }] } } }));
+  const handle = hostMethod("  private async handleGoalRequest(", "async function run(conversationId, request)");
+  const host = { store: { getConversation: () => conversation, getQueuedPrompts: () => [] }, runtimes: new Map(), startingRuntimes: new Map(), planningTransitions: new Set(),
+    async updateConversation(_id, changes) { Object.assign(conversation, changes); save(); }, async sendPrompt() { assert.fail("approval must not generate"); } };
+  const rpc = new PiRpcProcess({ executablePath: process.execPath, enginePath: path.resolve("resources/pi-engine/worker.mjs"), cwd: dir, agentDir, sessionsDir: path.join(dir, "sessions"),
+    sessionId: "chat", appRoot: process.cwd(), provider: "approval-test", model: "test", goalStatePath: file, planningExtensionPath: path.resolve("electron/planning-extension.ts"),
+    mcpEntryPath: "unused", mcpDirectTools: [], onGoalRequest: request => handle.call(host, "chat", request),
+    onEvent(event) { events.push(event); if (event.type === "agent_settled") settled?.(); }, onExtensionUi() {}, onExit() {} });
+  host.runtimes.set("chat", { rpc });
+  const prompt = async message => {
+    const finished = new Promise(resolve => { settled = resolve; });
+    await rpc.request("prompt", { message }, 15000); await finished;
+  };
+  try {
+    await rpc.start();
+    await prompt("Propose drawing the skeleton; request interface approval.");
+    assert.equal(captured.length, 1, "request_changes must not trigger another inference");
+    assert.equal(conversation.access.phase, "review");
+    assert.equal(conversation.access.proposal.description, proposal.description);
+    assert.ok(conversation.access.proposal.source.messageId);
+    const wait = events.findIndex(event => event.type === "desktop_approval_wait");
+    assert.ok(wait >= 0);
+    assert.ok(events.findIndex(event => event.type === "agent_settled") > wait);
+    assert.equal(events.some(event => event.type === "extension_error"), false);
+    const history = await rpc.request("get_entries");
+    const assistant = history.entries.filter(entry => entry.type === "message" && entry.message.role === "assistant");
+    assert.equal(assistant.length, 1); assert.equal(assistant[0].message.stopReason, "toolUse");
+    assert.equal(history.entries.some(entry => entry.type === "message" && entry.message.role === "toolResult" && entry.message.isError), false);
+    await hostMethod("  async controlAccess(", "async function run(conversationId, action, expectedRevision)").call(host, "chat", "approve", conversation.access.revision);
+    assert.equal(conversation.access.phase, "approved"); assert.equal(conversation.access.started, false);
+    assert.equal(captured.length, 1, "Allow changes only grants permission");
+    phase = "work"; conversation.access.started = true; save();
+    await prompt("Go ahead.");
+    assert.equal(readFileSync(target, "utf8"), "approved");
+    assert.equal(captured.length, 3, "ordinary writes still receive the next model response");
   } finally { await rpc.stop(); await new Promise(resolve => server.close(resolve)); }
 });

@@ -14,6 +14,8 @@ import * as crypto from "node:crypto";
 import { readFileSync, realpathSync, statSync } from "node:fs";
 import path from "node:path";
 import { createRunPause } from "./pause.js";
+import { getApprovalMessage, installApprovalBoundary } from "./approval.js";
+import { readDesktopAccess } from "../tool-routing/desktop-planning-permissions.js";
 import { estimateTokens } from '@earendil-works/pi-coding-agent';
 import { KeybindingsManager, flushRawStdout, takeOverStdout, waitForRawStdoutBackpressure, writeRawStdout,
     killTrackedDetachedChildren, getTheme, toJsonEvent, attachJsonlLineReader, serializeJsonLine } from './bindings.mjs';
@@ -151,6 +153,7 @@ export async function runRpcMode(runtimeHost) {
     let session = runtimeHost.session;
     let pause;
     let unsubscribePause;
+    let uninstallApproval;
     let titleController;
     let messageSync = createMessageSync();
     let unsubscribe;
@@ -544,6 +547,9 @@ export async function runRpcMode(runtimeHost) {
         unsubscribe?.();
         unsubscribeBackpressure?.();
         unsubscribePause?.();
+        uninstallApproval?.();
+        uninstallApproval = installApprovalBoundary(session,
+            () => process.env.PI_DESKTOP_GOAL_STATE_FILE ? readDesktopAccess() : undefined, output);
         pause = createRunPause(session, output);
         pendingModelFileMutations.clear();
         unsubscribe = session.subscribe((event) => {
@@ -971,6 +977,9 @@ export async function runRpcMode(runtimeHost) {
                 const messages = session.getUserMessagesForForking();
                 return success(id, "get_fork_messages", { messages });
             }
+            case "desktop_get_approval_message": {
+                return success(id, command.type, getApprovalMessage(session.sessionManager, command.toolCallId));
+            }
             case "get_entries": {
                 const sessionManager = session.sessionManager;
                 let entries = sessionManager.getEntries();
@@ -1068,6 +1077,7 @@ export async function runRpcMode(runtimeHost) {
         unsubscribe?.();
         unsubscribeBackpressure?.();
         unsubscribePause?.();
+        uninstallApproval?.();
         await runtimeHost.dispose();
         detachInput();
         process.stdin.pause();

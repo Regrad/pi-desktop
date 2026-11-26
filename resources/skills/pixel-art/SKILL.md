@@ -5,6 +5,13 @@ description: Draw, edit, animate or export pixel-art sprites, tilesets, icons an
 
 # Pixel art and sprite animation
 
+Check the current Pi Desktop access state first. While Agree first is unapproved,
+inspect references and existing files with native read/search tools, discuss the
+scope, then explain the proposal once in chat and call `request_changes({})`.
+Do not connect the editor, call preflight or start generation before interface
+approval and the user's next message. In Plan mode use the planning review and
+only permitted reads. With permission, continue with the workflow below.
+
 Use only for the requested drawing task in this chat. Discover the MCP gateway
 through codemode and connect `mcp({server:"aseprite"})`. Read the server's
 instructions and its `skill://studio` resource using the discovered resource

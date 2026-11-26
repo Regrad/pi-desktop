@@ -59,10 +59,10 @@ export default function planningExtension(pi: ExtensionAPI, read = readDesktopPl
     if (locked() || accessRestricted()) return { result: { output: "Команды терминала недоступны до согласования изменений.", exitCode: 1, cancelled: false, truncated: false } };
   });
   pi.registerTool({ name: "request_changes", label: "Согласование изменений",
-    description: "Propose changes in Agree first access mode. Explain the concrete work, affected files/objects and significant risks ONCE in your normal chat reply, then register that same scope here. The interface shows only compact approval controls, not a second copy of this text. Do not announce that a proposal/card was sent or repeat the interface instructions. This tool grants no permission. End the response and wait for interface approval and the user's next message. Clarifications only revise the proposal. In Plan mode use the planning document's review instead. Call {} to read the current access state.",
-    parameters: Type.Object({ description: Type.Optional(Type.String({ maxLength: 3000 })), targets: Type.Optional(Type.Array(Type.String({ maxLength: 500 }), { maxItems: 20 })), risks: Type.Optional(Type.String({ maxLength: 2000 })) }),
-    async execute(_id, params, signal) {
-      const result = await request("request_changes", params, signal);
+    description: "Request approval for the proposal you just explained ONCE in visible chat text, including scope and significant risks. Call with {} as your final action. Pi Desktop captures that message and ends the turn automatically. Do not repeat the proposal in arguments, announce a card, or add a waiting reply. This grants no permission: wait for interface approval and the user's next message. In Plan mode use the planning document's review instead. Current access state is provided in context.",
+    parameters: Type.Object({}, { additionalProperties: false }),
+    async execute(id, _params, signal) {
+      const result = await request("request_changes", { toolCallId: id }, signal);
       return { content: [{ type: "text", text: JSON.stringify(result) }], details: undefined };
     },
   });

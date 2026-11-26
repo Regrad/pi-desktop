@@ -6,9 +6,12 @@ Each chat has two access options in the composer:
   task. Changes require approval through the interface.
 - **Full access**. The model can use tools without mandatory change approval.
 
-In Agree first, the model calls `request_changes` with a short description,
-affected files or objects, and significant risks. The model explains the proposal
-once in the chat. Only compact approval controls appear above the composer.
+In Agree first, the model explains the proposal, affected files or objects and
+significant risks once in the chat, then calls `request_changes` with `{}`.
+Pi Desktop captures the visible text from that reply and binds approval to its
+message and tool call. Thinking is never used as a proposal. The engine ends the
+turn after saving tool results, without another model request or a waiting reply.
+Only compact approval controls appear above the composer.
 **Allow changes** only approves that exact revision. It does not
 start generation. The user then sends an ordinary message, for example “go ahead”,
 to begin work. A message such as “make it 128×128” before approval only refines the proposal; it never
@@ -36,6 +39,11 @@ and skill changes stay blocked before approval. Native reads, searches and
 planning-document edits remain available. Hidden model calls and Pi Lens
 mutation hooks use the same live restrictions. The model cannot change its
 access mode or approve its own proposal.
+
+Editor connections and preflight checks also wait for approval. Creative skills
+use native reads to investigate first, then start their editor workflow after
+approval and the user's message. A proposal with no visible text or from an old
+reply is rejected; selecting another history branch cannot approve stale text.
 
 Access state lives in the chat record, independently of the system prompt
 and tool catalog. Approving a task does not restart Pi or change tool schemas.

@@ -5,6 +5,13 @@ description: Create, edit, render or export a 3D mesh, character, prop, scene or
 
 # Blender modeling
 
+Check the current Pi Desktop access state first. While Agree first is unapproved,
+inspect references and existing files with native read/search tools, discuss the
+scope, then explain the proposal once in chat and call `request_changes({})`.
+Do not connect the editor, run editor checks or generate assets before interface
+approval and the user's next message. In Plan mode use the planning review and
+only permitted reads. With permission, continue with the workflow below.
+
 Use this workflow only for the requested art task in this chat. Do not connect
 other editors or add these instructions to a project's general rules.
 

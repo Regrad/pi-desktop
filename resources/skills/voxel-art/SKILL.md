@@ -5,6 +5,13 @@ description: Create, sculpt, edit, rig, animate, render or export voxel models, 
 
 # Voxel art
 
+Check the current Pi Desktop access state first. While Agree first is unapproved,
+inspect references and existing files with native read/search tools, discuss the
+scope, then explain the proposal once in chat and call `request_changes({})`.
+Do not connect the editor, run editor checks or generate assets before interface
+approval and the user's next message. In Plan mode use the planning review and
+only permitted reads. With permission, continue with the workflow below.
+
 Use only for the requested art task in this chat. Discover the MCP gateway
 through codemode and connect `mcp({server:"froxel"})`. Read the current server
 instructions and tool schemas. Do not assume a fixed tool inventory or a

@@ -903,7 +903,14 @@ export class PiManager {
         throw new Error("Сначала приостановите текущую работу.");
       if (action === "approve" && (isPlanning(conversation.planning) || this.store.getQueuedPrompts(conversationId).length))
         throw new Error("Сначала обработайте уточнения или согласуйте подробный план.");
-      const access = controlAccessState(action, expectedRevision, conversation.access);
+      if (action === "approve" && conversation.access?.proposal?.source) {
+        const source = conversation.access.proposal.source;
+        const engine = runtime ?? await this.ensureRuntime(conversationId);
+        const current = await engine.rpc.request<{ messageId: string; userMessageId: string; text: string }>("desktop_get_approval_message", { toolCallId: source.toolCallId }, 10000);
+        if (current.messageId !== source.messageId || current.userMessageId !== source.userMessageId || current.text !== conversation.access.proposal.description)
+          throw new Error("Предложение больше не относится к текущему ответу. Запросите новый вариант.");
+      }
+      const access = controlAccessState(action, expectedRevision, this.store.getConversation(conversationId).access);
       await this.updateConversation(conversationId, { access });
     } finally { this.planningTransitions.delete(conversationId); }
   }
@@ -1011,12 +1018,24 @@ export class PiManager {
     if (request.action === "request_changes") {
       const params = request.params as JsonObject | undefined;
       const conversation = this.store.getConversation(conversationId);
-      if (!params || !Object.keys(params).length) return { access: conversation.access ?? defaultAccess() };
       if (isPlanning(planning)) throw new Error("В режиме плана согласуйте подробный документ через панель плана.");
-      if (this.runtimes.get(conversationId)?.runAborted || this.planningTransitions.has(conversationId)) throw new Error("Предложение отменено или режим изменился.");
-      const access = proposeAccess(params, conversation.access);
-      await this.updateConversation(conversationId, { access });
-      return { access };
+      const runtime = this.runtimes.get(conversationId);
+      if (!runtime || runtime.runAborted || this.planningTransitions.has(conversationId)) throw new Error("Предложение отменено или режим изменился.");
+      if (!params || Object.keys(params).some(key => key !== "toolCallId") || typeof params.toolCallId !== "string" || !params.toolCallId.trim())
+        throw new Error("Предложение берётся из сообщения в чате, а не из параметров инструмента.");
+      if (conversation.access?.mode === "full") throw new Error("В режиме полного доступа согласование не требуется.");
+      const revision = conversation.access?.revision;
+      this.planningTransitions.add(conversationId);
+      try {
+        const source = await runtime.rpc.request<{ messageId: string; userMessageId: string; toolCallId: string; text: string }>("desktop_get_approval_message", { toolCallId: params.toolCallId }, 10000);
+        const current = this.store.getConversation(conversationId);
+        if (runtime.runAborted || this.runtimes.get(conversationId) !== runtime || current.access?.revision !== revision)
+          throw new Error("Предложение отменено или режим изменился.");
+        const access = proposeAccess({ description: source.text }, current.access);
+        access.proposal!.source = { messageId: source.messageId, userMessageId: source.userMessageId, toolCallId: source.toolCallId };
+        await this.updateConversation(conversationId, { access });
+        return { access: { mode: access.mode, phase: access.phase, revision: access.revision } };
+      } finally { this.planningTransitions.delete(conversationId); }
     }
     if (request.action === "update_implementation_plan") {
       const params = request.params as JsonObject | undefined;
@@ -1877,6 +1896,13 @@ export class PiManager {
       await this.store.saveConversationRun(conversationId, runtime.activeRun);
       this.publish("pi:event", { conversationId, event: { ...event, run: runtime.activeRun } });
       return;
+    }
+    if (event.type === "desktop_approval_wait" && !runtime.runAborted) {
+      const access = this.store.getConversation(conversationId).access;
+      if (access?.phase === "review" && access.revision === event.revision) {
+        runtime.runStopReason = "stop";
+        runtime.runError = undefined;
+      }
     }
     // Track this run's outcome from events, not the last projected message:
     // Pi may omit a failed attempt from model history before retry is cancelled.
