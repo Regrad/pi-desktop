@@ -17,7 +17,7 @@ export function AccessSelector({ access, disabled, onAction }: Props) {
     return () => { document.removeEventListener("pointerdown", outside); document.removeEventListener("keydown", escape); };
   }, []);
   return <div className="access-selector" ref={ref}>
-    <button type="button" className="access-chip" disabled={disabled} aria-haspopup="menu" aria-expanded={open}
+    <button type="button" className="access-chip" style={{ color: mode === "confirm" ? "var(--tool-success)" : "var(--orange)" }} disabled={disabled} aria-haspopup="menu" aria-expanded={open}
       title={access?.phase === "approved" && mode === "confirm" ? t("Изменения разрешены для согласованной задачи") : t("Режим доступа")}
       onClick={() => setOpen(value => !value)}>
       <ShieldCheck size={13} />{mode === "full" ? t("Полный доступ") : t("Сначала согласовать")}<ChevronDown size={12} />
