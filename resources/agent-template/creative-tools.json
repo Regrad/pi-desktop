@@ -1,0 +1,5 @@
+{
+  "blender": { "executable": "" },
+  "aseprite": { "executable": "", "mode": "headless" },
+  "froxel": { "executable": "", "mode": "headless" }
+}

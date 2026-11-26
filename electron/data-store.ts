@@ -4,6 +4,7 @@ import { resolveAddonPackage } from "./addon-installation.js";
 import { normalizeInterfaceLanguage, type InterfaceLanguage } from "../shared/interface-language.js";
 import { notebookLimit, validateNotebookLimit } from "../shared/notebook.js";
 import { migrateLegacyAdapterConfig, parseMcpConfiguration } from "../shared/mcp-config.js";
+import { mergeCreativeMcpServers } from "../shared/creative-tools.js";
 import { existsSync } from "node:fs";
 import { constants } from "node:fs";
 import {
@@ -299,6 +300,7 @@ export class DataStore {
       "mcp-adapter.json",
       "auth.json",
       "web-search.json",
+      "creative-tools.json",
     ]) {
       const destination = path.join(this.agentDir, fileName);
       try {
@@ -511,6 +513,7 @@ export class DataStore {
       mcpServers?: Record<string, Record<string, unknown>>;
     };
     config.settings = { ...config.settings, requestTimeoutMs: 86_400_000 };
+    config.mcpServers = mergeCreativeMcpServers(config.mcpServers ?? {}, this.appRoot, this.runtimeExecutable);
     const computerUse = config.mcpServers?.["computer-use"];
     const args = Array.isArray(computerUse?.args) ? computerUse.args : [];
     const isManagedNpxEntry =

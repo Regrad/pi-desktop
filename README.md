@@ -74,6 +74,17 @@ The same settings live in `data/agent/web-search.json` under `searchProvider`, `
 
 The app includes a computer-use MCP server. Configure additional MCP servers in `data/agent/mcp-adapter.json` for the adapter, or `data/agent/mcp.json` for the engine's native MCP support.
 
+## Art workflows
+
+The app includes optional skills for Blender modeling, Aseprite sprites and
+animation, and Froxel voxel art. Ask for an asset in a chat and the model loads
+the matching workflow. Editors and their tools connect only when needed.
+
+Install the editors you want to use. Pi Desktop detects standard installations;
+portable editors can be configured in `data/agent/creative-tools.json`. Aseprite
+can be purchased or compiled from its official source for personal use.
+See [setup and supported modes](docs/CREATIVE_TOOLS.md).
+
 ## Development
 
 Use Node.js 24 and npm on Windows x64:

@@ -47,7 +47,8 @@ function harness(store, request = async () => ({})) {
 
 test("native Pi validates bundled creator, and catalog does not contain its full instructions", async () => {
   const loaded = loadSkillsFromDir({ dir: path.join(root, "resources/skills"), source: "bundled" });
-  assert.equal(loaded.skills.length, 1); assert.deepEqual(loaded.diagnostics, []);
+  assert.deepEqual(loaded.skills.map(skill => skill.name).sort(), ["blender-modeling", "maintain-skills", "pixel-art", "voxel-art"]);
+  assert.deepEqual(loaded.diagnostics, []);
   const { store } = await fixture();
   const catalog = await store.catalog();
   const creator = catalog.skills.find(skill => skill.name === "maintain-skills");
