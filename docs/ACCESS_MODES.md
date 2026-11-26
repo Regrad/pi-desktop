@@ -7,8 +7,9 @@ Each chat has two access options in the composer:
 - **Full access**. The model can use tools without mandatory change approval.
 
 In Agree first, the model calls `request_changes` with a short description,
-affected files or objects, and significant risks. The proposal appears above
-the composer. **Allow changes** only approves that exact revision. It does not
+affected files or objects, and significant risks. The model explains the proposal
+once in the chat. Only compact approval controls appear above the composer.
+**Allow changes** only approves that exact revision. It does not
 start generation. The user then sends an ordinary message, for example “go ahead”,
 to begin work. A message such as “make it 128×128” before approval only refines the proposal; it never
 approves it. Sending a clarification invalidates the previous review card.

@@ -44,13 +44,8 @@ export function AccessApprovalCard({ access, disabled, onAction }: Props) {
   </section>;
   if (access?.mode !== "confirm" || access.phase !== "review" || !access.proposal) return null;
   return <section className="access-approval" aria-label={t("Согласование изменений")}>
-    <div className="access-approval-content">
-      <strong><ShieldCheck size={15} />{t("Предлагаемые изменения")}</strong>
-      <p>{access.proposal.description}</p>
-      {access.proposal.targets.length > 0 && <ul>{access.proposal.targets.map((target, index) => <li key={index}>{target}</li>)}</ul>}
-      {access.proposal.risks && <p><b>{t("Существенные риски")}: </b>{access.proposal.risks}</p>}
-    </div>
-    <div className="access-approval-actions"><small>{t("Можно уточнить предложение сообщением. Это не разрешает изменения.")}</small>
+    <strong className="access-approval-label"><ShieldCheck size={15} />{t("Согласование изменений")}</strong>
+    <div className="access-approval-actions">
       <button type="button" disabled={disabled} onClick={() => void onAction("cancel", access.revision)}>{t("Отменить")}</button>
       <button type="button" className="primary" disabled={disabled} onClick={() => void onAction("approve", access.revision)}>{t("Разрешить изменения")}</button>
     </div>

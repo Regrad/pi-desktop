@@ -59,7 +59,7 @@ export default function planningExtension(pi: ExtensionAPI, read = readDesktopPl
     if (locked() || accessRestricted()) return { result: { output: "Команды терминала недоступны до согласования изменений.", exitCode: 1, cancelled: false, truncated: false } };
   });
   pi.registerTool({ name: "request_changes", label: "Согласование изменений",
-    description: "Propose changes in Agree first access mode. Describe concrete work, affected files/objects and significant risks. This creates a review card but grants no permission. End the response and wait for the user to click Allow changes. Clarifications only revise the proposal. In Plan mode use the planning document's review instead. Call {} to read the current access state.",
+    description: "Propose changes in Agree first access mode. Explain the concrete work, affected files/objects and significant risks ONCE in your normal chat reply, then register that same scope here. The interface shows only compact approval controls, not a second copy of this text. Do not announce that a proposal/card was sent or repeat the interface instructions. This tool grants no permission. End the response and wait for interface approval and the user's next message. Clarifications only revise the proposal. In Plan mode use the planning document's review instead. Call {} to read the current access state.",
     parameters: Type.Object({ description: Type.Optional(Type.String({ maxLength: 3000 })), targets: Type.Optional(Type.Array(Type.String({ maxLength: 500 }), { maxItems: 20 })), risks: Type.Optional(Type.String({ maxLength: 2000 })) }),
     async execute(_id, params, signal) {
       const result = await request("request_changes", params, signal);

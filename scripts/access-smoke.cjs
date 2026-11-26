@@ -27,7 +27,7 @@ app.whenReady().then(async () => {
     await window.loadFile(path.join(root, "dist/index.html"));
     const evaluate = code => window.webContents.executeJavaScript(code);
     const waitFor = condition => evaluate(`new Promise((resolve,reject)=>{const end=Date.now()+6000;function check(){if(${condition})return resolve();if(Date.now()>end)return reject(Error('UI timeout: '+${JSON.stringify(condition)}));setTimeout(check,25)}check()})`);
-    await waitFor("document.querySelector('.access-chip')");
+    await waitFor("document.querySelector('.access-chip') && document.body.textContent.includes('Draw a skeleton wizard sprite.')");
     assert.match(await evaluate("document.querySelector('.access-chip').textContent"), /Agree first/);
     await evaluate("document.querySelector('.access-chip').click()");
     await waitFor("document.querySelectorAll('.access-menu [role=menuitemradio]').length === 2");
@@ -39,6 +39,7 @@ app.whenReady().then(async () => {
     window.webContents.send("desktop:conversation-changed", conversation);
     await waitFor("document.querySelector('.access-approval')");
     assert.match(await evaluate("document.querySelector('.access-approval').textContent"), /Allow changes/);
+    await window.webContents.capturePage().then(image => image.toPNG()).then(bytes => require("node:fs").writeFileSync(path.join(temporary, "approval-bar.png"), bytes));
     await evaluate("document.querySelector('.access-approval .primary').click()");
     await waitFor("document.querySelector('.access-approval .primary:not(:disabled)')");
     assert.deepEqual(calls.pop(), { id: conversation.id, action: "approve", revision: 5 });
@@ -65,5 +66,5 @@ app.whenReady().then(async () => {
     await window.webContents.capturePage().then(image => image.toPNG()).then(bytes => require("node:fs").writeFileSync(path.join(temporary, "approval.png"), bytes));
     console.log(`PASS: two modes, versioned approval, permission badge, revocation while running, narrow layout. ${temporary}`);
   } catch (error) { console.error(error); process.exitCode = 1; }
-  finally { window?.destroy(); app.quit(); }
+  finally { window?.destroy(); app.exit(process.exitCode || 0); }
 });
