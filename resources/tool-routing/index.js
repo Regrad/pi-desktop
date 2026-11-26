@@ -3,7 +3,7 @@ export { guardExtensionHandler, assertPlanningModelAccess } from "./desktop-plan
 const directTools = new Set([
   "read", "bash", "powershell", "edit", "write", "grep", "find", "ls",
   "get_goal", "create_goal", "update_goal", "desktop_goal_report", "update_checklist", "update_plan", "update_notebook", "codemode",
-  "update_implementation_plan", "web_search",
+  "update_implementation_plan", "web_search", "request_changes",
 ]);
 const retiredLoaders = new Set(["tool_search", "pi_lens_activate_tools", "mcpScript"]);
 const routed = Symbol("pi-desktop/routed-tool");

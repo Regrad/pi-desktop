@@ -5,6 +5,7 @@ const snapshots = new Set([
   "desktop_notebook_limit_state", "desktop_plan_request",
   "desktop_skills_state",
   "desktop_implementation_plan_state",
+  "desktop_access_state",
   "desktop_lens_advisory",
 ]);
 
@@ -27,7 +28,8 @@ export function discardDelayedStateSnapshots(messages) {
   const tools = new Map([["update_checklist", ["desktop_plan_state", "plan"]],
     ["update_plan", ["desktop_plan_state", "plan"]],
     ["update_notebook", ["desktop_notebook_state", "notebook"]],
-    ["update_implementation_plan", ["desktop_implementation_plan_state", "planning"]]]);
+    ["update_implementation_plan", ["desktop_implementation_plan_state", "planning"]],
+    ["request_changes", ["desktop_access_state", "access"]]]);
   return messages.filter(message => {
     if (message.role === "toolResult" && !message.isError
       && ["get_goal", "create_goal", "update_goal"].includes(message.toolName)) {

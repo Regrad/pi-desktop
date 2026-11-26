@@ -22,12 +22,13 @@ export async function startControlApi({ dataDir, backend }) {
       const settled = snapshot.run?.completedAt && Date.parse(snapshot.run.completedAt) >= Date.parse(job.startedAt);
       const busy = !job.error && (job.pending || snapshot.state.isStreaming || snapshot.state.isCompacting || (!settled && !job.aborted) || (settled && !snapshot.run.diff && !snapshot.run.diffError && !job.aborted));
       const questions = snapshot.extensionUi.pendingDialogs;
-      const status = job.error ? "failed" : questions.length ? "needs_input" : busy ? "running" : job.aborted || latest?.stopReason === "aborted" ? "aborted" : latest?.stopReason === "error" ? "failed" : "completed";
+      const approval = snapshot.conversation?.access?.phase === "review" ? snapshot.conversation.access : undefined;
+      const status = job.error ? "failed" : questions.length || approval ? "needs_input" : busy ? "running" : job.aborted || latest?.stopReason === "aborted" ? "aborted" : latest?.stopReason === "error" ? "failed" : "completed";
       const diff = snapshot.run?.diff;
       const result = {
         id: job.id, conversationId: job.conversationId, status, startedAt: job.startedAt,
         result: busy ? undefined : limitedText(textContent(latest)),
-        error: job.error ?? latest?.errorMessage, questions, diffError: snapshot.run?.diffError,
+        error: job.error ?? latest?.errorMessage, questions, approval, diffError: snapshot.run?.diffError,
         changes: diff ? { additions: diff.additions, deletions: diff.deletions, incomplete: diff.incomplete,
           files: diff.files.map(({ path, status, additions, deletions }) => ({ path, status, additions, deletions })) } : undefined,
       };

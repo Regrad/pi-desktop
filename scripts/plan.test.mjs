@@ -7,6 +7,7 @@ import { registerHooks, stripTypeScriptTypes } from "node:module";
 import { updatedPlan, planContext, planPolicy, planTick, canContinuePlan, planRequestSuffix, planRequestText, requestedPlanContext, visiblePlanRequestText, isPlanComplete, isPlanOpen } from "../shared/plan.ts";
 import { confirmedPlanRevision } from "../shared/plan-activity.ts";
 import { isPlanning, approvedPlanning, planningToolAllowed } from "../shared/planning.ts";
+import { accessLocked, closeAccess } from "../shared/access.ts";
 
 const hooks = registerHooks({ resolve(specifier, context, next) {
   const local = ["../shared/plan.js", "../shared/goal.js", "./goal-extension.js", "./state-context.js"];
@@ -96,8 +97,8 @@ test("real dispatcher uses one launch for goal and checklist, prioritizes user q
   const end = source.indexOf("\n  }", begin);
   const body = stripTypeScriptTypes(`function launch(conversationId, attachments = [], requestPlan = false, resumeBeforeQueue = false) {${source.slice(begin, end)}\n}`);
   const timers = [];
-  const launch = new Function("canContinuePlan", "setTimeout", "isPlanning", "approvedPlanning", `${body};return launch;`)(canContinuePlan, callback => timers.push(callback), isPlanning, approvedPlanning);
-  const conversation = { status: "idle", plan: updatedPlan({ plan: [step("Work")], execution: "active" }) };
+  const launch = new Function("canContinuePlan", "setTimeout", "isPlanning", "approvedPlanning", "accessLocked", `${body};return launch;`)(canContinuePlan, callback => timers.push(callback), isPlanning, approvedPlanning, accessLocked);
+  const conversation = { access: { mode: "full" }, status: "idle", plan: updatedPlan({ plan: [step("Work")], execution: "active" }) };
   const calls = [], runtime = { snapshot: { state: { isStreaming: false } } };
   let queued = [];
   const host = { planningTransitions: new Set(), goalLaunching: new Set(), goalContinuationRequested: new Set(), runtimes: new Map([["chat", runtime]]),
@@ -143,8 +144,8 @@ test("actual continuation sends service RPC, not another user prompt, and rechec
   const begin = source.indexOf("): Promise<void> {", start) + "): Promise<void> {".length;
   const end = source.indexOf("\n  }", begin);
   const body = stripTypeScriptTypes(`async function send(conversationId, message, attachments, behavior, expectedGoalId, historyEdit = false, requestPlan = false, expectedPlanRevision, resumeBeforeQueue = false) {${source.slice(begin, end)}\n}`);
-  const send = new Function("canContinuePlan", "planContext", "imageAttachmentPrompt", "isPlanning", "approvedPlanning", `${body};return send;`)(canContinuePlan, planContext, () => "", isPlanning, approvedPlanning);
-  const chat = { title: "Existing chat", plan: updatedPlan({ plan: [step("Work", "in_progress")], execution: "active" }) }, calls = [], events = [];
+  const send = new Function("canContinuePlan", "planContext", "imageAttachmentPrompt", "isPlanning", "approvedPlanning", "accessLocked", "closeAccess", `${body};return send;`)(canContinuePlan, planContext, () => "", isPlanning, approvedPlanning, accessLocked, closeAccess);
+  const chat = { access: { mode: "full" }, title: "Existing chat", plan: updatedPlan({ plan: [step("Work", "in_progress")], execution: "active" }) }, calls = [], events = [];
   const runtime = { snapshot: { state: { isStreaming: false } }, diffTracker: { covers: () => true, async beginRun() {} }, rpc: { async request(type, payload) { calls.push({ type, payload }); } } };
   let queue = [];
   const host = { startupEpochs: new Map(), async getModelServers() { return []; }, planningTransitions: new Set(), historyMutations: new Set(), runtimes: new Map([["chat", runtime]]), async ensureRuntime() { return runtime; }, async reloadPendingInstructions() {}, publish(_channel, payload) { events.push(payload.event); },
@@ -240,8 +241,8 @@ test("actual host handler stores the checklist per chat and publishes through no
   const begin = source.indexOf(signature, start) + signature.length;
   const end = source.indexOf("\n  }", begin);
   const body = stripTypeScriptTypes(`async function handle(conversationId, request) {${source.slice(begin, end)}\n}`);
-  const handle = new Function("updatedPlan", "confirmedPlanRevision", "isPlanning", "planningToolAllowed", `${body}; return handle;`)(updatedPlan, confirmedPlanRevision, isPlanning, planningToolAllowed);
-  const chats = new Map([["one", {}], ["two", {}]]), published = [];
+  const handle = new Function("updatedPlan", "confirmedPlanRevision", "isPlanning", "planningToolAllowed", "accessLocked", `${body}; return handle;`)(updatedPlan, confirmedPlanRevision, isPlanning, planningToolAllowed, accessLocked);
+  const chats = new Map([["one", { access: { mode: "full" } }], ["two", { access: { mode: "full" } }]]), published = [];
   const runtime = { snapshot: { state: { isStreaming: true } } }, events = [];
   const host = { runtimes: new Map([["one", runtime]]), publish(_channel, event) { events.push(event); }, store: { getConversation: id => chats.get(id) }, async updateConversation(id, changes) { Object.assign(chats.get(id), changes); published.push(id); } };
   const saved = await handle.call(host, "one", { action: "update_checklist", params: { plan: [step("Check", "in_progress")] } });

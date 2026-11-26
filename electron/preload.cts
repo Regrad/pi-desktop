@@ -57,6 +57,7 @@ const api: PiDesktopApi = {
   removePlan: (id) => ipcRenderer.invoke("pi:remove-plan", id),
   controlPlan: (id, action) => ipcRenderer.invoke("pi:control-plan", id, action),
   controlPlanning: (id, action, revision) => ipcRenderer.invoke("pi:control-planning", id, action, revision),
+  controlAccess: (id, action, revision) => ipcRenderer.invoke("pi:control-access", id, action, revision),
   saveNotebook: (id, content, revision) => ipcRenderer.invoke("pi:save-notebook", id, content, revision),
   browserUi: (command) => ipcRenderer.invoke("desktop:browser", command),
   onBrowserChanged: (listener) => subscribe("desktop:browser-changed", listener),

@@ -48,6 +48,7 @@ export function webBackend(store: DataStore, manager: PiManager, options?: { met
     controlGoal: (id: string, action: "pause" | "resume" | "remove") => manager.controlGoal(id, action),
     controlPlan: (id: string, action: "pause" | "resume") => manager.controlPlan(id, action),
     controlPlanning: (id: string, action: "start" | "revise" | "approve" | "cancel", revision: number) => manager.controlPlanning(id, action, revision),
+    controlAccess: (id: string, action: "full" | "confirm" | "approve" | "cancel", revision: number) => manager.controlAccess(id, action, revision),
     editGoal: (id: string, objective: string) => manager.editGoal(id, objective),
     rewindConversation: (id: string, entryId: string) => manager.rewindConversation(id, entryId),
     editLastMessage: (id: string, entryId: string, text: string) => manager.editLastMessage(id, entryId, text),

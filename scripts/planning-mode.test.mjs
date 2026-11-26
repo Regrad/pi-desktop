@@ -6,6 +6,7 @@ import http from "node:http";
 import { registerHooks, stripTypeScriptTypes } from "node:module";
 import { isPlanning, approvedPlanning, completePlanning, controlPlanningState, revisePlanning, planningToolAllowed, planningContext, planningTick, normalPlanningContext, planImplementationPrompt, planningPolicy, planningLimit } from "../shared/planning.ts";
 import { updatedPlan, canContinuePlan } from "../shared/plan.ts";
+import { accessLocked, closeAccess, defaultAccess } from "../shared/access.ts";
 import { desktopPlanningLocked, assertPlanningModelAccess, guardExtensionHandler } from "../resources/tool-routing/desktop-planning-permissions.js";
 import { discardDelayedStateSnapshots, projectDesktopServiceContext } from "../resources/pi-rpc-bridge/service-context.js";
 import { patchToolRouting, patchCodemodePlanning } from "../resources/tool-routing/patch.js";
@@ -21,6 +22,7 @@ const { default: planningExtension, readDesktopPlanning } = await import("../ele
 hook.deregister();
 const source = readFileSync(new URL("../electron/pi-manager.ts", import.meta.url), "utf8");
 function hostMethod(name, signature, bindings = {}) {
+  bindings = { accessLocked, closeAccess, defaultAccess, ...bindings };
   const start = source.indexOf(name), begin = source.indexOf("): Promise<", start);
   assert.ok(start > 0, name);
   const body = source.indexOf(" {", begin) + 2, end = source.indexOf("\n  }", body);
@@ -180,7 +182,7 @@ test("plan mode allows built-in web searches and direct reads with the same para
 test("system prompt and tool contracts do not depend on the current mode", () => {
   const f = fixture();
   f.handlers.get("session_start")({}, { cwd: "C:/AI_Temp" });
-  assert.deepEqual([...f.tools.keys()].sort(), ["find", "grep", "ls", "update_implementation_plan"]);
+  assert.deepEqual([...f.tools.keys()].sort(), ["find", "grep", "ls", "request_changes", "update_implementation_plan"]);
   const schemas = JSON.stringify([...f.tools.values()].map(({ name, description, parameters }) => ({ name, description, parameters })));
   const system = f.handlers.get("before_agent_start")({ systemPrompt: "Base prompt" }).systemPrompt;
   const active = approve(review());
@@ -282,8 +284,8 @@ test("queue waits at review and active goals/checklists cannot start implementat
   const start = source.indexOf("  private launchGoal("), begin = source.indexOf("): void {", start) + "): void {".length, end = source.indexOf("\n  }", begin);
   const code = stripTypeScriptTypes(`function run(conversationId, attachments = [], requestPlan = false, resumeBeforeQueue = false) {${source.slice(begin, end)}\n}`);
   const timers = [], calls = [];
-  const launch = new Function("canContinuePlan", "isPlanning", "approvedPlanning", "setTimeout", `${code};return run;`)(canContinuePlan, isPlanning, approvedPlanning, callback => timers.push(callback));
-  const task = { status: "idle", planning: controlPlanningState("start", 0), goal: { id: "old", status: "active" }, plan: updatedPlan({ plan: [{ step: "Work", status: "pending" }], execution: "active" }) };
+  const launch = new Function("canContinuePlan", "isPlanning", "approvedPlanning", "accessLocked", "setTimeout", `${code};return run;`)(canContinuePlan, isPlanning, approvedPlanning, accessLocked, callback => timers.push(callback));
+  const task = { access: { mode: "full" }, status: "idle", planning: controlPlanningState("start", 0), goal: { id: "old", status: "active" }, plan: updatedPlan({ plan: [{ step: "Work", status: "pending" }], execution: "active" }) };
   const runner = { planningTransitions: new Set(), goalLaunching: new Set(), goalContinuationRequested: new Set(), runtimes: new Map([["chat", { snapshot: { state: { isStreaming: false } } }]]),
     store: { getConversation: () => task, getQueuedPrompts: () => [] }, async sendPrompt(...args) { calls.push(args); } };
   launch.call(runner, "chat"); assert.equal(timers.length, 0);
@@ -298,7 +300,7 @@ test("live state survives restart, fails closed, and guards hidden model APIs an
   const previous = [process.env.PI_DESKTOP_GOAL_STATE_FILE, process.env.PI_DESKTOP_CONVERSATION_ID];
   try {
     let planning = review();
-    const save = () => writeFileSync(file, JSON.stringify({ conversations: [{ id: "other", planning: { content: "wrong" } }, { id: "chat", planning }] }));
+    const save = () => writeFileSync(file, JSON.stringify({ conversations: [{ id: "other", planning: { content: "wrong" } }, { id: "chat", planning, access: { mode: "full" } }] }));
     save(); process.env.PI_DESKTOP_GOAL_STATE_FILE = file; process.env.PI_DESKTOP_CONVERSATION_ID = "chat";
     assert.deepEqual(readDesktopPlanning(), planning); assert.equal(desktopPlanningLocked(), true);
     assert.throws(() => assertPlanningModelAccess(), /Plan mode/);
@@ -337,7 +339,7 @@ test("actual Pi changes permissions in the SAME process without changing HTTP sy
   const code = stripTypeScriptTypes(readFileSync("electron/pi-rpc-process.ts", "utf8"), { mode: "transform" });
   const { PiRpcProcess } = await import(`data:text/javascript;base64,${Buffer.from(code).toString("base64")}`);
   const folder = mkdtempSync("C:/AI_Temp/pi-plan-live-"), agentDir = path.join(folder, "agent"); mkdirSync(agentDir);
-  const stateFile = path.join(folder, "state.json"), state = { conversations: [{ id: "chat" }] };
+  const stateFile = path.join(folder, "state.json"), state = { conversations: [{ id: "chat", access: { mode: "full" } }] };
   const save = () => writeFileSync(stateFile, JSON.stringify(state)); save();
   const canary = path.join(folder, "lens-mutation.txt"), unsafe = path.join(folder, "unsafe.txt"), accepted = path.join(folder, "approved.txt");
   const lens = path.join(folder, "node_modules/pi-lens"); mkdirSync(lens, { recursive: true });
@@ -417,7 +419,7 @@ test("a chat without a planning document is told Plan mode is off, and only once
   const f = fixture(); f.state = undefined;
   const context = messages => f.handlers.get("context")({ messages }).messages;
   const first = context([{ role: "user", content: "Fix the bug" }]);
-  assert.match(first.at(-1).content, /Plan mode is OFF[\s\S]*full access/);
+  assert.match(first.at(-1).content, /Plan mode is OFF[\s\S]*Access permissions are controlled separately/);
   assert.match(first.at(-1).content, /No planning document in this chat/);
   assert.equal(f.messages.length, 1);
   assert.equal(context(first).length, first.length);
@@ -457,7 +459,7 @@ test("each phase of a document is told the rule of its own moment", () => {
   assert.match(planningTick(draft), /Plan mode is ON \(read only\)\. Prepare the document, then submit ready=true\./);
   assert.match(planningTick(ready), /read only: awaiting approval[\s\S]*«Начать реализацию»[\s\S]*end the turn/);
   assert.doesNotMatch(planningTick(ready), /then submit ready=true/);
-  assert.match(planningTick(active), /Plan mode is OFF \(full access\)[\s\S]*Work from the approved document/);
+  assert.match(planningTick(active), /Plan mode is OFF \(access permissions are separate\)[\s\S]*Work from the approved document/);
   const orphan = { content: "", phase: "implementation", revision: 3, approvedRevision: 2, updatedAt: new Date().toISOString() };
   assert.equal(isPlanning(orphan), true);
   assert.match(planningTick(orphan), /Plan mode is ON again \(read only: approval was lost\)[\s\S]*Ask the user to approve/);
@@ -470,7 +472,7 @@ test("each mode is described by its own rules, never borrowed from the other", (
   assert.match(gated, /working checklist and the notebook stay read-only/);
   assert.match(gated, /a blocked write answers with the reason instead of a missing tool/);
   const free = normalPlanningContext();
-  assert.match(free, /Plan mode is OFF for this chat: full access/);
+  assert.match(free, /Plan mode is OFF for this chat\. Access permissions are controlled separately/);
   assert.match(free, /Only the user switches Plan mode/);
   assert.match(free, /govern approval, not this mode/);
   assert.doesNotMatch(free, /read only|forbidden/);
@@ -495,7 +497,7 @@ test("the executed gate and the instructions agree on what counts as Plan mode",
       { content: "", phase: "implementation", revision: 3, approvedRevision: 2, updatedAt: new Date().toISOString() }];
     process.env.PI_DESKTOP_CONVERSATION_ID = "chat"; process.env.PI_DESKTOP_GOAL_STATE_FILE = file;
     for (const planning of states) {
-      writeFileSync(file, JSON.stringify({ conversations: [{ id: "chat", planning }] }));
+      writeFileSync(file, JSON.stringify({ conversations: [{ id: "chat", planning, access: { mode: "full" } }] }));
       assert.equal(desktopPlanningLocked(), isPlanning(planning), `phase ${planning?.phase ?? "none"}`);
     }
   } finally {

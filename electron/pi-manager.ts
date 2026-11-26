@@ -6,6 +6,7 @@ import { applyGoalReport, goalPrompt, settleGoal } from "../shared/goal.js";
 import { updatedPlan, planRequestSuffix, canContinuePlan, isPlanComplete } from "../shared/plan.js";
 import { confirmedPlanRevision } from "../shared/plan-activity.js";
 import { approvedPlanning, completePlanning, controlPlanningState, isPlanning, planImplementationPrompt, planningToolAllowed, revisePlanning } from "../shared/planning.js";
+import { accessLocked, accessTaskOpen, closeAccess, controlAccess as controlAccessState, defaultAccess, proposeAccess } from "../shared/access.js";
 import { canResumeRun } from "../shared/run-state.js";
 import { selectConfiguredModel } from "../shared/model-selection.js";
 import { notebookUsage, updatedNotebook } from "../shared/notebook.js";
@@ -375,6 +376,16 @@ export class PiManager {
     this.store.getConversation(conversationId);
     if (attachments.length) attachments = await storeChatAttachments(this.store.dataDir, conversationId, attachments);
     if (this.planningTransitions.has(conversationId)) throw new Error("Дождитесь переключения режима.");
+    const beforeAccess = this.store.getConversation(conversationId).access;
+    if (beforeAccess?.mode === "confirm" && beforeAccess.phase === "approved" && !beforeAccess.started
+      && (behavior === "resume" || behavior === "implement" || expectedGoalId || expectedPlanRevision !== undefined))
+      throw new Error("Разрешение получено. Напишите сообщение, чтобы начать работу.");
+    // A clarification invalidates the old review card before the model reads it.
+    // No ordinary message, including a queued one, can approve that proposal.
+    if (beforeAccess?.phase === "review" && behavior !== "implement" && !expectedGoalId && expectedPlanRevision === undefined)
+      await this.updateConversation(conversationId, { access: closeAccess(beforeAccess) });
+    if (beforeAccess?.phase === "approved" && !beforeAccess.started && behavior !== "implement" && !expectedGoalId && expectedPlanRevision === undefined)
+      await this.updateConversation(conversationId, { access: { ...beforeAccess, started: true, revision: beforeAccess.revision + 1 } });
     if (requestPlan && !isPlanning(this.store.getConversation(conversationId).planning)) {
       await this.controlPlanning(conversationId, "start", this.store.getConversation(conversationId).planning?.revision ?? 0);
     }
@@ -399,6 +410,9 @@ export class PiManager {
       if ((this.startupEpochs.get(conversationId) ?? 0) !== epoch) throw new Error("Отправка отменена пользователем.");
     }
     const runtime = await this.ensureRuntime(conversationId);
+    if (accessLocked(this.store.getConversation(conversationId).access)
+      && !runtime.snapshot?.extensionState.activeTools.includes("request_changes"))
+      throw new Error("Защита согласования не загрузилась. Изменения запрещены; проверьте ошибки расширений.");
     if (runtime.snapshot?.state.model === null) throw new Error("Выберите доступную модель: прежняя модель или API-подключение больше не доступны.");
     if (isPlanning(this.store.getConversation(conversationId).planning)
       && !runtime.snapshot?.extensionState.activeTools.includes("update_implementation_plan"))
@@ -870,6 +884,30 @@ export class PiManager {
       this.launchGoal(conversationId, [], false, true);
   }
 
+  async controlAccess(conversationId: string, action: "full" | "confirm" | "approve" | "cancel", expectedRevision: number): Promise<void> {
+    if (this.planningTransitions.has(conversationId)) throw new Error("Дождитесь переключения режима.");
+    this.planningTransitions.add(conversationId);
+    try {
+      if (action === "cancel") {
+        const conversation = this.store.getConversation(conversationId);
+        const access = controlAccessState(action, expectedRevision, conversation.access);
+        const runtime = this.runtimes.get(conversationId);
+        await Promise.all([this.updateConversation(conversationId, { access }),
+          runtime?.snapshot?.state.isStreaming ? this.abort(conversationId) : Promise.resolve()]);
+        return;
+      }
+      await this.runtimes.get(conversationId)?.eventQueue;
+      const conversation = this.store.getConversation(conversationId);
+      const runtime = this.runtimes.get(conversationId);
+      if (this.startingRuntimes.has(conversationId) || runtime?.snapshot?.state.isStreaming || runtime?.snapshot?.state.isCompacting || conversation.status === "starting")
+        throw new Error("Сначала приостановите текущую работу.");
+      if (action === "approve" && (isPlanning(conversation.planning) || this.store.getQueuedPrompts(conversationId).length))
+        throw new Error("Сначала обработайте уточнения или согласуйте подробный план.");
+      const access = controlAccessState(action, expectedRevision, conversation.access);
+      await this.updateConversation(conversationId, { access });
+    } finally { this.planningTransitions.delete(conversationId); }
+  }
+
   async controlPlanning(conversationId: string, action: "start" | "revise" | "approve" | "cancel", expectedRevision: number): Promise<void> {
     if (this.planningTransitions.has(conversationId) || this.planningWrites.has(conversationId)) throw new Error("Дождитесь сохранения или переключения плана.");
     this.planningTransitions.add(conversationId);
@@ -886,6 +924,11 @@ export class PiManager {
       // Pi plan-mode is a live permission change, not a new runtime or tool loadout.
       this.goalContinuationRequested.delete(conversationId);
       const changes: Partial<ConversationRecord> = { planning, status: "idle" };
+      if (action === "approve") {
+        const access = conversation.access ?? defaultAccess();
+        changes.access = { ...access, phase: "approved", started: true, revision: access.revision + 1,
+          proposal: { description: planning!.content, targets: [], risks: "" } };
+      } else changes.access = closeAccess(conversation.access);
       if (conversation.goal?.status === "active") changes.goal = { ...conversation.goal, status: "paused", updatedAt: new Date().toISOString() };
       if (conversation.plan?.execution === "active") changes.plan = updatedPlan({ execution: "paused" }, conversation.plan);
       if (action === "approve" && conversation.plan) changes.plan = updatedPlan({ plan: [], execution: "paused" }, conversation.plan);
@@ -965,6 +1008,16 @@ export class PiManager {
 
   private async handleGoalRequest(conversationId: string, request: JsonObject): Promise<unknown> {
     const planning = this.store.getConversation(conversationId).planning;
+    if (request.action === "request_changes") {
+      const params = request.params as JsonObject | undefined;
+      const conversation = this.store.getConversation(conversationId);
+      if (!params || !Object.keys(params).length) return { access: conversation.access ?? defaultAccess() };
+      if (isPlanning(planning)) throw new Error("В режиме плана согласуйте подробный документ через панель плана.");
+      if (this.runtimes.get(conversationId)?.runAborted || this.planningTransitions.has(conversationId)) throw new Error("Предложение отменено или режим изменился.");
+      const access = proposeAccess(params, conversation.access);
+      await this.updateConversation(conversationId, { access });
+      return { access };
+    }
     if (request.action === "update_implementation_plan") {
       const params = request.params as JsonObject | undefined;
       if (!params || Object.keys(params).length === 0) return { planning: planning ?? null };
@@ -978,7 +1031,7 @@ export class PiManager {
         return { planning: next };
       } finally { this.planningWrites.delete(conversationId); }
     }
-    if (isPlanning(planning)) {
+    if (isPlanning(planning) || accessLocked(this.store.getConversation(conversationId).access)) {
       const tool = request.action === "update_notebook" ? "update_notebook" : String(request.action);
       if (!planningToolAllowed(tool, request.params as JsonObject ?? {})) throw new Error("Режим «План»: изменяющие действия запрещены до согласования.");
     }
@@ -1082,6 +1135,9 @@ export class PiManager {
       (!resumeBeforeQueue && this.store.getQueuedPrompts(conversationId).length > 0)) return;
     const goal = approvedPlanning(this.store.getConversation(conversationId).planning) ? undefined : this.store.getConversation(conversationId).goal;
     const plan = this.store.getConversation(conversationId).plan;
+    const access = this.store.getConversation(conversationId).access;
+    if (access?.mode === "confirm" && access.phase === "approved" && !access.started) return;
+    if (accessLocked(this.store.getConversation(conversationId).access) && (!goal || goal.steps > 0)) return;
     const planRevision = goal?.status !== "active" && canContinuePlan(plan, goal) ? plan!.revision : undefined;
     if (goal?.status !== "active" && planRevision === undefined) return;
     this.goalLaunching.add(conversationId);
@@ -1970,6 +2026,10 @@ export class PiManager {
           runtime.activeRun = { ...runtime.activeRun, interruption: { ...runtime.activeRun.interruption, goalId: settledGoal.id } };
       }
       const hasQueued = this.store.getQueuedPrompts(conversationId).length > 0;
+      const settledConversation = this.store.getConversation(conversationId);
+      if (settledConversation.access?.mode === "confirm" && settledConversation.access.phase === "approved"
+        && !runtime.activeRun?.pause && (!completedNormally || !accessTaskOpen(settledConversation)))
+        await this.updateConversation(conversationId, { access: closeAccess(settledConversation.access) });
       const currentPlan = this.store.getConversation(conversationId).plan;
       if (!completedNormally && currentPlan?.execution === "active") {
         const pausedPlan = updatedPlan({ execution: "paused", explanation: runtime.activeRun?.pause ? "Работа приостановлена пользователем." : "Автопродолжение приостановлено: ошибка или прерывание. Проверьте чат и дайте команду продолжить." }, currentPlan);

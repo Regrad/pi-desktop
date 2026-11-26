@@ -1,5 +1,6 @@
 import { t, getLocale, getLanguage, conversationTitle, setLanguage, useLanguage } from "./i18n";
 import { LanguageSettings } from "./LanguageSettings";
+import { AccessSelector, AccessApprovalCard } from "./AccessControls";
 import {
   Archive,
   ArchiveRestore,
@@ -5101,6 +5102,19 @@ export default function App() {
     }
   };
 
+  const changeAccess = async (action: "full" | "confirm" | "approve" | "cancel", revision: number) => {
+    if (action === "cancel" && activeConversationId) {
+      try { await window.piDesktop.controlAccess(activeConversationId, action, revision); }
+      catch (error) { addNotice(error instanceof Error ? error.message : String(error), "error"); }
+      return;
+    }
+    if (!activeConversationId || !beginRequest(activeConversationId)) return;
+    const id = activeConversationId;
+    try { await window.piDesktop.controlAccess(id, action, revision); }
+    catch (error) { addNotice(error instanceof Error ? error.message : String(error), "error"); }
+    finally { finishRequest(id); }
+  };
+
   const changePlanning = async (action: "start" | "revise" | "approve" | "cancel", revision: number) => {
     if (!activeConversationId) return;
     const id = activeConversationId;
@@ -6570,6 +6584,7 @@ export default function App() {
                       <ArrowDown size={17} />
                     </button>
                   )}
+                  {!planMode && <AccessApprovalCard key={`approval-${activeConversationId}`} access={snapshot?.conversation.access} disabled={working || requestPending} onAction={changeAccess} />}
                   {snapshot && !planMode && (
                     <GoalPanel
                       key={snapshot.conversation.id}
@@ -6879,9 +6894,7 @@ export default function App() {
                       >
                         <SquareTerminal size={17} />
                       </button>
-                      <span className="access-chip">
-                        <Check size={13} /> {planMode ? t("План · только чтение") : t("Полный доступ")}
-                      </span>
+                      <AccessSelector key={`access-${activeConversationId}`} access={snapshot?.conversation.access} disabled={working || requestPending} onAction={changeAccess} />
                       {goalMode && (
                         <button
                           className="goal-mode-chip"

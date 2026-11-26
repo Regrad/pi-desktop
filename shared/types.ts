@@ -26,6 +26,7 @@ export interface ProjectInstructions {
 }
 
 export interface ConversationRecord {
+  access?: ConversationAccess;
   planning?: ConversationPlanning;
   notebook?: ConversationNotebook;
   goal?: ConversationGoal;
@@ -44,6 +45,14 @@ export interface ConversationRecord {
   status: "idle" | "starting" | "working" | "error";
   /** When set, the chat finished a run that the user has not opened since. */
   resultUnseen?: string;
+}
+
+export interface ConversationAccess {
+  mode: "confirm" | "full";
+  phase: "idle" | "review" | "approved";
+  revision: number;
+  started?: boolean;
+  proposal?: { description: string; targets: string[]; risks: string };
 }
 
 export type PlanStatus = "pending" | "in_progress" | "waiting" | "skipped" | "completed";
@@ -477,6 +486,7 @@ export interface PiDesktopApi {
   editGoal(conversationId: string, objective: string): Promise<void>;
   removePlan(conversationId: string): Promise<void>;
   controlPlan(conversationId: string, action: "pause" | "resume"): Promise<void>;
+  controlAccess(conversationId: string, action: "full" | "confirm" | "approve" | "cancel", expectedRevision: number): Promise<void>;
   controlPlanning(conversationId: string, action: "start" | "revise" | "approve" | "cancel", expectedRevision: number): Promise<void>;
   saveNotebook(conversationId: string, content: string, expectedRevision: number): Promise<ConversationNotebook>;
   browserUi(command: import("./browser.js").BrowserUiCommand): Promise<import("./browser.js").BrowserState>;

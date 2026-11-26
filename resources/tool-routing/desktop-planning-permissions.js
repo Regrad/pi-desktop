@@ -1,7 +1,7 @@
 import { readFileSync } from "node:fs";
 
 /** Live desktop permissions are separate from the model's unchanged tool catalog. */
-export function readDesktopPlanning() {
+function readConversationPermissions() {
   const id = process.env.PI_DESKTOP_CONVERSATION_ID;
   const file = process.env.PI_DESKTOP_GOAL_STATE_FILE;
   if (!id) return;
@@ -9,18 +9,29 @@ export function readDesktopPlanning() {
   const state = JSON.parse(readFileSync(file, "utf8"));
   const conversation = state.conversations?.find(item => item.id === id);
   if (!conversation) throw new Error("Conversation permissions unavailable; execution disabled.");
-  return conversation.planning;
+  return conversation;
+}
+export function readDesktopPlanning() {
+  return readConversationPermissions()?.planning;
+}
+export function readDesktopAccess() {
+  const conversation = readConversationPermissions();
+  if (!conversation) return;
+  return conversation.access ?? { mode: "confirm", phase: "idle", revision: 0 };
 }
 
 export function desktopPlanningLocked() {
   const state = readDesktopPlanning();
-  return Boolean(state && !["working", "inactive", "completed"].includes(state.phase) && !(state.phase === "implementation"
+  const access = readDesktopAccess();
+  const approved = access?.mode === "confirm" && access.phase === "approved" && Number.isSafeInteger(access.revision) && access.revision > 0
+    && typeof access.proposal?.description === "string" && Boolean(access.proposal.description.trim());
+  return Boolean(access && access.mode !== "full" && !approved) || Boolean(state && !["working", "inactive", "completed"].includes(state.phase) && !(state.phase === "implementation"
     && Number.isSafeInteger(state.revision) && state.approvedRevision === state.revision
     && typeof state.content === "string" && state.content.trim()));
 }
 
 export function assertPlanningModelAccess() {
-  if (desktopPlanningLocked()) throw new Error("Plan mode: additional model generation is unavailable until user approval.");
+  if (desktopPlanningLocked()) throw new Error("Plan mode or Agree first: additional model generation is unavailable until user approval.");
 }
 
 /** Pi Lens can mutate files from these hooks without calling an edit tool. */

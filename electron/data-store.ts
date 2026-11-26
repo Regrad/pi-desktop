@@ -1383,6 +1383,7 @@ export class DataStore {
       ...(projectId ? { projectId } : {}),
       title: "Новый чат",
       titleIsPlaceholder: true,
+      access: { mode: "confirm", phase: "idle", revision: 0 },
       createdAt: now,
       updatedAt: now,
       status: "idle",

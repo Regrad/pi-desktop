@@ -1,4 +1,5 @@
-import type { ConversationPlanning } from "../../shared/types.js";
+import type { ConversationPlanning, ConversationAccess } from "../../shared/types.js";
+export function readDesktopAccess(): ConversationAccess | undefined;
 export function readDesktopPlanning(): ConversationPlanning | undefined;
 export function desktopPlanningLocked(): boolean;
 export function assertPlanningModelAccess(): void;

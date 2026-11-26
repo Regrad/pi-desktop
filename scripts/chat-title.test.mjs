@@ -4,6 +4,7 @@ import { readFileSync, writeFileSync, mkdirSync, mkdtempSync, rmSync } from "nod
 import { stripTypeScriptTypes } from "node:module";
 import path from "node:path";
 import http from "node:http";
+import { accessLocked, closeAccess } from "../shared/access.ts";
 
 const bridge = readFileSync("resources/pi-engine/protocol.js", "utf8").replace(/\r\n/g, "\n");
 const titleStart = bridge.indexOf("export async function generateChatTitle");
@@ -18,10 +19,10 @@ function method(name, params, bindings = {}) {
 }
 const nameConversation = method("nameConversation", "conversationId, runtime, message");
 const sendPrompt = method("sendPrompt", "conversationId, message, attachments, behavior, expectedGoalId, historyEdit = false, requestPlan = false, expectedPlanRevision", {
-  isPlanning: () => false, imageAttachmentPrompt: () => "",
+  isPlanning: () => false, imageAttachmentPrompt: () => "", accessLocked, closeAccess,
 });
 function fixture(generate = async () => ({ title: "Ускорение запуска приложения" })) {
-  const chat = { id: "chat", title: "Новый чат" }, calls = [], events = [];
+  const chat = { id: "chat", title: "Новый чат", access: { mode: "full" } }, calls = [], events = [];
   const runtime = { snapshot: { messages: [], state: { isStreaming: false } }, extensionUi: {},
     diffTracker: { covers: () => true, async beginRun() {}, close() {} },
     rpc: { async request(type, payload) { calls.push([type, payload]); return type === "desktop_generate_chat_title" ? generate() : {}; } } };

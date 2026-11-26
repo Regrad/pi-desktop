@@ -77,7 +77,7 @@ const fullAccessScope = "Only the user switches Plan mode, in the interface; a d
 
 /** The only statement of what the model may execute right now; every state message starts with it. */
 export function planningModeLine(state?: ConversationPlanning): string {
-  if (!isPlanning(state)) return `Plan mode is OFF for this chat: full access. ${fullAccessScope}`;
+  if (!isPlanning(state)) return `Plan mode is OFF for this chat. Access permissions are controlled separately by the desktop access state. ${fullAccessScope}`;
   const current = state as ConversationPlanning;
   if (current.phase === "review") return `Plan mode is ON for this chat: read only, the document waits for the user's approval. ${readOnlyScope} Ask the user to approve it with the «Начать реализацию» control in the plan panel and end the turn: a word in the chat is not approval, so never offer one, and start nothing until a newer state message says the plan was approved.`;
   if (current.phase === "implementation") return `Plan mode is ON again for this chat: the approved document changed or became empty, so it needs approval once more. ${readOnlyScope}`;
@@ -85,7 +85,7 @@ export function planningModeLine(state?: ConversationPlanning): string {
 }
 /** Reminder form of the same fact; it never differs from planningModeLine. */
 function planningModeShort(state?: ConversationPlanning): string {
-  if (!isPlanning(state)) return "Plan mode is OFF (full access)";
+  if (!isPlanning(state)) return "Plan mode is OFF (access permissions are separate)";
   const current = state as ConversationPlanning;
   if (current.phase === "implementation") return "Plan mode is ON again (read only: approval was lost)";
   return current.phase === "review" ? "Plan mode is ON (read only: awaiting approval)" : "Plan mode is ON (read only)";
@@ -98,7 +98,7 @@ export function normalPlanningContext(): string {
 /** Starting the approved work is an application step: the engine receives it as a service
  * message, so nothing lands in the chat as if the user had typed the instruction. */
 export function planImplementationPrompt(state: ConversationPlanning): string {
-  return `<pi_desktop_service_context source="implementation-plan">\nThe user approved this planning document at revision ${state.revision} and implementation has started. Plan mode is OFF for this chat: full access. Build a working checklist from the approved items with update_checklist, set execution to "active", then implement the document: keep it current when a decision changes and mark steps once they are verified. This is an application step, not a new request from the user, and it does not widen the approved scope.\n</pi_desktop_service_context>`;
+  return `<pi_desktop_service_context source="implementation-plan">\nThe user approved this planning document at revision ${state.revision} and implementation has started. Plan mode is OFF for this chat; the desktop granted access for this task. Build a working checklist from the approved items with update_checklist, set execution to "active", then implement the document: keep it current when a decision changes and mark steps once they are verified. This is an application step, not a new request from the user, and it does not widen the approved scope.\n</pi_desktop_service_context>`;
 }
 export function planningTick(state: ConversationPlanning): string {
   const mode = planningModeShort(state);
