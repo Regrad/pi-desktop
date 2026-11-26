@@ -41,6 +41,7 @@ export function createRunPause(session, publish) {
                 responseComplete = !toolsPending && event.message.stopReason === "stop";
             }
             if (event.type === "tool_execution_start") toolsPending = true;
+            if (event.type === "agent_end" && state === "requested") session.desktopDiscardPausedResponse();
             if (event.type === "turn_end") {
                 toolsPending = false;
                 if (state === "requested") {

@@ -6,11 +6,14 @@ import path from "node:path";
 import { pathToFileURL } from "node:url";
 import { patchDesktopContinuation } from "../resources/pi-rpc-bridge/continuation-patch.js";
 import { createRunPause } from "../resources/pi-engine/pause.js";
+import { omitHistoryEntries } from "../shared/chat-history.ts";
 
 const appRoot = process.env.PI_TEST_APP_ROOT || process.cwd();
 const { PiRpcProcess } = await import(pathToFileURL(path.join(appRoot, "dist-electron/electron/pi-rpc-process.js")));
 const { updatedPlan } = await import(pathToFileURL(path.join(appRoot, "dist-electron/shared/plan.js")));
 const { isPlanning } = await import(pathToFileURL(path.join(appRoot, "dist-electron/shared/planning.js")));
+const { SessionManager } = await import(pathToFileURL(path.join(appRoot, "node_modules/@earendil-works/pi-coding-agent/dist/index.js")));
+const { sessionTranscript } = await import(pathToFileURL(path.join(appRoot, "dist-electron/electron/session-transcript.js")));
 const managerSource = await readFile(path.join(appRoot, "dist-electron/electron/pi-manager.js"), "utf8");
 const managerMethod = name => {
   const start = managerSource.search(new RegExp(`^    (async )?${name}\\(`, "m"));
@@ -19,6 +22,30 @@ const managerMethod = name => {
   return new Function("updatedPlan", "isPlanning", `return class {${managerSource.slice(start, end + 6)}}.prototype.${name}`)(updatedPlan, isPlanning);
 };
 const tempRoot = process.platform === "win32" ? "C:/AI_Temp" : process.env.TMPDIR || "/tmp";
+
+test("discarded entries leave cached history and cannot return in a late page", () => {
+  const page = { rows: [
+    { id: "user", position: 10, message: { role: "user" } },
+    { id: "discarded", position: 11, message: { role: "assistant" } },
+    { id: "answer", position: 12, message: { role: "assistant" } },
+  ], before: "user", after: "answer", total: 20, marks: [{ id: "user", position: 10, timestamp: 1 }] };
+  const omitted = new Set(["discarded"]);
+  const visible = omitHistoryEntries(page, omitted);
+  assert.deepEqual(visible.rows.map(row => row.id), ["user", "answer"]);
+  assert.equal(visible.rows[1].position, 11);
+  assert.equal(visible.total, 19);
+  assert.equal(page.rows.length, 3);
+  assert.deepEqual(omitHistoryEntries(structuredClone(page), omitted), visible);
+  assert.equal(omitHistoryEntries(visible, omitted), visible);
+  assert.equal(omitHistoryEntries(undefined, omitted), undefined);
+});
+
+test("discarding a page boundary keeps paging anchored to a retained message", () => {
+  const page = { rows: [{ id: "discarded", position: 0 }, { id: "kept", position: 1 }], before: "discarded", after: "kept", total: 2, marks: [] };
+  assert.equal(omitHistoryEntries(page, new Set(["discarded"])).before, "kept");
+  assert.equal(omitHistoryEntries(page, new Set(["kept"])).after, "discarded");
+  assert.equal(omitHistoryEntries(page, new Set(["discarded", "kept"])), undefined);
+});
 
 test("a late pause click cannot turn a completed answer into suspended work", () => {
   const events = [];
@@ -79,6 +106,9 @@ async function fixture(t, mode) {
   const extension = path.join(folder, "tool.mjs");
   await writeFile(extension, `import { appendFile, access } from 'node:fs/promises';
     export default function(pi) {
+      ${mode === "thinking-with-state" ? `pi.on("turn_end", () => {
+        pi.sendMessage({ customType: "fixture_state", content: "STATE_AFTER_ABORT", display: false }, { triggerTurn: false });
+      });` : ""}
       pi.registerTool({ name: 'pause_fixture', label: 'Pause fixture', description: 'Controlled test operation',
         parameters: { type: 'object', properties: {} },
         async execute(id, args, signal) {
@@ -101,7 +131,7 @@ async function fixture(t, mode) {
     for await (const data of req) chunks.push(data);
     captured.push(JSON.parse(Buffer.concat(chunks).toString()));
     res.writeHead(200, { "Content-Type": "text/event-stream" });
-    if (captured.length === 1 && mode === "thinking") {
+    if (captured.length === 1 && mode.startsWith("thinking")) {
       res.write(chunk({ role: "assistant", reasoning_content: "UNFINISHED_THOUGHT" }));
     } else if (captured.length === 1) {
       const tool_calls = Array.from({ length: mode === "batch" ? 2 : 1 }, (_, index) => ({
@@ -150,6 +180,13 @@ test("pause cancels thinking immediately and resumes the existing task without a
   await f.rpc.request("desktop_pause");
   await f.wait(() => f.events.some(event => event.pause === "paused"));
   assert.equal(f.captured.length, 1);
+  const pausedHistory = await f.rpc.request("get_messages");
+  assert.doesNotMatch(JSON.stringify(pausedHistory.messages), /UNFINISHED_THOUGHT/);
+  const state = await f.rpc.request("get_state");
+  const reopened = SessionManager.open(state.sessionFile, path.dirname(state.sessionFile), path.dirname(path.dirname(state.sessionFile)));
+  assert.doesNotMatch(JSON.stringify(sessionTranscript(reopened.getBranch()).rows), /UNFINISHED_THOUGHT/);
+  const omission = f.events.findIndex(event => event.type === "entry_appended" && event.entry?.type === "context_edit" && event.entry.replacement === null);
+  assert.ok(omission >= 0 && omission < f.events.findIndex(event => event.type === "agent_settled"));
   const resumed = f.rpc.request("desktop_pause_resume");
   await resumed;
   assert.equal(f.captured.length, 2);
@@ -170,6 +207,18 @@ test("pause lets a running tool finish and preserves its result without replay",
   assert.match(JSON.stringify(f.captured[1].messages), /Confirmed fixture result/);
   assert.equal((await readFile(f.log, "utf8")), "started\ncompleted\n");
   assert.equal(f.captured[1].messages.filter(message => message.role === "user").length, 1);
+});
+
+test("pause removes the interrupted response even when an extension appends service state", { timeout: 20000 }, async t => {
+  const f = await fixture(t, "thinking-with-state");
+  await f.wait(() => f.events.some(event => event.assistantMessageEvent?.type === "thinking_delta"));
+  await f.rpc.request("desktop_pause");
+  await f.wait(() => f.events.some(event => event.pause === "paused"));
+  const history = await f.rpc.request("get_messages");
+  assert.doesNotMatch(JSON.stringify(history.messages), /UNFINISHED_THOUGHT/);
+  assert.match(JSON.stringify(history.messages), /STATE_AFTER_ABORT/);
+  await f.rpc.request("desktop_pause_resume");
+  assert.equal(f.captured.length, 2);
 });
 
 test("pausing parallel tools records every result before stopping the next model request", { timeout: 20000 }, async t => {

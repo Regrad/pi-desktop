@@ -55,7 +55,7 @@ import {
   useRef,
   useState,
 } from "react";
-import type { ReactNode, RefObject } from "react";
+import type { ReactNode, RefObject, SetStateAction } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import type { Plugin } from "unified";
@@ -76,7 +76,7 @@ import { ShellTimeout } from "./ShellTimeout";
 import { shellTiming } from "./shell-timeout";
 import { historyHasLaterMessages } from "../shared/session-history";
 import { applyMessagePatch } from "../shared/message-sync";
-import { chatMessageWindow, type ChatHistoryMark, type ChatHistoryPage, type ChatHistoryRequest } from "../shared/chat-history";
+import { chatMessageWindow, omitHistoryEntries, type ChatHistoryMark, type ChatHistoryPage, type ChatHistoryRequest } from "../shared/chat-history";
 import { ChatTimeline } from "./ChatTimeline";
 import { NotebookSettings } from "./NotebookSettings";
 import { BrowserPanel } from "./BrowserPanel";
@@ -3714,7 +3714,11 @@ export default function App() {
   const [runControlPending, setRunControlPending] = useState<string>();
   const [messages, setMessages] = useState<JsonObject[]>([]);
   const messageOffsetRef = useRef(0);
-  const [historyPage, setHistoryPage] = useState<ChatHistoryPage>();
+  const omittedHistoryEntriesRef = useRef(new Set<string>());
+  const [historyPage, updateHistoryPage] = useState<ChatHistoryPage>();
+  const setHistoryPage = useCallback((update: SetStateAction<ChatHistoryPage | undefined>) => {
+    updateHistoryPage(current => omitHistoryEntries(typeof update === "function" ? update(current) : update, omittedHistoryEntriesRef.current));
+  }, []);
   const [historyJump, setHistoryJump] = useState<{ key: string }>();
   const [historyPosition, setHistoryPosition] = useState(0);
   const [historyLoading, setHistoryLoading] = useState(false);
@@ -4325,6 +4329,12 @@ export default function App() {
   }, []);
 
   const handlePiEvent = (event: JsonObject) => {
+    if (event.type === "entry_appended" && event.entry?.type === "context_edit" && typeof event.entry.targetId === "string") {
+      if (event.entry.replacement === null) omittedHistoryEntriesRef.current.add(event.entry.targetId);
+      else omittedHistoryEntriesRef.current.delete(event.entry.targetId);
+      setHistoryPage(current => current);
+      return;
+    }
     if (event.type === "desktop_history_preview") {
       if (awaitingHistoryPreviewRef.current) setHistoryPage(event.history);
       return;
@@ -4655,6 +4665,7 @@ export default function App() {
   };
 
   const resetHistoryView = () => {
+    omittedHistoryEntriesRef.current.clear();
     ++historyRequestRef.current;
     awaitingHistoryPreviewRef.current = false;
     historyLoadingRef.current = false;
@@ -5414,6 +5425,7 @@ export default function App() {
   const applyRuntimeSnapshot = (next: ConversationSnapshot, branchChanged = false) => {
     messageOffsetRef.current = next.messageOffset ?? 0;
     if (branchChanged) {
+      omittedHistoryEntriesRef.current.clear();
       ++historyRequestRef.current;
       historyLoadingRef.current = false;
       setHistoryLoading(false);
