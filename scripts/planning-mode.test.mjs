@@ -4,7 +4,7 @@ import { readFileSync, existsSync, mkdirSync, mkdtempSync, writeFileSync, unlink
 import path from "node:path";
 import http from "node:http";
 import { registerHooks, stripTypeScriptTypes } from "node:module";
-import { isPlanning, approvedPlanning, completePlanning, controlPlanningState, revisePlanning, planningToolAllowed, planningContext, planningTick, normalPlanningContext, planImplementationPrompt, planningPolicy, planningLimit } from "../shared/planning.ts";
+import { isPlanning, approvedPlanning, completePlanning, settlePlanning, controlPlanningState, revisePlanning, planningToolAllowed, planningContext, planningTick, normalPlanningContext, planImplementationPrompt, planningPolicy, planningLimit } from "../shared/planning.ts";
 import { updatedPlan, canContinuePlan } from "../shared/plan.ts";
 import { accessLocked, closeAccess, defaultAccess } from "../shared/access.ts";
 import { desktopPlanningLocked, assertPlanningModelAccess, guardExtensionHandler } from "../resources/tool-routing/desktop-planning-permissions.js";
@@ -56,10 +56,7 @@ test("approval is user-controlled and bound to a nonempty reviewed revision", ()
   assert.throws(() => controlPlanningState("approve", ready.revision - 1, ready), /изменился/);
   assert.equal(approvedPlanning(accepted), true);
   assert.equal(isPlanning(accepted), false);
-  const updated = revisePlanning({ content: "Refined approach", expectedRevision: accepted.revision }, accepted);
-  assert.equal(updated.phase, "working");
-  assert.equal(updated.approvedRevision, undefined, "do not claim the user approved edited text");
-  assert.equal(isPlanning(updated), false);
+  assert.throws(() => revisePlanning({ content: "Refined approach", expectedRevision: accepted.revision }, accepted), /только в режиме/);
   const revised = controlPlanningState("revise", accepted.revision, accepted);
   assert.equal(revised.approvedRevision, undefined);
   assert.equal(isPlanning(revised), true);
@@ -68,36 +65,29 @@ test("approval is user-controlled and bound to a nonempty reviewed revision", ()
   const cancelled = controlPlanningState("cancel", revised.revision, revised);
   assert.equal(cancelled.content, accepted.content);
   assert.equal(cancelled.phase, "inactive");
-  assert.match(planningContext(cancelled), /neither authorizes historical work/);
+  assert.match(planningContext(cancelled), /Plan mode is OFF/);
 });
 
-test("model can create, edit and finish a plan in normal mode without a review gate", async () => {
+test("the detailed document is blocked outside Plan mode, including reads and direct execution", async () => {
   const f = fixture(); f.state = undefined;
-  f.handlers.get("context")({ messages: [] });
   const tool = f.tools.get("update_implementation_plan");
-  await tool.execute("create", { content: "Investigate\nImplement", ready: true });
-  assert.equal(f.state.phase, "working");
-  assert.equal(isPlanning(f.state), false);
-  assert.equal(approvedPlanning(f.state), false);
+  for (const params of [{}, { content: "Investigate and implement", ready: true }, { complete: true }]) {
+    assert.equal(f.handlers.get("tool_call")({ toolName: tool.name, input: params }).block, true);
+    await assert.rejects(tool.execute("outside", params), /только в режиме/);
+  }
+  assert.equal(f.state, undefined);
   assert.equal(f.handlers.get("tool_call")({ toolName: "write", input: {} }), undefined);
   assert.equal(f.handlers.get("user_bash")(), undefined);
-  await tool.execute("append", { append: "\nVerify" });
-  await tool.execute("edit", { old_text: "Implement", new_text: "Implement and test" });
-  assert.equal(f.state.content, "Investigate\nImplement and test\nVerify");
-  assert.equal(f.state.phase, "working");
-  assert.match(planningContext(f.state), /normal mode/i);
-  assert.doesNotMatch(planningContext(f.state), /implementation is forbidden/);
-  await tool.execute("complete", { complete: true });
-  assert.equal(f.state.phase, "completed");
 });
 
-test("saved and completed documents can be revised without entering Plan mode", () => {
+test("only the user entering Plan mode makes a saved document editable", () => {
   for (const state of [undefined, { content: "old", phase: "inactive", revision: 5 }, { content: "old", phase: "completed", revision: 5 }]) {
-    const next = revisePlanning({ content: "Current task", expectedRevision: state?.revision ?? 0 }, state);
-    assert.equal(next.phase, "working");
-    assert.equal(isPlanning(next), false);
-    assert.throws(() => revisePlanning({ append: "stale", expectedRevision: next.revision - 1 }, next), /изменился/);
-    assert.equal(isPlanning(controlPlanningState("start", next.revision, next)), true);
+    assert.throws(() => revisePlanning({ content: "Current task", expectedRevision: state?.revision ?? 0 }, state), /только в режиме/);
+    const active = controlPlanningState("start", state?.revision ?? 0, state);
+    const next = revisePlanning({ content: "Current task", expectedRevision: active.revision }, active);
+    assert.equal(next.phase, "draft");
+    assert.throws(() => controlPlanningState("approve", next.revision, next), /готового плана/);
+    assert.throws(() => revisePlanning({ content: "", ready: true, expectedRevision: next.revision }, next), /пустой план/);
   }
 });
 
@@ -121,7 +111,7 @@ test("a prose specification is completed explicitly, independently of checklist 
   const done = completePlanning({ complete: true, expectedRevision: state.revision }, state, checked);
   assert.equal(done.phase, "completed"); assert.equal(done.content, prose);
   assert.equal(isPlanning(done), false); assert.equal(approvedPlanning(done), false);
-  assert.match(planningContext(done), /completed and retained for reference/);
+  assert.match(planningContext(done), /Plan mode is OFF/);
   assert.doesNotMatch(planningContext(done), /Plan mode: implementation is forbidden/);
   assert.equal(completePlanning({ complete: true, expectedRevision: done.revision }, done), done);
   assert.equal(controlPlanningState("revise", done.revision, done).phase, "draft");
@@ -133,13 +123,18 @@ test("a prose specification is completed explicitly, independently of checklist 
     assert.throws(() => completePlanning({ expectedRevision: state.revision, ...params }, state), /только complete/);
 });
 
-test("model can finish an approved document through the existing tool without resending it", async () => {
+test("the app closes an approved document after verified checklist completion, not through a normal-mode tool call", async () => {
   const f = fixture(); f.state = approve(review(f.state));
-  f.handlers.get("context")({ messages: [{ role: "user", content: "Implement" }] });
-  const content = f.state.content, tool = f.tools.get("update_implementation_plan");
-  const result = await tool.execute("complete", { complete: true });
-  assert.equal(JSON.parse(result.content[0].text).planning.phase, "completed");
-  assert.equal(f.state.content, content);
+  await assert.rejects(f.tools.get("update_implementation_plan").execute("complete", { complete: true }), /только в режиме/);
+  const open = updatedPlan({ plan: [{ step: "Implement", status: "in_progress" }], execution: "active" });
+  assert.equal(settlePlanning(f.state, open, true), f.state);
+  assert.equal(settlePlanning(f.state, undefined, true), f.state);
+  const done = updatedPlan({ plan: [{ step: "Implement", status: "completed" }] }, open);
+  assert.equal(settlePlanning(f.state, done, false), f.state, "errors and aborts cannot complete the document");
+  const closed = settlePlanning(f.state, done, true);
+  assert.equal(closed.phase, "completed"); assert.equal(closed.content, f.state.content);
+  assert.equal(closed.revision, f.state.revision + 1);
+  assert.equal(settlePlanning(closed, done, true), closed);
 });
 
 test("normal tools remain discoverable; direct and nested execution obey the live permission", () => {
@@ -219,7 +214,7 @@ test("planning uses short phase reminders and write acknowledgements, restoring 
   history.push({ role: "user", content: "What stage is this?" });
   let next = context(history);
   assert.deepEqual(next.slice(0, history.length), history);
-  assert.match(next.at(-1).content, /Planning document: review/);
+  assert.match(next.at(-1).content, /Document: review/);
   assert.doesNotMatch(next.at(-1).content, /Detailed specification/);
   assert.deepEqual(context(next), next);
   const read = await f.tools.get("update_implementation_plan").execute("read", {});
@@ -227,10 +222,59 @@ test("planning uses short phase reminders and write acknowledgements, restoring 
   const restored = context([{ role: "compactionSummary", summary: "Earlier work" }, ack]);
   assert.ok(restored.at(-1).content.includes(f.state.content.replaceAll("\n", "\\n")), "compact acknowledgement cannot replace the document after compaction");
   f.state = approve(f.state); history = context(next);
-  assert.match(history.at(-1).content, /Detailed specification/, "approval supplies the full agreed specification");
+  assert.match(history.at(-1).content, /Plan mode is OFF/);
+  assert.doesNotMatch(history.at(-1).content, /Detailed specification/);
+  assert.ok(planImplementationPrompt(f.state).includes(f.state.content), "the app hands the approved scope to implementation once");
   f.state = completePlanning({ complete: true, expectedRevision: f.state.revision }, f.state);
-  next = context(history); assert.match(next.at(-1).content, /Planning document: completed/);
+  next = context(history); assert.deepEqual(next, history, "completion does not reintroduce the document in ordinary work");
   next.push({ role: "user", content: "Another task" }); assert.deepEqual(context(next), next);
+});
+
+test("only Plan mode receives document reminders; leaving it appends a small closing state without rewriting history", () => {
+  const f = fixture(), context = messages => f.handlers.get("context")({ messages }).messages;
+  f.state = { content: "Specification for the current task", phase: "draft", revision: 4, updatedAt: new Date().toISOString() };
+  const first = context([{ role: "user", content: "Plan the work" }]);
+  assert.match(first.at(-1).content, /Specification for the current task/);
+  const next = [...first, { role: "user", content: "Clarification" }];
+  const reminder = context(next);
+  assert.match(reminder.at(-1).content, /required detailed document/);
+  assert.doesNotMatch(reminder.at(-1).content, /Specification for the current task/);
+  f.state = approve(review(f.state));
+  const normal = context(reminder);
+  assert.deepEqual(normal.slice(0, reminder.length), reminder, "keep the cached prefix intact");
+  assert.match(normal.at(-1).content, /Plan mode is OFF/);
+  assert.doesNotMatch(normal.at(-1).content, /Specification for the current task/);
+  const after = [...normal, { role: "user", content: "Continue ordinary work" }];
+  assert.deepEqual(context(after), after, "normal work does not repeat document reminders");
+});
+
+test("approval starts the work as an application step, never as a message from the user", () => {
+  assert.doesNotMatch(source, /sendPrompt\(conversationId, "Реализуй/);
+  assert.match(source, /planImplementationPrompt\(approved\), \[\], "implement"/);
+  assert.match(source, /rpc\.request\("desktop_plan_implement"/);
+  const bridge = readFileSync(new URL("../resources/pi-engine/protocol.js", import.meta.url), "utf8");
+  const from = bridge.indexOf('case "desktop_plan_implement"');
+  const block = bridge.slice(from, from + 1600);
+  assert.match(block, /desktop_plan_implement: "desktop_plan_implementation"/);
+  assert.match(block, /customType: continuationType/);
+  assert.match(block, /display: false/);
+  assert.match(block, /triggerTurn: true/);
+  const message = planImplementationPrompt(approve(review()));
+  assert.ok(message.startsWith('<pi_desktop_service_context source="approved-work">'));
+  assert.match(message, /revision \d+/);
+  assert.match(message, /update_checklist[\s\S]{0,200}execution/);
+  assert.match(message, /not a new request from the user/);
+  assert.doesNotMatch(message, /goal controller/);
+});
+
+test("the plan is approved with the interface control, not with a word in the chat", () => {
+  const ready = review();
+  assert.match(planningContext(ready), /Начать реализацию/);
+  assert.match(planningContext(ready), /a word in the chat is not approval/);
+  assert.match(planningTick(ready), /Начать реализацию/);
+  assert.match(planningTick(ready), /a word in chat does not approve it/);
+  assert.match(planningPolicy, /«Начать реализацию»/);
+  assert.match(planningPolicy, /never treat one as approval/);
 });
 
 test("review/approval is version-checked and never stops or replaces the Pi process", async () => {
@@ -261,18 +305,12 @@ test("host independently blocks mutations, stale updates and late writes after S
   await assert.rejects(handle.call(host, "chat", { action: "update_implementation_plan", params: { content: "bad", expectedRevision: chat.planning.revision } }), /отменено/);
 });
 
-test("host saves normal-mode plans without pausing authorized work or starting review", async () => {
+test("host rejects detailed-document requests outside Plan mode without touching normal work", async () => {
   const handle = hostMethod("  private async handleGoalRequest(", "async function run(conversationId, request)", { isPlanning, planningToolAllowed, revisePlanning, completePlanning });
   const chat = { goal: { status: "active" }, plan: updatedPlan({ plan: [{ step: "Implement", status: "in_progress" }], execution: "active" }) };
-  const host = { store: { getConversation: () => chat }, runtimes: new Map([["chat", { runAborted: false }]]), planningWrites: new Set(), async updateConversation(_id, patch) { Object.assign(chat, patch); } };
-  await handle.call(host, "chat", { action: "update_implementation_plan", params: { content: "Approach and verification", ready: true, expectedRevision: 0 } });
-  assert.equal(chat.planning.phase, "working");
-  assert.equal(chat.goal.status, "active");
-  assert.equal(chat.plan.execution, "active");
-  assert.throws(() => completePlanning({ complete: true, expectedRevision: chat.planning.revision }, chat.planning, chat.plan), /незавершённые/);
-  await assert.rejects(handle.call(host, "chat", { action: "update_implementation_plan", params: { append: "stale", expectedRevision: 0 } }), /изменился/);
-  host.runtimes.get("chat").runAborted = true;
-  await assert.rejects(handle.call(host, "chat", { action: "update_implementation_plan", params: { append: "late", expectedRevision: chat.planning.revision } }), /отменено/);
+  const host = { store: { getConversation: () => chat }, runtimes: new Map(), planningWrites: new Set(), async updateConversation() { assert.fail("must not mutate state"); } };
+  for (const params of [{}, { content: "Plan", ready: true }, { complete: true }]) await assert.rejects(handle.call(host, "chat", { action: "update_implementation_plan", params }), /только в режиме/);
+  assert.equal(chat.goal.status, "active"); assert.equal(chat.plan.execution, "active"); assert.equal(chat.planning, undefined);
 });
 
 test("queue waits at review and active goals/checklists cannot start implementation without approval", async () => {
@@ -308,8 +346,7 @@ test("live state survives restart, fails closed, and guards hidden model APIs an
     const guarded = guardExtensionHandler("agent_settled", () => mutations++, "C:/app/node_modules/pi-lens/dist/index.js");
     guarded(); assert.equal(mutations, 0);
     planning = approve(planning); save(); assertPlanningModelAccess(); guarded(); assert.equal(mutations, 1);
-    planning = revisePlanning({ append: "\nRefinement during work", expectedRevision: planning.revision }, planning); save();
-    assert.equal(readDesktopPlanning().phase, "working");
+    assert.throws(() => revisePlanning({ append: "Refinement during work", expectedRevision: planning.revision }, planning), /только в режиме/);
     assert.equal(desktopPlanningLocked(), false); assertPlanningModelAccess();
     planning = completePlanning({ complete: true, expectedRevision: planning.revision }, planning); save();
     assert.equal(desktopPlanningLocked(), false); assertPlanningModelAccess();
@@ -358,7 +395,7 @@ registerHooks({resolve(s,c,n){return n(s.endsWith("desktop-tool-routing.js")?${J
       ["codemode", { code: 'await models.generateImages({provider:"planning-test",id:"test"},{input:[{type:"text",text:"test"}]})' }],
       ["update_notebook", { content: "bad" }], ["update_implementation_plan", { content: "## Result\nFix the bug.\n## Verification\nRun tests.", ready: true }]]
       : captured.length === 4 ? [["write", { path: accepted, content: "approved" }]] : captured.length === 5 ? [["update_implementation_plan", { complete: true }]]
-      : captured.length === 7 ? [["update_implementation_plan", { content: "Plan the next authorized task", ready: true }]]
+      : captured.length === 7 ? [["update_implementation_plan", { content: "Plan the next authorized task", ready: true }], ["codemode", { code: "text(await tools.update_implementation_plan({}));" }]]
       : captured.length === 8 ? [["write", { path: accepted, content: "normal-mode" }]]
       : captured.length === 9 ? [["update_implementation_plan", { complete: true }]] : [];
     const choice = actions.length ? { delta: { role: "assistant", tool_calls: actions.map(([name, args], index) => ({ index, id: `call-${captured.length}-${index}`, type: "function", function: { name, arguments: JSON.stringify(args) } })) }, finish_reason: "tool_calls" }
@@ -400,12 +437,16 @@ registerHooks({resolve(s,c,n){return n(s.endsWith("desktop-tool-routing.js")?${J
     state.conversations[0].planning = approve(state.conversations[0].planning); save();
     await prompt("Implement the approved plan.");
     assert.equal(readFileSync(accepted, "utf8"), "approved"); assert.equal(existsSync(canary), true);
-    assert.equal(state.conversations[0].planning.phase, "completed");
+    assert.equal(state.conversations[0].planning.phase, "implementation", "the normal-mode document tool is blocked");
+    state.conversations[0].plan = updatedPlan({ plan: [{ step: "Implement and verify", status: "completed" }] });
+    state.conversations[0].planning = settlePlanning(state.conversations[0].planning, state.conversations[0].plan, true); save();
     assert.equal(rpc.process.pid, pid); assert.equal(captured.length, 6);
     await prompt("Do the next task; make a plan if useful and continue.");
     assert.equal(readFileSync(accepted, "utf8"), "normal-mode");
     assert.equal(state.conversations[0].planning.phase, "completed");
-    assert.equal(state.conversations[0].planning.content, "Plan the next authorized task");
+    assert.match(state.conversations[0].planning.content, /Fix the bug/);
+    assert.deepEqual(hostRequests, ["update_implementation_plan"], "outside-mode reads and writes cannot reach the host");
+    assert.ok(captured[7].messages.some(message => message.role === "tool" && String(message.content).includes("only in Plan mode")));
     assert.equal(rpc.process.pid, pid); assert.equal(captured.length, 10);
     const schemas = JSON.stringify(captured[0].tools), system = JSON.stringify(captured[0].messages.filter(message => message.role === "system"));
     for (const body of captured) { assert.equal(JSON.stringify(body.tools), schemas); assert.equal(JSON.stringify(body.messages.filter(message => message.role === "system")), system); }
@@ -419,8 +460,8 @@ test("a chat without a planning document is told Plan mode is off, and only once
   const f = fixture(); f.state = undefined;
   const context = messages => f.handlers.get("context")({ messages }).messages;
   const first = context([{ role: "user", content: "Fix the bug" }]);
-  assert.match(first.at(-1).content, /Plan mode is OFF[\s\S]*Access permissions are controlled separately/);
-  assert.match(first.at(-1).content, /No planning document in this chat/);
+  assert.match(first.at(-1).content, /Plan mode is OFF[\s\S]*access permissions are controlled separately/);
+  assert.match(first.at(-1).content, /detailed document tool is unavailable/);
   assert.equal(f.messages.length, 1);
   assert.equal(context(first).length, first.length);
   assert.equal(f.messages.length, 1);
@@ -435,55 +476,46 @@ test("removing the document clears the read-only statement instead of leaving it
   f.state = undefined;
   const cleared = context(gated);
   assert.match(cleared.at(-1).content, /Plan mode is OFF/);
-  assert.match(cleared.at(-1).content, /no longer restricts work/);
+  assert.match(cleared.at(-1).content, /historical data/);
   assert.equal(f.messages.length, 2);
   assert.equal(context(cleared).length, cleared.length);
 });
 
-test("the mode line is explicit in every phase, whether or not a document exists", () => {
-  const working = revisePlanning({ content: "Specification", expectedRevision: 0 }, undefined);
-  assert.equal(working.phase, "working");
-  assert.match(planningContext(working), /Plan mode is OFF/);
-  assert.match(planningTick(working), /Plan mode is OFF/);
-  assert.doesNotMatch(planningContext(working), /Plan mode is ON/);
-  const draft = controlPlanningState("start", 0);
-  assert.match(planningContext(draft), /Plan mode is ON/);
-  assert.match(planningTick(draft), /Plan mode is ON/);
-  const done = completePlanning({ complete: true, expectedRevision: working.revision }, working);
-  assert.match(planningContext(done), /Plan mode is OFF/);
-  assert.match(normalPlanningContext(), /Plan mode is OFF/);
+test("normal mode never injects a saved or legacy document as a working instruction", () => {
+  for (const phase of ["working", "inactive", "completed"]) {
+    const saved = { content: "PRIVATE SAVED SPECIFICATION", phase, revision: 4 };
+    assert.match(planningContext(saved), /Plan mode is OFF/);
+    assert.doesNotMatch(planningContext(saved), /PRIVATE SAVED SPECIFICATION/);
+    assert.equal(planningTick(saved), "");
+  }
+  assert.match(planningContext(controlPlanningState("start", 0)), /Plan mode is ON/);
+  assert.match(normalPlanningContext(), /working checklist and notebook/);
 });
 
-test("each phase of a document is told the rule of its own moment", () => {
+test("Plan mode always requires a detailed document and waits at interface review", () => {
   const draft = controlPlanningState("start", 0), ready = review(draft), active = approve(ready);
-  assert.match(planningTick(draft), /Plan mode is ON \(read only\)\. Prepare the document, then submit ready=true\./);
-  assert.match(planningTick(ready), /read only: awaiting approval[\s\S]*«Начать реализацию»[\s\S]*end the turn/);
-  assert.doesNotMatch(planningTick(ready), /then submit ready=true/);
-  assert.match(planningTick(active), /Plan mode is OFF \(access permissions are separate\)[\s\S]*Work from the approved document/);
-  const orphan = { content: "", phase: "implementation", revision: 3, approvedRevision: 2, updatedAt: new Date().toISOString() };
-  assert.equal(isPlanning(orphan), true);
-  assert.match(planningTick(orphan), /Plan mode is ON again \(read only: approval was lost\)[\s\S]*Ask the user to approve/);
-  assert.match(planningContext(orphan), /Plan mode is ON again/);
+  assert.match(planningTick(draft), /required detailed document[\s\S]*ready=true/);
+  assert.match(planningTick(ready), /awaiting approval[\s\S]*Начать реализацию[\s\S]*end the turn/);
+  assert.equal(planningTick(active), "");
+  assert.match(planningContext(draft), /detailed document is mandatory/);
+  assert.match(planningContext(draft), /checklist is not a substitute/);
 });
 
-test("each mode is described by its own rules, never borrowed from the other", () => {
+test("the current mode separates mandatory documentation from ordinary checklist work", () => {
   const gated = planningContext(controlPlanningState("start", 0));
   assert.match(gated, /Plan mode is ON for this chat: read only/);
   assert.match(gated, /working checklist and the notebook stay read-only/);
-  assert.match(gated, /a blocked write answers with the reason instead of a missing tool/);
   const free = normalPlanningContext();
-  assert.match(free, /Plan mode is OFF for this chat\. Access permissions are controlled separately/);
-  assert.match(free, /Only the user switches Plan mode/);
-  assert.match(free, /govern approval, not this mode/);
-  assert.doesNotMatch(free, /read only|forbidden/);
+  assert.match(free, /Plan mode is OFF/);
+  assert.match(free, /detailed document tool is unavailable/);
+  assert.match(free, /working checklist and notebook/);
 });
 
-test("the standing policy describes both modes and names the state message as the only source", () => {
-  assert.match(planningPolicy, /two access modes/);
-  assert.match(planningPolicy, /План · только чтение/);
-  assert.match(planningPolicy, /Полный доступ/);
-  assert.match(planningPolicy, /only source of this fact/);
-  assert.match(planningPolicy, /working checklist of update_checklist/);
+test("the static policy requires the document in Plan mode and forbids it outside", () => {
+  assert.match(planningPolicy, /When OFF, do not call update_implementation_plan/);
+  assert.match(planningPolicy, /When ON, the detailed planning document is mandatory/);
+  assert.match(planningPolicy, /latest implementation-plan state/);
+  assert.match(planningPolicy, /Only the user switches Plan mode/);
 });
 
 test("the executed gate and the instructions agree on what counts as Plan mode", () => {
@@ -504,33 +536,4 @@ test("the executed gate and the instructions agree on what counts as Plan mode",
     [process.env.PI_DESKTOP_GOAL_STATE_FILE, process.env.PI_DESKTOP_CONVERSATION_ID] = previous;
     rmSync(folder, { recursive: true, force: true });
   }
-});
-
-test("approval starts the work as an application step, never as a message from the user", () => {
-  assert.doesNotMatch(source, /sendPrompt\(conversationId, "Реализуй/);
-  assert.match(source, /planImplementationPrompt\(approved\), \[\], "implement"/);
-  assert.match(source, /rpc\.request\("desktop_plan_implement"/);
-  const bridge = readFileSync(new URL("../resources/pi-engine/protocol.js", import.meta.url), "utf8");
-  const from = bridge.indexOf('case "desktop_plan_implement"');
-  const block = bridge.slice(from, from + 1600);
-  assert.match(block, /desktop_plan_implement: "desktop_plan_implementation"/);
-  assert.match(block, /customType: continuationType/);
-  assert.match(block, /display: false/);
-  assert.match(block, /triggerTurn: true/);
-  const message = planImplementationPrompt(approve(review()));
-  assert.ok(message.startsWith('<pi_desktop_service_context source="implementation-plan">'));
-  assert.match(message, /revision \d+/);
-  assert.match(message, /update_checklist[\s\S]{0,200}execution/);
-  assert.match(message, /not a new request from the user/);
-  assert.doesNotMatch(message, /goal controller/);
-});
-
-test("the plan is approved with the interface control, not with a word in the chat", () => {
-  const ready = review();
-  assert.match(planningContext(ready), /Начать реализацию/);
-  assert.match(planningContext(ready), /a word in the chat is not approval/);
-  assert.match(planningTick(ready), /Начать реализацию/);
-  assert.match(planningTick(ready), /a word in chat does not approve it/);
-  assert.match(planningPolicy, /«Начать реализацию»/);
-  assert.match(planningPolicy, /never treat one as approval/);
 });

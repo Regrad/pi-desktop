@@ -33,6 +33,14 @@ implementation even when Full access is selected. Approving the document
 also grants access for its implementation, so a second approval card is not
 needed. Cancelling Plan mode does not grant change permission in Agree first.
 
+The detailed document is required in Plan mode and cannot be read or edited by
+the model outside it, including through codemode. Ordinary work uses the checklist
+and notebook. After approval, the app passes the agreed scope to implementation
+and closes the saved document after the implementation checklist is finished.
+The system prompt and tool declarations stay constant when switching modes;
+only an appended service state and live permissions change. This preserves the
+existing request prefix instead of invalidating it by hiding a tool schema.
+
 The application checks access at tool execution, including nested codemode
 calls. Shell commands, unknown add-ons, generation tools, checklist writes
 and skill changes stay blocked before approval. Native reads, searches and

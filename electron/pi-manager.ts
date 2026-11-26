@@ -5,7 +5,7 @@ import { fileURLToPath } from "node:url";
 import { applyGoalReport, goalPrompt, settleGoal } from "../shared/goal.js";
 import { updatedPlan, planRequestSuffix, canContinuePlan, isPlanComplete } from "../shared/plan.js";
 import { confirmedPlanRevision } from "../shared/plan-activity.js";
-import { approvedPlanning, completePlanning, controlPlanningState, isPlanning, planImplementationPrompt, planningToolAllowed, revisePlanning } from "../shared/planning.js";
+import { approvedPlanning, completePlanning, settlePlanning, controlPlanningState, isPlanning, planImplementationPrompt, planningToolAllowed, revisePlanning } from "../shared/planning.js";
 import { accessLocked, accessTaskOpen, closeAccess, controlAccess as controlAccessState, defaultAccess, proposeAccess } from "../shared/access.js";
 import { canResumeRun } from "../shared/run-state.js";
 import { selectConfiguredModel } from "../shared/model-selection.js";
@@ -1038,6 +1038,7 @@ export class PiManager {
       } finally { this.planningTransitions.delete(conversationId); }
     }
     if (request.action === "update_implementation_plan") {
+      if (!isPlanning(planning)) throw new Error("Подробный план доступен только в режиме «План».");
       const params = request.params as JsonObject | undefined;
       if (!params || Object.keys(params).length === 0) return { planning: planning ?? null };
       if (this.runtimes.get(conversationId)?.runAborted) throw new Error("Изменение плана отменено пользователем.");
@@ -2026,6 +2027,9 @@ export class PiManager {
       // Settled means idle, not successful. Only a normally completed response
       // may release queued user messages or schedule another automatic turn.
       const completedNormally = !runtime.runAborted && runtime.runStopReason === "stop";
+      const work = this.store.getConversation(conversationId);
+      const finishedPlanning = settlePlanning(work.planning, work.plan, completedNormally);
+      if (finishedPlanning !== work.planning) await this.updateConversation(conversationId, { planning: finishedPlanning });
       if (!completedNormally) this.goalContinuationRequested.delete(conversationId);
       this.onConversationSettled?.(this.store.getConversation(conversationId));
       const goal = this.store.getConversation(conversationId).goal;

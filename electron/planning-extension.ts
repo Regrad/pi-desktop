@@ -38,16 +38,22 @@ export default function planningExtension(pi: ExtensionAPI, read = readDesktopPl
   pi.on("context", event => {
     const state = read();
     observedRevision = state?.revision ?? 0;
-    const messages = project(event.messages, state, state ? planningContext(state) : normalPlanningContext(),
+    const active = isPlanning(state) ? state : undefined;
+    const messages = project(event.messages, active, active ? planningContext(active) : normalPlanningContext(),
       // A closed or absent document must not read as revision 0: the guard against deferred
       // older snapshots would then drop the message that clears the previous mode.
       value => value ? String(value.revision) : "none",
-      Boolean(state && !["inactive", "completed"].includes(state.phase)), state ? planningTick(state) : undefined,
-      { changeContent: state && state.phase !== "implementation" ? planningTick(state) : undefined, announceEmpty: true });
+      // A live document stays in view on every turn, like the checklist does; finished
+      // and removed documents go quiet. Reading the full text stays the model's choice.
+      Boolean(active), active ? planningTick(active) : undefined,
+      { changeContent: active ? planningTick(active) : undefined, announceEmpty: true });
     const access = readAccess();
     return { messages: access === undefined ? messages : accessProject(messages, access, accessContext(access), value => String(value.revision), false, undefined, { announceEmpty: true }) };
   });
   pi.on("tool_call", event => {
+    if (event.toolName === "update_implementation_plan" && !locked()) return {
+      block: true, reason: "The detailed document is available only in Plan mode. Use the checklist and notebook for ordinary work.",
+    };
     if (!locked() && !accessRestricted()) return;
     if (!locked() && event.toolName === "request_changes") return;
     if (!planningToolAllowed(event.toolName, event.input)) return {
@@ -68,10 +74,11 @@ export default function planningExtension(pi: ExtensionAPI, read = readDesktopPl
   });
   pi.registerTool({
     name: "update_implementation_plan", label: "План реализации",
-    description: "Read or revise the detailed task specification, separate from the working checklist. Call {} to read the full document; writes confirm revision and phase without repeating its text. Available in both normal and PLAN modes; create or revise a plan whenever useful. Choose one edit: content replaces the document, append adds text, old_text + new_text replaces one unique literal fragment (empty new_text deletes it). In Plan mode set ready=true when ready for user review, then wait for approval. In normal mode writing a plan or setting ready=true does not switch modes or require approval; continue work already authorized by the user. After implementing a working or approved plan and verifying the whole result, call {complete:true} to mark the document completed. Completion is separate from checklist marks; any existing checklist must be finished. Do not combine completion with edits. Read again after a revision conflict.",
+    description: "Use ONLY in Plan mode, where the detailed document is mandatory. Outside that mode this tool is blocked; use update_checklist and update_notebook for ordinary work. Investigate first, then record scope, approach, decisions and verification. Call {} to read the document. Choose one edit: content replaces it, append adds text, old_text + new_text replaces one unique literal fragment. Set ready=true when it is ready for review, briefly explain the proposal and wait for the user's approval in the plan panel. Writes acknowledge revision and phase without repeating the text.",
     parameters: Type.Object({ content: Type.Optional(Type.String({ maxLength: planningLimit })), append: Type.Optional(Type.String({ maxLength: planningLimit })),
-      old_text: Type.Optional(Type.String()), new_text: Type.Optional(Type.String()), ready: Type.Optional(Type.Boolean()), complete: Type.Optional(Type.Boolean()) }),
+      old_text: Type.Optional(Type.String()), new_text: Type.Optional(Type.String()), ready: Type.Optional(Type.Boolean()) }),
     async execute(_id, params, signal) {
+      if (!locked()) throw new Error("Подробный план доступен только в режиме «План».");
       const writing = Object.keys(params).length > 0;
       const result = await request("update_implementation_plan", { ...params, ...(writing ? { expectedRevision: observedRevision } : {}) }, signal) as { planning?: ConversationPlanning };
       observedRevision = result.planning?.revision ?? 0;

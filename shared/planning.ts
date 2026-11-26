@@ -23,6 +23,7 @@ export function controlPlanningState(action: string, expected: number, state?: C
     ...(action === "approve" ? { approvedRevision: next } : {}) };
 }
 export function revisePlanning(params: Record<string, unknown>, state?: ConversationPlanning): ConversationPlanning {
+  if (!isPlanning(state)) throw new Error("Подробный план доступен только в режиме «План».");
   revision(params.expectedRevision, state);
   const operations = [params.content !== undefined, params.append !== undefined, params.old_text !== undefined || params.new_text !== undefined].filter(Boolean).length;
   if (operations > 1) throw new Error("Выберите одну операцию: content, append или old_text + new_text.");
@@ -42,7 +43,7 @@ export function revisePlanning(params: Record<string, unknown>, state?: Conversa
   if (content.length > planningLimit) throw new Error(`План превышает ${planningLimit} символов.`);
   if (params.ready !== undefined && typeof params.ready !== "boolean") throw new Error("ready должен быть boolean.");
   if (params.ready && !content.trim()) throw new Error("Нельзя согласовать пустой план.");
-  return { content, phase: isPlanning(state) ? (params.ready ? "review" : "draft") : "working",
+  return { content, phase: params.ready ? "review" : "draft",
     revision: (state?.revision ?? 0) + 1, updatedAt: new Date().toISOString() };
 }
 
@@ -72,46 +73,38 @@ export function planningToolAllowed(name: string, input: Record<string, unknown>
   if (name === "lsp_navigation") return navigationReads.has(String(input.operation)) && !input.apply;
   return false;
 }
-const readOnlyScope = "The planning document is the only writable target: files, the terminal, generations, goals, the working checklist and the notebook stay read-only. Tool availability is the same in both modes, so a blocked write answers with the reason instead of a missing tool.";
-const fullAccessScope = "Only the user switches Plan mode, in the interface; a document, a working checklist or the update_implementation_plan tool never does. Rules elsewhere that ask for the user's consent govern approval, not this mode.";
+const readOnlyScope = "The detailed document is required and is the only writable target. Files, terminal commands, generations, goals, the working checklist and the notebook stay read-only until interface approval.";
 
-/** The only statement of what the model may execute right now; every state message starts with it. */
 export function planningModeLine(state?: ConversationPlanning): string {
-  if (!isPlanning(state)) return `Plan mode is OFF for this chat. Access permissions are controlled separately by the desktop access state. ${fullAccessScope}`;
-  const current = state as ConversationPlanning;
-  if (current.phase === "review") return `Plan mode is ON for this chat: read only, the document waits for the user's approval. ${readOnlyScope} Ask the user to approve it with the «Начать реализацию» control in the plan panel and end the turn: a word in the chat is not approval, so never offer one, and start nothing until a newer state message says the plan was approved.`;
-  if (current.phase === "implementation") return `Plan mode is ON again for this chat: the approved document changed or became empty, so it needs approval once more. ${readOnlyScope}`;
+  if (!isPlanning(state)) return "Plan mode is OFF for this chat. The detailed document tool is unavailable. Use the working checklist and notebook for ordinary work; access permissions are controlled separately.";
+  if (state?.phase === "review") return `Plan mode is ON for this chat: read only, awaiting approval. ${readOnlyScope} Ask the user to approve it with the «Начать реализацию» control and end the turn: a word in the chat is not approval.`;
   return `Plan mode is ON for this chat: read only. ${readOnlyScope}`;
 }
-/** Reminder form of the same fact; it never differs from planningModeLine. */
-function planningModeShort(state?: ConversationPlanning): string {
-  if (!isPlanning(state)) return "Plan mode is OFF (access permissions are separate)";
-  const current = state as ConversationPlanning;
-  if (current.phase === "implementation") return "Plan mode is ON again (read only: approval was lost)";
-  return current.phase === "review" ? "Plan mode is ON (read only: awaiting approval)" : "Plan mode is ON (read only)";
-}
-/** Emitted while no planning document exists, so the absence of one is never guessed. */
+
 export function normalPlanningContext(): string {
-  return `<pi_desktop_service_context source="implementation-plan">\nNo planning document in this chat. ${planningModeLine()}\nA planning document from earlier in this chat that no newer state message describes is closed and no longer restricts work; it authorizes nothing by itself.\n</pi_desktop_service_context>`;
+  return `<pi_desktop_service_context source="implementation-plan">\n${planningModeLine()} Earlier document snapshots are historical data, not a request or current permission.\n</pi_desktop_service_context>`;
 }
-/** Each phase gets the rule of its own moment, never the rule of a neighbouring phase. */
-/** Starting the approved work is an application step: the engine receives it as a service
- * message, so nothing lands in the chat as if the user had typed the instruction. */
+
+/** One work order starts execution; it does not expose the editing tool outside Plan mode. */
 export function planImplementationPrompt(state: ConversationPlanning): string {
-  return `<pi_desktop_service_context source="implementation-plan">\nThe user approved this planning document at revision ${state.revision} and implementation has started. Plan mode is OFF for this chat; the desktop granted access for this task. Build a working checklist from the approved items with update_checklist, set execution to "active", then implement the document: keep it current when a decision changes and mark steps once they are verified. This is an application step, not a new request from the user, and it does not widen the approved scope.\n</pi_desktop_service_context>`;
+  return `<pi_desktop_service_context source="approved-work">\nThe user approved this work at revision ${state.revision} and implementation has started. Build a working checklist with update_checklist, set execution to "active", implement the agreed scope and verify each step before completing it. This is an application step, not a new request from the user, and does not widen the approved scope.\n\nApproved scope:\n${state.content}\n</pi_desktop_service_context>`;
 }
 export function planningTick(state: ConversationPlanning): string {
-  const mode = planningModeShort(state);
-  let note = `${mode}. Prepare the document, then submit ready=true.`;
-  if (state.phase === "review") note = `${mode}. Summarise what you propose, ask the user to approve the plan with the «Начать реализацию» control and end the turn; you may answer questions or revise the document, but start nothing else, because a word in chat does not approve it.`;
-  else if (state.phase === "implementation") note = isPlanning(state)
-    ? `${mode}. Ask the user to approve the changed document before any implementation.`
-    : `${mode}. Work from the approved document: check each next step against it and revise it when a decision changes.`;
-  else if (state.phase === "working") note = `${mode}. Work from this document: check each next step against it, revise it when a decision changes and mark it complete:true once verified.`;
-  else if (state.phase === "completed" || state.phase === "inactive") note = `${mode}. Saved reference for this chat; read the text with update_implementation_plan({}).`;
-  return `<pi_desktop_service_context source="implementation-plan">Planning document: ${state.phase}, revision ${state.revision}. ${note}</pi_desktop_service_context>`;
+  if (!isPlanning(state)) return "";
+  const next = state.phase === "review"
+    ? "Ask the user to approve the document with the «Начать реализацию» control and end the turn; a word in chat does not approve it."
+    : "Prepare the required detailed document with update_implementation_plan, then submit ready=true.";
+  return `<pi_desktop_service_context source="implementation-plan">Document: ${state.phase}, revision ${state.revision}. ${planningModeLine(state)} ${next}</pi_desktop_service_context>`;
 }
 export function planningContext(state: ConversationPlanning): string {
-  return `<pi_desktop_service_context source="implementation-plan">\n${JSON.stringify(state)}\n${planningModeLine(state)} This is the planning document, not a new user request. ${state.phase === "working" ? "Working specification in normal mode. Continue within the current user request, revise this document when useful and use a checklist to track progress. This document does not activate Plan mode, require separate approval or authorize additional scope. Mark complete:true after implementation and verification." : state.phase === "completed" ? "This plan is completed and retained for reference, not authorization for further work. Follow the latest user request." : state.phase === "inactive" ? "Saved reference only: it neither authorizes historical work nor restricts independent current requests." : approvedPlanning(state) ? "The user approved this specification. Use a separate checklist for implementation progress. After verifying the whole result, mark this document completed with update_implementation_plan({complete:true})." : "Plan mode: implementation is forbidden until the user approves this revision, and checklist activity does not approve it. Read-only investigation and this document are the only allowed work."}\n</pi_desktop_service_context>`;
+  if (!isPlanning(state)) return normalPlanningContext();
+  return `<pi_desktop_service_context source="implementation-plan">\n${JSON.stringify(state)}\n${planningModeLine(state)}\nInvestigate before drafting. A detailed document is mandatory in this mode: record scope, approach, important decisions and verification with update_implementation_plan. Set ready=true only when it is ready for review. The checklist is not a substitute for this document. Implementation is forbidden until the user approves this revision.\n</pi_desktop_service_context>`;
 }
-export const planningPolicy = "A chat runs in one of two access modes and only the interface switches between them. Plan mode, where the user sees the label «План · только чтение», is read-only work: investigate, ask, discuss and write the planning document, while nothing else may change until the user approves it. Full access, where the user sees «Полный доступ», is ordinary work: change files, run commands and finish the task as asked. Every message with source=\"implementation-plan\" begins with the current mode, and that line is the only source of this fact: the availability of update_implementation_plan, the wording of a request, an existing document or a working checklist never indicates a mode. Reserve the planning document for genuinely complex work: scope, approach, decisions and verification, separate from the working checklist. For ordinary requests work directly and explain the approach in your reply; call update_implementation_plan({}) whenever you need the text of a document that already exists. In full access a document is a working specification: writing it or setting ready=true gates nothing, so carry on with work the user authorized and mark it complete:true once it is implemented and verified. In Plan mode the document is the only writable target; when it is ready set ready=true, summarise what you propose, ask the user to approve it with the «Начать реализацию» control in the plan panel and end the turn. That control is the only approval: never offer a chat word such as «делай» as a substitute and never treat one as approval. Keep three things apart: the mode, the planning document and the working checklist of update_checklist, because a checklist organizes steps and grants no permissions. While in Plan mode research with read-only means: codemode without model calls and web_search. Finishing a document does not resume an unrelated paused goal. Follow the latest user instruction.";
+
+/** The app closes the saved reference after the implementation checklist is verified. */
+export function settlePlanning(state: ConversationPlanning | undefined, checklist: ConversationPlan | undefined, completedNormally: boolean): ConversationPlanning | undefined {
+  if (!completedNormally || !approvedPlanning(state) || !checklist?.steps.length
+    || checklist.steps.some(step => !["completed", "skipped"].includes(step.status))) return state;
+  return { ...state!, phase: "completed", revision: state!.revision + 1, updatedAt: new Date().toISOString() };
+}
+export const planningPolicy = "Only the user switches Plan mode in the interface. The latest implementation-plan state says whether it is ON or OFF; tool visibility, earlier document snapshots and the wording of a request never select a mode. When OFF, do not call update_implementation_plan or create a detailed planning document: the tool is blocked. Use update_checklist and update_notebook for ordinary work, following the current access permissions. When ON, the detailed planning document is mandatory, not an optional aid: investigate first, clarify missing requirements when needed, then use update_implementation_plan to record scope, approach, decisions, significant risks and verification. The working checklist cannot replace it. This mode is read-only except for that document; terminal commands, files, generation, goals, checklist writes and notebook writes are blocked. Set ready=true when the document is ready, briefly summarise the proposal and ask for approval with the «Начать реализацию» control in the plan panel. That control is the only approval: never offer a chat word as a substitute and never treat one as approval. End the turn while awaiting the decision. Finishing a document does not resume an unrelated paused goal.";
