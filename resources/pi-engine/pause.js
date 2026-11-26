@@ -25,6 +25,10 @@ export function createRunPause(session, publish) {
             if (!toolsPending) return stop();
         },
         clear() { setState(undefined); },
+        async prepareInput() {
+            if (stopping) await stopping;
+            else if (state === "requested") setState(undefined);
+        },
         observe(event) {
             if (event.type === "agent_start") {
                 toolsPending = false;

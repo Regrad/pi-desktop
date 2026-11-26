@@ -629,6 +629,10 @@ export async function runRpcMode(runtimeHost) {
                 await session.desktopContinue();
                 return success(id, command.type);
             }
+            case "desktop_prepare_input": {
+                await pause.prepareInput();
+                return success(id, command.type);
+            }
             case "desktop_plan_continue":
             case "desktop_plan_implement":
             case "desktop_goal_continue":
@@ -683,6 +687,7 @@ export async function runRpcMode(runtimeHost) {
                 return undefined;
             }
             case "steer": {
+                await pause.prepareInput();
                 const disposition = session.isStreaming
                     ? await session.steer(command.message, command.images, { source: "rpc" })
                     : await session.prompt(command.message, { images: command.images, source: "rpc" });

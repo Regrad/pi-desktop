@@ -196,6 +196,19 @@ test("new input on a fully paused chat starts from the saved history", { timeout
   assert.doesNotMatch(JSON.stringify(f.captured[1]), /UNFINISHED_THOUGHT/);
 });
 
+test("a message arriving during cancellation starts after settlement instead of becoming stranded", { timeout: 20000 }, async t => {
+  const f = await fixture(t, "thinking");
+  await f.wait(() => f.events.some(event => event.assistantMessageEvent?.type === "thinking_delta"));
+  await Promise.all([
+    f.rpc.request("desktop_pause"),
+    f.rpc.request("steer", { message: "NEW_DIRECTION_DURING_CANCELLATION" }),
+  ]);
+  await f.wait(() => f.events.filter(event => event.type === "agent_settled").length === 2);
+  assert.equal(f.captured.length, 2);
+  assert.match(JSON.stringify(f.captured[1].messages), /NEW_DIRECTION_DURING_CANCELLATION/);
+  assert.equal((await f.rpc.request("get_state")).pendingMessageCount, 0);
+});
+
 test("a new message while pause is pending steers after the tool and cancels the pause", { timeout: 20000 }, async t => {
   const f = await fixture(t, "tool");
   await f.wait(() => f.events.some(event => event.type === "tool_execution_start"));

@@ -399,13 +399,17 @@ export class PiManager {
       if ((this.startupEpochs.get(conversationId) ?? 0) !== epoch) throw new Error("Отправка отменена пользователем.");
     }
     const runtime = await this.ensureRuntime(conversationId);
-    const pausedRun = runtime.activeRun;
-    const resumePaused = Boolean(pausedRun?.pause && behavior === "resume");
     if (runtime.snapshot?.state.model === null) throw new Error("Выберите доступную модель: прежняя модель или API-подключение больше не доступны.");
     if (isPlanning(this.store.getConversation(conversationId).planning)
       && !runtime.snapshot?.extensionState.activeTools.includes("update_implementation_plan"))
       throw new Error("Защита режима «План» не загрузилась. Работа запрещена; проверьте ошибки расширений.");
     await this.reloadPendingInstructions(conversationId, runtime);
+    if (runtime.activeRun?.pause && behavior !== "resume") {
+      await runtime.rpc.request("desktop_prepare_input");
+      await runtime.eventQueue;
+    }
+    const pausedRun = runtime.activeRun;
+    const resumePaused = Boolean(pausedRun?.pause && behavior === "resume");
     if (pausedRun?.pause && behavior !== "resume") {
       const changes = this.pausedWorkChanges(conversationId, pausedRun);
       if (Object.keys(changes).length) await this.updateConversation(conversationId, changes);
