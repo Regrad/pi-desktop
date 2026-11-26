@@ -25,6 +25,33 @@ const item = (sourceIndex, role, content, timestamp = 100) => ({
 });
 const key = entry => `${messageKey(entry.message, entry.sourceIndex)}:${entry.fragment ?? "whole"}:${entry.fragmentIndex ?? "whole"}`;
 
+test("approval calls stay in history data while only their visible proposal reaches the transcript", () => {
+  const call = { type: "toolCall", name: "request_changes", id: "approve", arguments: {} };
+  const proposal = { type: "text", text: "I will update the sprite palette." };
+  const assistant = item(0, "assistant", [proposal, call]);
+  const result = { ...item(1, "toolResult", [{ type: "text", text: "Internal approval state" }]), message: {
+    role: "toolResult", toolName: "request_changes", toolCallId: "approve", content: [] } };
+  const rows = build([assistant, result]);
+  assert.equal(rows.length, 1);
+  assert.equal(rows[0].display, "single", "no empty tool fold is left behind");
+  assert.deepEqual(rows[0].item.message.content, [proposal]);
+  assert.equal(rows[0].item.sourceMessage, assistant.message);
+  assert.deepEqual(assistant.message.content, [proposal, call], "the session message is unchanged");
+  assert.deepEqual(build([item(2, "assistant", [call]), result]), []);
+});
+
+test("hiding approval calls preserves neighbouring tools, thoughts and fragment identities", () => {
+  const thinking = { type: "thinking", thinking: "Choose a palette" };
+  const approval = { type: "tool_call", name: "request_changes", id: "approve" };
+  const read = { type: "toolCall", name: "read", id: "read" };
+  const text = { type: "text", text: "Proposal" };
+  const source = item(0, "assistant", [thinking, approval, read, text]);
+  const fragments = split(source);
+  assert.deepEqual(fragments.map(value => value.message.content), [[thinking, read], [text]]);
+  assert.deepEqual(fragments.map(value => value.fragmentIndex), [0, 3]);
+  assert.ok(fragments.every(value => value.sourceMessage === source.message));
+});
+
 test("web research keeps one stable row when further calls and the answer arrive", () => {
   const first = item(0, "assistant", [{ type: "toolCall", name: "web_search", id: "first", arguments: {} }]);
   const other = item(1, "assistant", [{ type: "toolCall", name: "web_search", id: "second", arguments: {} }]);

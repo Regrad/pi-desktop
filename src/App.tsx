@@ -967,12 +967,17 @@ function splitAssistantTimelineItem(item: TranscriptTimelineItem): TranscriptTim
     : [];
   const groups: { process: boolean; index: number; content: JsonObject[] }[] = [];
   content.forEach((part, index) => {
+    if (["toolCall", "tool_call"].includes(String(part?.type)) && part.name === "request_changes") return;
     const process = ["thinking", "toolCall", "tool_call"].includes(String(part?.type));
     const previous = groups[groups.length - 1];
     if (previous?.process === process) previous.content.push(part);
     else groups.push({ process, index, content: [part] });
   });
-  if (groups.length < 2) return [item];
+  if (!groups.length) return content.length ? [] : [item];
+  if (groups.length < 2) return groups[0].content.length === content.length ? [item] : [{
+    ...item, sourceMessage: item.sourceMessage ?? item.message,
+    message: { ...item.message, content: groups[0].content },
+  }];
   const lastAnswer = groups.reduce((last, group, index) => !group.process &&
     hasAnswerText({ content: group.content }) ? index : last, -1);
   return groups.map((group, index) => ({
@@ -1018,6 +1023,7 @@ function buildTranscriptDisplay(
     if (role === "custom" && item.message.display === false) continue;
     if (role !== "assistant") {
       if (role === "toolResult" || role === "tool") {
+        if ((item.message.toolName ?? item.message.name) === "request_changes") continue;
         buffer.push(item);
         continue;
       }
@@ -1405,6 +1411,7 @@ function ToolCard({ tool, hideMedia = false }: { tool: ToolActivity; hideMedia?:
   const args = parsedToolArguments(tool.args);
   const [expanded, setExpanded] = useState(false);
   const output = tool.result === undefined ? "" : toolOutputText(tool.result);
+  if (tool.name === "request_changes") return null;
   if (tool.name === "web_search") return <WebSearchActivity calls={[{ ...tool, args, output }]} />;
   const presentation = toolPresentation(tool.name, args);
   const timing = shellTiming(tool.name, args, tool.result, tool.startedAt, tool.preparing);
@@ -5821,7 +5828,7 @@ export default function App() {
   const orphanTools = Object.values(tools).filter(
     (tool) => !hasTranscriptTool(tool.id) && !placedNestedIds.has(tool.id),
   );
-  const runningTool = Object.values(tools).find((tool) => tool.running);
+  const runningTool = Object.values(tools).find((tool) => tool.running && tool.name !== "request_changes");
   const streamingParts = Array.isArray(streamingMessage?.content)
     ? (streamingMessage.content as JsonObject[])
     : [];
@@ -6010,7 +6017,7 @@ export default function App() {
         if (promoted.has(id)) return;
         calls += 1;
         const persisted = historicalToolIndex.results.get(id);
-        const nested = nestedFor(id).filter(tool => !promoted.has(tool.id));
+        const nested = nestedFor(id).filter(tool => !promoted.has(tool.id) && tool.name !== "request_changes");
         calls += nested.length;
         errors += nested.filter(tool => tool.error).length;
         if (persisted) {

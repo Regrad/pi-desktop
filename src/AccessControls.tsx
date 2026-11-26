@@ -20,7 +20,7 @@ export function AccessSelector({ access, disabled, onAction }: Props) {
     <button type="button" className="access-chip" style={{ color: mode === "confirm" ? "var(--tool-success)" : "var(--orange)" }} disabled={disabled} aria-haspopup="menu" aria-expanded={open}
       title={access?.phase === "approved" && mode === "confirm" ? t("Изменения разрешены для согласованной задачи") : t("Режим доступа")}
       onClick={() => setOpen(value => !value)}>
-      <ShieldCheck size={13} />{mode === "full" ? t("Полный доступ") : t("Сначала согласовать")}<ChevronDown size={12} />
+      <ShieldCheck size={15} />{mode === "full" ? t("Полный доступ") : t("Сначала согласовать")}<ChevronDown size={13} />
       {mode === "confirm" && access?.phase === "approved" && <span className="access-approved-dot" aria-label={t("Изменения разрешены")} />}
     </button>
     {open && <div className="access-menu" role="menu" aria-label={t("Режим доступа")}>

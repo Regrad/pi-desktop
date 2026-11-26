@@ -1808,9 +1808,10 @@ a.web-citation {
   color: var(--orange);
   display: flex;
   align-items: center;
-  gap: 4px;
-  font-size: 12px;
-  padding: 5px 6px;
+  gap: 5px;
+  font-size: 13px;
+  font-weight: 600;
+  padding: 6px 8px;
 }
 .access-selector { position: relative; min-width: 0; }
 .access-chip:disabled { opacity: .65; }
@@ -1818,6 +1819,7 @@ a.web-citation {
 .access-menu > button { width: 100%; display: flex; align-items: center; justify-content: space-between; gap: 12px; text-align: left; border: 0; padding: 10px; border-radius: 8px; background: transparent; color: inherit; }
 .access-menu > button:hover { background: var(--hover); }
 .access-menu strong, .access-menu small { display: block; }
+.access-menu strong { font-size: 14px; font-weight: 600; }
 .access-menu small { color: var(--muted); margin-top: 4px; font-size: 12px; line-height: 1.4; }
 .access-approved-dot { width: 6px; height: 6px; border-radius: 50%; background: var(--tool-success); flex: none; }
 .access-approval { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 10px 14px; border: 1px solid var(--line); border-radius: 12px; background: #fff; padding: 10px 12px; margin-bottom: 10px; font-size: 13px; }
