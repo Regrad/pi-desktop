@@ -4679,19 +4679,12 @@ export default function App() {
     stopConversationGlide();
   };
 
-  const openConversation = async (conversationId: string) => {
-    const navigationSequence = ++navigationSequenceRef.current;
+  // A view belongs to one chat, including its unfinished streamed response.
+  // Clear it before either opening an existing chat or awaiting a new one.
+  const resetConversationView = () => {
     resetHistoryView();
-    awaitingHistoryPreviewRef.current = true;
-    const parked = parkDraft();
-    activeIdRef.current = conversationId;
-    setActiveConversationId(conversationId);
     setSnapshot(undefined);
     setWorking(false);
-    const conversation = conversations.find(
-      (item) => item.id === conversationId,
-    );
-    if (conversation) setActiveProjectId(conversation.projectId);
     setLoading(true);
     setMessages([]);
     setStreamingMessage(null);
@@ -4710,8 +4703,24 @@ export default function App() {
     setQueuedPrompts([]);
     setExtensionDialog(undefined);
     setLastDuration(undefined);
+    setStartedAt(undefined);
+    startedAtRef.current = undefined;
+    setElapsed(0);
     setRunDiff(undefined);
     setDiffOpen(false);
+  };
+
+  const openConversation = async (conversationId: string) => {
+    const navigationSequence = ++navigationSequenceRef.current;
+    const parked = parkDraft();
+    activeIdRef.current = conversationId;
+    setActiveConversationId(conversationId);
+    resetConversationView();
+    awaitingHistoryPreviewRef.current = true;
+    const conversation = conversations.find(
+      (item) => item.id === conversationId,
+    );
+    if (conversation) setActiveProjectId(conversation.projectId);
     try {
       const next = await window.piDesktop.openConversation(conversationId, true);
       if (navigationSequenceRef.current !== navigationSequence) return;
@@ -4788,12 +4797,11 @@ export default function App() {
 
   const newChat = async (projectId?: string) => {
     const navigationSequence = ++navigationSequenceRef.current;
-    resetHistoryView();
     const parked = parkDraft();
     activeIdRef.current = undefined;
-    setSnapshot(undefined);
-    setWorking(false);
-    setLoading(true);
+    setActiveConversationId(undefined);
+    setActiveProjectId(projectId);
+    resetConversationView();
     try {
       const next = await window.piDesktop.createConversation(projectId);
       if (navigationSequenceRef.current !== navigationSequence) return;
@@ -4806,6 +4814,7 @@ export default function App() {
             )
           : [next.conversation, ...current];
       });
+      activeIdRef.current = next.conversation.id;
       setActiveConversationId(next.conversation.id);
       setSnapshot(next);
       setActiveProjectId(next.conversation.projectId);
@@ -4830,6 +4839,7 @@ export default function App() {
       setRunDiff(undefined);
       setDiffOpen(false);
     } catch (error) {
+      if (navigationSequenceRef.current !== navigationSequence) return;
       addNotice(
         error instanceof Error ? error.message : String(error),
         "error",
