@@ -1811,6 +1811,7 @@ a.web-citation {
   gap: 5px;
   font-size: 13px;
   font-weight: 600;
+  white-space: nowrap;
   padding: 6px 8px;
 }
 .access-selector { position: relative; min-width: 0; }
