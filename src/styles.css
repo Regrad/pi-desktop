@@ -2391,11 +2391,14 @@ button.secondary.large {
   cursor: default;
 }
 .command-palette {
-  width: min(650px, calc(100% - 40px));
-  max-height: min(760px, calc(100vh - 48px));
+  width: min(650px, calc(100vw - 32px));
+  min-width: 0;
+  max-height: min(760px, calc(100dvh - 32px));
   display: flex;
   flex-direction: column;
+  overflow: hidden;
 }
+.command-palette > :not(.command-dynamic-list) { flex-shrink: 0; }
 .command-search {
   height: 38px;
   margin: 14px 0 12px;
@@ -2432,6 +2435,7 @@ button.secondary.large {
 .command-list button {
   width: 100%;
   min-height: 54px;
+  flex-shrink: 0;
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -2453,6 +2457,7 @@ button.secondary.large {
 }
 .command-list button > span {
   min-width: 0;
+  flex: 1;
   display: flex;
   flex-direction: column;
   gap: 3px;
@@ -2460,6 +2465,7 @@ button.secondary.large {
 .command-list button strong {
   font-size: 12.5px;
   font-weight: 620;
+  overflow-wrap: anywhere;
 }
 .command-list button small {
   overflow: hidden;
@@ -2480,7 +2486,7 @@ button.secondary.large {
   font-style: normal;
 }
 .command-dynamic-list {
-  min-height: 70px;
+  min-height: 0;
   max-height: 350px;
   overflow-y: auto;
   padding-right: 3px;
