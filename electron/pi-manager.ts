@@ -372,8 +372,6 @@ export class PiManager {
   ): Promise<void> {
     if (typeof message !== "string" || (!message.trim() && !attachments.length))
       throw new Error("Сообщение не может быть пустым.");
-    const pausedRun = this.runtimes.get(conversationId)?.activeRun ?? await this.historyAwareRun(this.store.getConversation(conversationId));
-    const resumePaused = Boolean(pausedRun?.pause && behavior === "resume");
     this.store.getConversation(conversationId);
     if (attachments.length) attachments = await storeChatAttachments(this.store.dataDir, conversationId, attachments);
     if (this.planningTransitions.has(conversationId)) throw new Error("Дождитесь переключения режима.");
@@ -401,6 +399,8 @@ export class PiManager {
       if ((this.startupEpochs.get(conversationId) ?? 0) !== epoch) throw new Error("Отправка отменена пользователем.");
     }
     const runtime = await this.ensureRuntime(conversationId);
+    const pausedRun = runtime.activeRun;
+    const resumePaused = Boolean(pausedRun?.pause && behavior === "resume");
     if (runtime.snapshot?.state.model === null) throw new Error("Выберите доступную модель: прежняя модель или API-подключение больше не доступны.");
     if (isPlanning(this.store.getConversation(conversationId).planning)
       && !runtime.snapshot?.extensionState.activeTools.includes("update_implementation_plan"))
