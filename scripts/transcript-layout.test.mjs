@@ -15,8 +15,9 @@ const messageKey = new Function(`${extract("messageKey")}; return messageKey;`)(
 const hasAnswer = new Function(`${extract("hasAnswerText")}; return hasAnswerText;`)();
 const split = new Function("hasAnswerText", `${extract("splitAssistantTimelineItem")}; return splitAssistantTimelineItem;`)(hasAnswer);
 const webFoldHelpers = ["toolCallParts", "toolCallIdentifier", "toolResultIdentifier"].map(extract).join("\n");
-const build = new Function("messageKey", "splitAssistantTimelineItem", "hasAnswerText",
-  `${webFoldHelpers}\n${extract("buildTranscriptDisplay")}; return buildTranscriptDisplay;`)(messageKey, split, hasAnswer);
+const foldKey = new Function("messageKey", `${extract("transcriptFoldKey")}; return transcriptFoldKey;`)(messageKey);
+const build = new Function("messageKey", "splitAssistantTimelineItem", "hasAnswerText", "transcriptFoldKey",
+  `${webFoldHelpers}\n${extract("buildTranscriptDisplay")}; return buildTranscriptDisplay;`)(messageKey, split, hasAnswer, foldKey);
 const webProcess = new Function("messageKey",
   `${webFoldHelpers}\n${extract("groupWebProcess")}; return groupWebProcess;`)(messageKey);
 const offset = new Function(`${extract("filmScrollOffset")}; return filmScrollOffset;`)();

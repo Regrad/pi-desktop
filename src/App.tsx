@@ -961,6 +961,21 @@ function hasAnswerText(message: JsonObject): boolean {
   );
 }
 
+function transcriptFoldKey(items: TranscriptTimelineItem[]): string {
+  // A fold is identified by its first working item. Deriving the identity from a
+  // tool call is unsafe: the call and its result are separate messages, and an
+  // interleaving message can split them across two folds that would share a key.
+  // The virtual film caches row heights and the scroll anchor by key, and React
+  // keeps a stale node for a duplicated sibling key, so one search repeated down
+  // the transcript. The note lives inside the body on purpose: tests slice these
+  // helpers by their `function` declarations, and a trailing comment before the
+  // next declaration ends up inside the previous slice.
+  const first = items.find((item) => item.kind === "message") ?? items[0];
+  if (first?.kind === "message")
+    return `fold:${messageKey(first.message, first.sourceIndex)}:${first.fragmentIndex ?? "whole"}`;
+  return `fold:${first?.entry.id ?? `${first?.kind}-${first?.sourceIndex}`}`;
+}
+
 function splitAssistantTimelineItem(item: TranscriptTimelineItem): TranscriptTimelineItem[] {
   if (item.kind !== "message" || item.message.role !== "assistant") return [item];
   const content: JsonObject[] = Array.isArray(item.message.content)
@@ -996,17 +1011,13 @@ function buildTranscriptDisplay(
 ): TranscriptDisplayItem[] {
   const result: TranscriptDisplayItem[] = [];
   let buffer: TranscriptTimelineItem[] = [];
-  const webFoldKey = () => {
-    for (const item of buffer) {
-      if (item.kind !== "message") continue;
-      const call = toolCallParts(item.message).find(value => value.name === "web_search");
-      if (call) return `web:${toolCallIdentifier(call, messageKey(item.message, item.sourceIndex))}`;
-      if (item.message.toolName === "web_search") return `web:${toolResultIdentifier(item.message) ?? messageKey(item.message, item.sourceIndex)}`;
-    }
-  };
+  // Working items that contain web research stay together in one fold.
+  const hasWebSearch = () => buffer.some((item) => item.kind === "message" && (
+    toolCallParts(item.message).some((call) => call.name === "web_search") ||
+    item.message.toolName === "web_search"
+  ));
   const flush = () => {
-    const key = webFoldKey();
-    if (key) result.push({ display: "fold", key, process: buffer });
+    if (buffer.length && hasWebSearch()) result.push({ display: "fold", key: transcriptFoldKey(buffer), process: buffer });
     else for (const item of buffer) result.push({ display: "single", item });
     buffer = [];
   };
@@ -1036,11 +1047,10 @@ function buildTranscriptDisplay(
       buffer.push(item);
       continue;
     }
-    const key = webFoldKey() ?? `fold:${messageKey(item.message, item.sourceIndex)}:${item.fragmentIndex ?? "whole"}`;
     if (buffer.length) {
       result.push({
         display: "fold",
-        key,
+        key: transcriptFoldKey(buffer),
         process: buffer.slice(),
         answer: item,
       });
@@ -3892,6 +3902,7 @@ export default function App() {
         5_000,
       );
     },
+
     [],
   );
 
@@ -6033,13 +6044,26 @@ export default function App() {
     const imageTools: { id: string; name: string; result?: unknown; args?: unknown }[] = [];
     const webTools = new Map<string, ToolActivity>();
     const nestedSearches = new Map<string, ToolActivity[]>();
+    // A finished search is reported by the fold that holds its result. A fold
+    // holding only the call shows that call as an ordinary tool instead of
+    // drawing the same research plate a second time.
+    const finishedSearches = new Set<string>();
+    for (const item of display.process) {
+      if (item.kind !== "message") continue;
+      const message = item.message;
+      if ((message.role === "toolResult" || message.role === "tool") &&
+        String(message.toolName ?? message.name ?? "") === "web_search") {
+        const id = toolResultIdentifier(message);
+        if (id) finishedSearches.add(id);
+      }
+    }
     for (const item of display.process) {
       if (item.kind !== "message") continue;
       const message = item.message;
       toolCallParts(message).forEach((call, index) => {
         const tool = buildToolActivity(call, `${messageKey(message, item.sourceIndex)}-${index}`);
         imageTools.push(tool);
-        if (tool.name === "web_search") webTools.set(tool.id, tool);
+        if (tool.name === "web_search" && (finishedSearches.has(tool.id) || tool.running)) webTools.set(tool.id, tool);
         const nested = nestedFor(tool.id).filter(child => child.name === "web_search");
         if (nested.length) nestedSearches.set(tool.id, nested);
         for (const child of nested) webTools.set(child.id, child);
