@@ -558,18 +558,26 @@ export default function piLlamaGenerationSpeed(pi) {
       }
     }
     let response;
-    try { response = await originalFetch(input, await observeGeneratedTokens(enableStreamTelemetry(init), state)); }
-    catch (error) {
+    const discardPending = () => {
+      clearPrefill(state);
+      stopPolling(state);
       responses.delete(state); state.closed = true;
       state.signal?.removeEventListener("abort", state.onAbort);
+    };
+    try {
+      const request = originalFetch(input, await observeGeneratedTokens(enableStreamTelemetry(init), state));
+      // Some servers flush completion headers only after prefill. Their live
+      // telemetry must be observed while fetch is still waiting for those headers.
+      if (current(state) && state.metrics) startMetrics(state);
+      response = await request;
+    } catch (error) {
+      discardPending();
       throw error;
     }
     if (!response.ok || !response.body) {
-      responses.delete(state); state.closed = true;
-      state.signal?.removeEventListener("abort", state.onAbort);
+      discardPending();
       return response;
     }
-    if (current(state) && state.metrics) startMetrics(state);
     return new Response(captureTimings(response.body, state), {
       status: response.status,
       statusText: response.statusText,

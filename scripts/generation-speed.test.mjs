@@ -39,7 +39,8 @@ function harness(t, slots = () => slot(10), capabilities = {}) {
     posts.push({ url, init });
     const stream = { bytes: "", controller: undefined };
     streams.push(stream);
-    return new Response(new ReadableStream({ start(controller) { stream.controller = controller; } }), { headers: { "content-type": "text/event-stream" } });
+    const response = new Response(new ReadableStream({ start(controller) { stream.controller = controller; } }), { headers: { "content-type": "text/event-stream" } });
+    return capabilities.headers ? capabilities.headers(response) : response;
   };
   const mockFetch = globalThis.fetch;
   speedAddon({ on: (name, fn) => hooks.set(name, fn) });
@@ -396,6 +397,45 @@ test("a real stalled HTTP telemetry body times out without interrupting SSE", { 
 });
 
 const shownLines = working => working.filter(line => line !== undefined);
+
+test("prefill remains visible while the completion server withholds HTTP headers", async t => {
+  let releaseHeaders;
+  const h = harness(t, () => json(bareSlot), {
+    headers: response => new Promise(resolve => { releaseHeaders = () => resolve(response); }),
+    metrics: () => json({ live: { state: "reading", prompt_read: 2000, prompt_total: 8000, elapsed_s: 1 } }),
+  });
+  const opening = h.open();
+  await settle();
+  try {
+    assert.equal(h.posts.length, 1);
+    assert.match(h.working.at(-1) ?? "", /Prefilling.*25%/);
+    const reads = h.metrics.length;
+    await h.tick(750);
+    assert.ok(h.metrics.length > reads, "progress continues before completion headers arrive");
+  } finally {
+    releaseHeaders();
+    const stream = await opening;
+    h.emit(stream, chunk("Answer")); await settle();
+    assert.equal(h.working.at(-1), undefined);
+    await h.close(stream);
+  }
+});
+
+test("a failed completion request clears pre-header progress and stops its polling", async t => {
+  let fail;
+  const h = harness(t, () => json(bareSlot), {
+    headers: () => new Promise((_resolve, reject) => { fail = reject; }),
+    metrics: () => json({ live: { state: "reading", prompt_read: 100, prompt_total: 1000 } }),
+  });
+  const opening = h.open();
+  const failed = assert.rejects(opening, /fixture connection failed/);
+  await settle();
+  fail(new Error("fixture connection failed")); await failed;
+  const reads = h.metrics.length;
+  await h.tick(5000);
+  assert.equal(h.working.at(-1), undefined);
+  assert.equal(h.metrics.length, reads);
+});
 
 test("prompt_progress from the stream draws the bar and hands the field back on the first token", async t => {
   const h = harness(t, () => { throw Error("No slot polling for a stream that reports its own progress"); },
