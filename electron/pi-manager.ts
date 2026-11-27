@@ -1730,6 +1730,7 @@ export class PiManager {
       skillsExtensionPath: !remote ? fileURLToPath(new URL("./skills-extension.js", import.meta.url)) : undefined,
       skillsProject: Boolean(project),
       browserExtensionPath: !remote && this.browserRequest ? fileURLToPath(new URL("./browser-extension.js", import.meta.url)) : undefined,
+      imageBudgetExtensionPath: fileURLToPath(new URL("./image-budget-extension.js", import.meta.url)),
       onGoalRequest: request => {
         if (this.runtimes.get(conversation.id) !== record) throw new Error("Процесс чата уже остановлен.");
         return this.handleGoalRequest(conversation.id, request);

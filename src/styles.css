@@ -1295,6 +1295,13 @@ a.web-citation {
   display: block;
   margin-bottom: 4px;
 }
+.run-error-note {
+  margin: 8px 0 0;
+  padding-top: 8px;
+  border-top: 1px solid #eccccc;
+  font-size: 12px;
+  color: #7c4a4a;
+}
 .run-complete {
   width: 100%;
   display: flex;

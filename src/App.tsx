@@ -72,6 +72,7 @@ import {
   sortProjects,
   type ProjectSortMode,
 } from "./project-sort";
+import { imageBudgetRejected } from "../shared/image-budget";
 import { SkillsPanel } from "./SkillsPanel";
 import { ShellTimeout } from "./ShellTimeout";
 import { shellTiming } from "./shell-timeout";
@@ -6507,6 +6508,11 @@ export default function App() {
                       <div className="run-error" role="alert">
                         <strong>{t("Работа прервана из-за ошибки")}</strong>
                         <div>{snapshot.run.error}</div>
+                        {imageBudgetRejected(snapshot.run.error) && (
+                          <p className="run-error-note">
+                            {t("Сервер ограничил суммарный размер картинок в запросе. Старые изображения автоматически убираются из запроса, история чата и файлы не меняются. Если ошибка повторяется, уменьшите PI_DESKTOP_IMAGE_BUDGET_MB или начните новый чат.")}
+                          </p>
+                        )}
                       </div>
                     )}
                     {!readingHistory && !working && !requestPending && lastDuration !== undefined && (

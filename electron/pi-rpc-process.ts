@@ -30,6 +30,7 @@ export interface PiRpcProcessOptions {
   skillsExtensionPath?: string;
   skillsProject?: boolean;
   browserExtensionPath?: string;
+  imageBudgetExtensionPath?: string;
   goalStatePath?: string;
   appRoot?: string;
   isolatedExtensions?: string[];
@@ -60,6 +61,8 @@ export class PiRpcProcess {
       ...(this.options.appRoot ? ['builtin:codemode', path.join(this.options.appRoot, 'resources', 'tool-routing', 'index.js')] : []),
       this.options.goalExtensionPath, this.options.planExtensionPath,
       this.options.notebookExtensionPath, this.options.browserExtensionPath,
+      // Trim accumulated request image bytes last, over the finished message list.
+      this.options.imageBudgetExtensionPath,
       ...(this.options.isolatedExtensions ?? []),
     ].filter((entry): entry is string => Boolean(entry));
     const engineOptions = {
