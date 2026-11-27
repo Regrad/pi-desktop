@@ -915,7 +915,7 @@ export class PiManager {
     } finally { this.planningTransitions.delete(conversationId); }
   }
 
-  async controlPlanning(conversationId: string, action: "start" | "revise" | "approve" | "cancel", expectedRevision: number): Promise<void> {
+  async controlPlanning(conversationId: string, action: "start" | "revise" | "approve" | "cancel" | "remove", expectedRevision: number): Promise<void> {
     if (this.planningTransitions.has(conversationId) || this.planningWrites.has(conversationId)) throw new Error("Дождитесь сохранения или переключения плана.");
     this.planningTransitions.add(conversationId);
     let implement = false;
@@ -935,13 +935,17 @@ export class PiManager {
         const access = conversation.access ?? defaultAccess();
         changes.access = { ...access, phase: "approved", started: true, revision: access.revision + 1,
           proposal: { description: planning!.content, targets: [], risks: "" } };
-      } else changes.access = closeAccess(conversation.access);
-      if (conversation.goal?.status === "active") changes.goal = { ...conversation.goal, status: "paused", updatedAt: new Date().toISOString() };
-      if (conversation.plan?.execution === "active") changes.plan = updatedPlan({ execution: "paused" }, conversation.plan);
+      } else if (action !== "remove") changes.access = closeAccess(conversation.access);
+      // Deleting a document leaves goals and checklists alone; only mode changes pause them.
+      if (action !== "remove") {
+        if (conversation.goal?.status === "active") changes.goal = { ...conversation.goal, status: "paused", updatedAt: new Date().toISOString() };
+        if (conversation.plan?.execution === "active") changes.plan = updatedPlan({ execution: "paused" }, conversation.plan);
+      }
       if (action === "approve" && conversation.plan) changes.plan = updatedPlan({ plan: [], execution: "paused" }, conversation.plan);
       await this.updateConversation(conversationId, changes);
       implement = action === "approve";
     } finally { this.planningTransitions.delete(conversationId); }
+    // The approved document is the source of work; the checklist is built from its items.
     if (implement) {
       // The approved document is the work order, and the engine gets it as a service message.
       const approved = this.store.getConversation(conversationId).planning;

@@ -1,5 +1,5 @@
 import { t } from "./i18n";
-import { Check, ListChecks, LoaderCircle, Pencil, Play, X } from "lucide-react";
+import { Check, ListChecks, LoaderCircle, Pencil, Play, Trash2, X } from "lucide-react";
 import { useState } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
@@ -7,14 +7,14 @@ import type { ConversationPlanning } from "../shared/types";
 
 export function PlanningPanel({ planning, working, onAction, onClose }: {
   planning: ConversationPlanning; working: boolean;
-  onAction: (action: "revise" | "approve" | "cancel", revision: number) => Promise<void>;
+  onAction: (action: "revise" | "approve" | "cancel" | "remove", revision: number) => Promise<void>;
   onClose: () => void;
 }) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const completed = planning.phase === "completed";
   const phase = { working: t("План задачи · обычный режим"), draft: t("Планирование · только чтение"), review: t("Ожидает согласования"), implementation: t("Реализация согласована"), completed: t("Реализация завершена"), inactive: t("Сохранённый план") }[planning.phase];
-  async function action(value: "revise" | "approve" | "cancel") {
+  async function action(value: "revise" | "approve" | "cancel" | "remove") {
     if (busy || working) return;
     setBusy(true); setError("");
     try { await onAction(value, planning.revision); }
@@ -37,6 +37,10 @@ export function PlanningPanel({ planning, working, onAction, onClose }: {
       </div> : planning.phase === "draft" ? <p className="planning-status">{working && <LoaderCircle size={14} className="planning-spinner" />}{working ? t("Модель изучает задачу и готовит план") : t("Напишите задачу или уточнения в чат")}</p>
         : <div className="planning-actions"><button disabled={busy || working} onClick={() => void action("revise")}><Pencil size={15} />{planning.phase === "working" ? t("Открыть режим «План»") : t("Пересмотреть план")}</button></div>}
       {["draft", "review"].includes(planning.phase) && <button className="planning-exit" disabled={busy || working} onClick={() => void action("cancel")}>{t("Выйти из режима без реализации")}</button>}
+      <button className="planning-remove" disabled={busy || working} title={t("Убрать документ плана из этого чата")}
+        onClick={() => { if (window.confirm(t("Убрать план из этого чата? Переписка и файлы останутся как есть."))) void action("remove"); }}>
+        <Trash2 size={13} />{t("Убрать план")}
+      </button>
     </footer>
   </section>;
 }

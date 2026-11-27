@@ -248,6 +248,37 @@ test("only Plan mode receives document reminders; leaving it appends a small clo
   assert.deepEqual(context(after), after, "normal work does not repeat document reminders");
 });
 
+test("the saved plan can be removed in any phase and removal starts nothing", async () => {
+  for (const phase of ["draft", "review", "working", "implementation", "completed", "inactive"])
+    assert.equal(controlPlanningState("remove", 2, { content: "Plan", phase, revision: 2, updatedAt: "" }), undefined, phase);
+  assert.throws(() => controlPlanningState("remove", 1, { content: "Plan", phase: "completed", revision: 2, updatedAt: "" }), /изменился/);
+  assert.throws(() => controlPlanningState("remove", 0), /План ещё не создан/);
+  const control = hostMethod("  async controlPlanning(", "async function run(conversationId, action, expectedRevision)", { controlPlanningState, updatedPlan, planImplementationPrompt });
+  const checklist = updatedPlan({ plan: [{ step: "Done", status: "completed" }], execution: "paused" });
+  const chat = { status: "idle", planning: { content: "Done plan", phase: "completed", revision: 4, updatedAt: "" }, goal: { id: "g1", status: "paused" }, plan: checklist };
+  const events = [];
+  const host = { planningTransitions: new Set(), planningWrites: new Set(), goalContinuationRequested: new Set(), startingRuntimes: new Map(), runtimes: new Map(),
+    store: { getConversation: () => chat, getQueuedPrompts: () => [] }, async updateConversation(_id, patch) { Object.assign(chat, patch); events.push("persist"); }, async sendPrompt() { events.push("prompt"); } };
+  await control.call(host, "chat", "remove", chat.planning.revision);
+  assert.equal(chat.planning, undefined, "the document is gone");
+  assert.equal(chat.goal.status, "paused", "removal leaves an unrelated paused goal alone");
+  assert.equal(chat.plan, checklist, "removal leaves the checklist alone");
+  assert.deepEqual(events, ["persist"], "removal never starts a model turn");
+});
+
+test("the planning panel exposes removal in every phase and the app wires it", () => {
+  const panel = readFileSync(new URL("../src/PlanningPanel.tsx", import.meta.url), "utf8");
+  const footer = panel.slice(panel.indexOf("<footer"));
+  assert.match(footer, /action\("remove"\)/);
+  assert.match(footer, /window\.confirm\(t\("Убрать план из этого чата\?/);
+  const removeLine = footer.split("\n").find(line => line.includes('className="planning-remove"'));
+  assert.ok(removeLine && !removeLine.trim().startsWith("{"), "removal is rendered in every phase");
+  assert.ok(footer.indexOf("planning-remove") > footer.indexOf("planning-exit"), "removal follows the phase-specific actions");
+  const ui = readFileSync(new URL("../src/App.tsx", import.meta.url), "utf8");
+  assert.match(ui, /"start" \| "revise" \| "approve" \| "cancel" \| "remove"/);
+  assert.match(ui, /action !== "approve" && action !== "cancel" && action !== "remove"/, "the panel closes after removal");
+});
+
 test("approval starts the work as an application step, never as a message from the user", () => {
   assert.doesNotMatch(source, /sendPrompt\(conversationId, "Реализуй/);
   assert.match(source, /planImplementationPrompt\(approved\), \[\], "implement"/);
@@ -454,6 +485,16 @@ registerHooks({resolve(s,c,n){return n(s.endsWith("desktop-tool-routing.js")?${J
     assert.deepEqual(captured[3].messages.slice(0, captured[2].messages.length), captured[2].messages, "approval preserves the PLAN request prefix");
     assert.equal(events.filter(event => event.type === "extension_error").length, 0, JSON.stringify(events.filter(event => event.type === "extension_error")));
   } finally { await rpc.stop(); server.closeAllConnections(); await new Promise(resolve => server.close(resolve)); removeTemporary(folder); }
+});
+
+test("planning mode chip in the composer exposes an explicit exit control", () => {
+  const ui = readFileSync(new URL("../src/App.tsx", import.meta.url), "utf8");
+  const chip = ui.match(/\{planMode && <span className="plan-mode-chip">[\s\S]*?<\/span>\}/);
+  assert.ok(chip, "plan mode renders a chip container in the composer toolbar");
+  assert.match(chip[0], /className="goal-mode-chip"[\s\S]*setPlanningOpen\(true\)/, "the label still opens the planning panel");
+  assert.match(chip[0], /className="plan-mode-close"[\s\S]*aria-label=\{t\("Выйти из режима планирования"\)\}/, "the exit control is announced to screen readers");
+  assert.match(chip[0], /changePlanning\("cancel", planning\?\.revision \?\? 0\)/, "the cross cancels planning at the current revision");
+  assert.match(chip[0], /disabled=\{working \|\| requestPending\}/, "mode switching stays blocked while the model works, as controlPlanning requires");
 });
 
 test("a chat without a planning document is told Plan mode is off, and only once", () => {

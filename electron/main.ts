@@ -289,7 +289,7 @@ function registerIpc(): void {
     piManager.editGoal(id, objective));
   ipcMain.handle("pi:remove-plan", (_event, id: string) => piManager.removePlan(id));
   ipcMain.handle("pi:control-plan", (_event, id: string, action: "pause" | "resume") => piManager.controlPlan(id, action));
-  ipcMain.handle("pi:control-planning", (_event, id: string, action: "start" | "revise" | "approve" | "cancel", revision: number) => piManager.controlPlanning(id, action, revision));
+  ipcMain.handle("pi:control-planning", (_event, id: string, action: "start" | "revise" | "approve" | "cancel" | "remove", revision: number) => piManager.controlPlanning(id, action, revision));
   ipcMain.handle("pi:control-access", (_event, id: string, action: "full" | "confirm" | "approve" | "cancel", revision: number) => piManager.controlAccess(id, action, revision));
   ipcMain.handle("pi:save-notebook", (_event, id: string, content: string, revision: number) => piManager.saveNotebook(id, content, revision));
   ipcMain.handle("desktop:get-notebook-limit", () => store.getNotebookCharacterLimit());

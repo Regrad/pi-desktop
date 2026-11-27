@@ -5133,7 +5133,7 @@ export default function App() {
     finally { finishRequest(id); }
   };
 
-  const changePlanning = async (action: "start" | "revise" | "approve" | "cancel", revision: number) => {
+  const changePlanning = async (action: "start" | "revise" | "approve" | "cancel" | "remove", revision: number) => {
     if (!activeConversationId) return;
     const id = activeConversationId;
     if (!beginRequest(id)) throw new Error(t("Дождитесь завершения предыдущего действия."));
@@ -5141,7 +5141,7 @@ export default function App() {
       await window.piDesktop.controlPlanning(id, action, revision);
       if (activeIdRef.current === id) {
         setGoalMode(false);
-        setPlanningOpen(action !== "approve" && action !== "cancel");
+        setPlanningOpen(action !== "approve" && action !== "cancel" && action !== "remove");
         setNotebookOpen(false); setSkillsOpen(false);
         if (action === "revise" || action === "start") composerInputRef.current?.focus();
       }
@@ -6927,8 +6927,14 @@ export default function App() {
                           <Target size={14} />{t(" Цель")}{" "}<X size={12} />
                         </button>
                       )}
-                      {planMode && <button className="goal-mode-chip" title={t("Открыть план для согласования")}
-                        onClick={() => { setPlanningOpen(true); setNotebookOpen(false); setSkillsOpen(false); }}><ListChecks size={14} />{planning?.phase === "review" ? t("Согласование плана") : t("Планирование")}</button>}
+                      {planMode && <span className="plan-mode-chip">
+                        <button className="goal-mode-chip" title={t("Открыть панель плана")}
+                          onClick={() => { setPlanningOpen(true); setNotebookOpen(false); setSkillsOpen(false); }}><ListChecks size={14} />{planning?.phase === "review" ? t("Согласование плана") : t("Планирование")}</button>
+                        <button className="plan-mode-close" aria-label={t("Выйти из режима планирования")}
+                          title={working || requestPending ? t("Сначала остановите ответ, затем выйдите из режима") : t("Выйти из режима без реализации")}
+                          disabled={working || requestPending}
+                          onClick={() => void changePlanning("cancel", planning?.revision ?? 0).catch(error => addNotice(String(error), "error"))}><X size={12} /></button>
+                      </span>}
                       <div className="composer-spacer" />
                       <div className="dropdown-wrap model-dropdown-wrap">
                         <button

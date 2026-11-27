@@ -11,10 +11,12 @@ function revision(expected: unknown, state?: ConversationPlanning) {
   if (!Number.isSafeInteger(expected) || expected !== (state?.revision ?? 0))
     throw new Error("План изменился. Проверьте актуальную версию и повторите действие.");
 }
-export function controlPlanningState(action: string, expected: number, state?: ConversationPlanning): ConversationPlanning {
+/** "remove" deletes the document: the chat returns to planning-free work. */
+export function controlPlanningState(action: string, expected: number, state?: ConversationPlanning): ConversationPlanning | undefined {
   revision(expected, state);
-  if (!["start", "revise", "approve", "cancel"].includes(action)) throw new Error("Неизвестное действие режима планирования.");
+  if (!["start", "revise", "approve", "cancel", "remove"].includes(action)) throw new Error("Неизвестное действие режима планирования.");
   if (action !== "start" && !state) throw new Error("План ещё не создан.");
+  if (action === "remove") return undefined;
   if (action === "approve" && (state?.phase !== "review" || !state.content.trim()))
     throw new Error("Сначала дождитесь готового плана для согласования.");
   const next = (state?.revision ?? 0) + 1;

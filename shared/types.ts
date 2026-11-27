@@ -488,7 +488,7 @@ export interface PiDesktopApi {
   removePlan(conversationId: string): Promise<void>;
   controlPlan(conversationId: string, action: "pause" | "resume"): Promise<void>;
   controlAccess(conversationId: string, action: "full" | "confirm" | "approve" | "cancel", expectedRevision: number): Promise<void>;
-  controlPlanning(conversationId: string, action: "start" | "revise" | "approve" | "cancel", expectedRevision: number): Promise<void>;
+  controlPlanning(conversationId: string, action: "start" | "revise" | "approve" | "cancel" | "remove", expectedRevision: number): Promise<void>;
   saveNotebook(conversationId: string, content: string, expectedRevision: number): Promise<ConversationNotebook>;
   browserUi(command: import("./browser.js").BrowserUiCommand): Promise<import("./browser.js").BrowserState>;
   onBrowserChanged(listener: (state: import("./browser.js").BrowserState) => void): () => void;
