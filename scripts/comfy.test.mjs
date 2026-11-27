@@ -96,7 +96,7 @@ test("media stays in tools until the final answer completes, preserving older an
   assert.equal(collectAnswerMedia([terminalRead], true, "Here is C:/image.png").parts.length, 1);
 });
 
-test("final answer publishes only the named result, leaving earlier images inside tools", () => {
+test("a named result wins; otherwise every generation of the turn is shown", () => {
   const make = (id, name, filename, displayInAnswer) => ({
     id, name, result: { content: [{ type: "image", data: id, mimeType: "image/png" }], details: { files: [`C:\\AI\\image-generation\\${filename}`], ...(displayInAnswer === undefined ? {} : { displayInAnswer }) } },
   });
@@ -106,7 +106,8 @@ test("final answer publishes only the named result, leaving earlier images insid
   const selected = collectAnswerMedia([preview, first, last], true, "Готово. Файл: C:\\AI\\image-generation\\result-2.png");
   assert.deepEqual(selected.parts.map(part => part.path), ["C:\\AI\\image-generation\\result-2.png"]);
   assert.deepEqual([...selected.toolIds], ["last"]);
-  assert.deepEqual(collectAnswerMedia([preview, first, last], true).parts.map(part => part.path), ["C:\\AI\\image-generation\\result-2.png"]);
+  assert.deepEqual(collectAnswerMedia([preview, first, last], true).parts.map(part => part.path),
+    ["C:\\AI\\image-generation\\result-1.png", "C:\\AI\\image-generation\\result-2.png"], "an earlier result of the same turn is not hidden");
   assert.deepEqual(collectAnswerMedia([preview, first, last], true, "Файл: result-1.png").parts.map(part => part.path), ["C:\\AI\\image-generation\\result-1.png"]);
   assert.deepEqual(collectAnswerMedia([preview], true).parts.map(part => part.path), ["C:\\AI\\image-generation\\mask-preview.png"]);
   assert.deepEqual(collectAnswerMedia([preview, first, last], false, "Файл: result-2.png").parts, []);
@@ -114,16 +115,27 @@ test("final answer publishes only the named result, leaving earlier images insid
     ["C:\\AI\\image-generation\\result-1.png", "C:\\AI\\image-generation\\result-2.png"]);
 });
 
-test("latest image job keeps all its variants; explicit selection keeps unchosen variants in tool", () => {
+test("every job keeps its variants; explicit selection keeps unchosen variants in tool", () => {
   const make = (id, files) => ({ id, name: "media_generate_image", result: {
     content: files.map((file, i) => ({ type: "image", data: `${id}-${i}`, mimeType: "image/png" })), details: { files },
   } });
   const old = make("old", ["C:/old.png"]);
   const latest = make("latest", ["C:/one.png", "C:/two.png"]);
-  assert.deepEqual(collectAnswerMedia([old, latest], true).parts.map(part => part.path), ["C:/one.png", "C:/two.png"]);
+  assert.deepEqual(collectAnswerMedia([old, latest], true).parts.map(part => part.path), ["C:/old.png", "C:/one.png", "C:/two.png"]);
   const chosen = collectAnswerMedia([old, latest], true, "Выбираю C:/one.png");
   assert.deepEqual(chosen.parts.map(part => part.path), ["C:/one.png"]);
   assert.equal(chosen.toolIds.has("latest"), false);
+});
+
+test("a long run of generations shows the newest results instead of the whole wall", () => {
+  const jobs = Array.from({ length: 15 }, (_, index) => ({
+    id: `job${index}`, name: "media_generate_image",
+    result: { content: [{ type: "image", data: `i${index}`, mimeType: "image/png" }], details: { files: [`C:/out/${index}.png`] } },
+  }));
+  const published = collectAnswerMedia(jobs, true).parts.map(part => part.path);
+  assert.equal(published.length, 12);
+  assert.deepEqual(published.at(-1), "C:/out/14.png");
+  assert.deepEqual(published[0], "C:/out/3.png");
 });
 
 test("an ambiguous filename does not publish every same-named image", () => {

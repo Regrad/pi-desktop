@@ -60,6 +60,9 @@ export function answerCanPublishMedia(state: { streaming: boolean; working: bool
     !["toolUse", "error", "aborted"].includes(String(state.stopReason ?? ""));
 }
 
+/** When the answer names nothing, this many most recent jobs of a media type may still appear. */
+const publishedJobsLimit = 12;
+
 export function collectAnswerMedia(tools: ToolImageResult[], answerComplete = true, answerText = "") {
   tools = expandNestedMedia(tools);
   // While a turn is in progress, keep media in its original tool, not below the growing answer.
@@ -123,12 +126,29 @@ export function collectAnswerMedia(tools: ToolImageResult[], answerComplete = tr
       for (const item of matching) parts.push(...item.media);
       continue;
     }
-    // No explicit choice: one final job per media type. Prefer a completed
-    // generation to an inspection snapshot shown during that same turn.
+    // Nothing was named: show what this turn actually produced, in generation
+    // order, instead of dropping everything but the last call. Inspection
+    // snapshots (read, show_image) still stay inside the tool fold.
     const possible = candidates.filter(item => item.media.some(part => part.type === type) && item.tool.name !== "read");
     const generated = possible.filter(item => /^(media_|comfyui_)/.test(item.tool.name));
-    const final = (generated.length ? generated : possible).at(-1);
-    if (final) parts.push(...final.media.filter(part => part.type === type));
+    const sources = (generated.length ? generated : possible.slice(-1)).slice(-publishedJobsLimit);
+    // Walk the newest job first so a basename used twice resolves to what the turn
+    // ended with, then restore generation order for the answer.
+    const groups: Record<string, unknown>[][] = [], seen = new Set<string>(), taken = new Set<string>();
+    for (const item of [...sources].reverse()) {
+      const group: Record<string, unknown>[] = [];
+      for (const part of item.media.filter(part => part.type === type)) {
+        const key = typeof part.path === "string" ? part.path.replaceAll("\\", "/").toLowerCase() : JSON.stringify(part);
+        if (seen.has(key)) continue;
+        seen.add(key);
+        const basename = key.split("/").pop()!;
+        if ((filenameCounts.get(basename) ?? 0) > 1 && taken.has(basename)) continue;
+        taken.add(basename);
+        group.push(part);
+      }
+      groups.push(group);
+    }
+    parts.push(...groups.reverse().flat());
   }
   for (const item of candidates) {
     if (item.media.every(part => parts.includes(part) || (audioSelection && part.type === "audio" && parts.some(selected =>

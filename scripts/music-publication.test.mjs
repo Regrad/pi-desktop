@@ -55,13 +55,15 @@ test("media stay in tools during work, aborted turns never publish; old chats ke
   const selected = track("chosen");
   assert.deepEqual(collectAnswerMedia([publish("selection", [selected])], false).parts, []);
   assert.equal(answerCanPublishMedia({ streaming: false, working: false, currentTurn: true, stopReason: "aborted" }), false);
-  assert.deepEqual(collectAnswerMedia([generated("old-one", [track("one")]), generated("old-two", [selected])]).parts, [selected]);
+  // Without an explicit publication, both tracks of the turn remain visible.
+  assert.deepEqual(collectAnswerMedia([generated("old-one", [track("one")]), generated("old-two", [selected])]).parts.map(part => part.path),
+    ["C:/Pi/data/music-generation/one.flac", "C:/Pi/data/music-generation/chosen.flac"]);
 });
-test("explicit audio selection leaves intermediate-image filtering unchanged", () => {
+test("explicit audio selection keeps every image of the turn, oldest first", () => {
   const image = (id, filename) => ({ id, name: "media_generate_image", result: { content: [{ type: "image", data: id, mimeType: "image/png" }], details: { files: [`C:/Pi/data/image-generation/${filename}.png`] } } });
   const result = collectAnswerMedia([image("intermediate", "preview"), image("final", "final"), publish("selection", [track("music")])]);
-  assert.deepEqual(result.parts.map(part => part.type), ["image", "audio"]);
-  assert.equal(result.parts[0].data, "final");
+  assert.deepEqual(result.parts.map(part => part.type), ["image", "image", "audio"]);
+  assert.deepEqual(result.parts.map(part => part.data), ["intermediate", "final", undefined]);
 });
 test("ready local music validation is atomic, deduplicated and rejects foreign files", async t => {
   const data = await mkdtemp(path.join(os.tmpdir(), "pi-music-publication-"));
