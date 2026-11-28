@@ -143,6 +143,30 @@ test("host checks the exact proposal, busy state and queued clarifications befor
   await assert.rejects(control.call(host, "chat", "approve", 1), /изменилось/);
 });
 
+test("approval restores a cold engine before acquiring its own transition lock", async () => {
+  const control = hostMethod("  async controlAccess(", "async function run(conversationId, action, expectedRevision)");
+  const conversation = { access: access.proposeAccess(proposal) };
+  const source = { messageId: "a", userMessageId: "u", toolCallId: "call" };
+  conversation.access.proposal.source = source;
+  let starts = 0;
+  const host = { planningTransitions: new Set(), startingRuntimes: new Map(), runtimes: new Map(),
+    store: { getConversation: () => conversation, getQueuedPrompts: () => [] },
+    async ensureRuntime(id) {
+      if (this.planningTransitions.has(id)) throw new Error("Дождитесь переключения режима.");
+      starts++;
+      const runtime = { rpc: { async request() { return { ...source, text: proposal.description }; } } };
+      this.runtimes.set(id, runtime); return runtime;
+    },
+    async updateConversation(_id, changes) { Object.assign(conversation, changes); },
+    async sendPrompt() { assert.fail("approval must never dispatch generation"); },
+  };
+  await control.call(host, "chat", "approve", 1);
+  assert.equal(starts, 1);
+  assert.equal(conversation.access.phase, "approved");
+  assert.equal(conversation.access.started, false);
+  assert.equal(host.planningTransitions.size, 0);
+});
+
 test("permission can be revoked while a tool runs, locking access before abort completes", async () => {
   const control = hostMethod("  async controlAccess(", "async function run(conversationId, action, expectedRevision)");
   const conversation = { access: access.controlAccess("approve", 1, access.proposeAccess(proposal)) };
@@ -152,6 +176,25 @@ test("permission can be revoked while a tool runs, locking access before abort c
     async abort() { assert.equal(access.accessLocked(conversation.access), true); aborted++; } };
   await control.call(host, "chat", "cancel", conversation.access.revision);
   assert.equal(aborted, 1); assert.equal(access.accessLocked(conversation.access), true);
+});
+
+test("revocation during cold restoration cannot approve the earlier proposal", async () => {
+  const control = hostMethod("  async controlAccess(", "async function run(conversationId, action, expectedRevision)");
+  const conversation = { access: access.proposeAccess(proposal) };
+  conversation.access.proposal.source = { messageId: "a", userMessageId: "u", toolCallId: "call" };
+  let restore;
+  const restored = new Promise(resolve => { restore = resolve; });
+  const host = { planningTransitions: new Set(), startingRuntimes: new Map(), runtimes: new Map(),
+    store: { getConversation: () => conversation, getQueuedPrompts: () => [] },
+    async ensureRuntime(id) { await restored; const runtime = {}; this.runtimes.set(id, runtime); return runtime; },
+    async updateConversation(_id, changes) { Object.assign(conversation, changes); },
+  };
+  const pending = control.call(host, "chat", "approve", 1);
+  const rejected = assert.rejects(pending, /изменилось/);
+  await control.call(host, "chat", "cancel", 1);
+  restore(); await rejected;
+  assert.equal(access.accessLocked(conversation.access), true);
+  assert.equal(host.planningTransitions.size, 0);
 });
 
 test("host never accepts a checklist as approval, even if an extension calls it directly", async () => {
@@ -274,7 +317,7 @@ test("real Pi blocks direct and nested changes before UI approval, then executes
   } finally { await rpc.stop(); await new Promise(resolve => server.close(resolve)); }
 });
 
-for (const nested of [false, true]) test(`real Pi requests approval ${nested ? "through codemode" : "directly"} with one inference and a normal settlement`, { timeout: 30000 }, async () => {
+for (const nested of [false, true]) test(`real Pi restores approval ${nested ? "through codemode" : "directly"} after restart without generating on approval`, { timeout: 30000 }, async () => {
   const code = stripTypeScriptTypes(readFileSync("electron/pi-rpc-process.ts", "utf8"), { mode: "transform" });
   const { PiRpcProcess } = await import(`data:text/javascript;base64,${Buffer.from(code).toString("base64")}`);
   const dir = mkdtempSync("C:/AI_Temp/pi-approval-boundary-"), agentDir = path.join(dir, "agent"); mkdirSync(agentDir);
@@ -304,10 +347,11 @@ for (const nested of [false, true]) test(`real Pi requests approval ${nested ? "
   const handle = hostMethod("  private async handleGoalRequest(", "async function run(conversationId, request)");
   const host = { store: { getConversation: () => conversation, getQueuedPrompts: () => [] }, runtimes: new Map(), startingRuntimes: new Map(), planningTransitions: new Set(),
     async updateConversation(_id, changes) { Object.assign(conversation, changes); save(); }, async sendPrompt() { assert.fail("approval must not generate"); } };
-  const rpc = new PiRpcProcess({ executablePath: process.execPath, enginePath: path.resolve("resources/pi-engine/worker.mjs"), cwd: dir, agentDir, sessionsDir: path.join(dir, "sessions"),
+  const rpcOptions = { executablePath: process.execPath, enginePath: path.resolve("resources/pi-engine/worker.mjs"), cwd: dir, agentDir, sessionsDir: path.join(dir, "sessions"),
     sessionId: "chat", appRoot: process.cwd(), provider: "approval-test", model: "test", goalStatePath: file, planningExtensionPath: path.resolve("electron/planning-extension.ts"),
     mcpEntryPath: "unused", mcpDirectTools: [], onGoalRequest: request => handle.call(host, "chat", request),
-    onEvent(event) { events.push(event); if (event.type === "agent_settled") settled?.(); }, onExtensionUi() {}, onExit() {} });
+    onEvent(event) { events.push(event); if (event.type === "agent_settled") settled?.(); }, onExtensionUi() {}, onExit() {} };
+  let rpc = new PiRpcProcess(rpcOptions);
   host.runtimes.set("chat", { rpc });
   const prompt = async message => {
     const finished = new Promise(resolve => { settled = resolve; });
@@ -328,6 +372,13 @@ for (const nested of [false, true]) test(`real Pi requests approval ${nested ? "
     const assistant = history.entries.filter(entry => entry.type === "message" && entry.message.role === "assistant");
     assert.equal(assistant.length, 1); assert.equal(assistant[0].message.stopReason, "toolUse");
     assert.equal(history.entries.some(entry => entry.type === "message" && entry.message.role === "toolResult" && entry.message.isError), false);
+    await rpc.stop(); host.runtimes.delete("chat");
+    host.ensureRuntime = async id => {
+      assert.equal(host.planningTransitions.has(id), false, "startup must not encounter its own access lock");
+      rpc = new PiRpcProcess(rpcOptions);
+      await rpc.start();
+      const runtime = { rpc }; host.runtimes.set(id, runtime); return runtime;
+    };
     await hostMethod("  async controlAccess(", "async function run(conversationId, action, expectedRevision)").call(host, "chat", "approve", conversation.access.revision);
     assert.equal(conversation.access.phase, "approved"); assert.equal(conversation.access.started, false);
     assert.equal(captured.length, 1, "Allow changes only grants permission");

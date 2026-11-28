@@ -886,6 +886,16 @@ export class PiManager {
 
   async controlAccess(conversationId: string, action: "full" | "confirm" | "approve" | "cancel", expectedRevision: number): Promise<void> {
     if (this.planningTransitions.has(conversationId)) throw new Error("Дождитесь переключения режима.");
+    // Restoring the engine reads the saved branch; it must happen before this
+    // action takes the transition lock that normal startup also checks.
+    const saved = this.store.getConversation(conversationId);
+    if (action === "approve" && saved.access?.proposal?.source && !this.runtimes.has(conversationId)
+      && !isPlanning(saved.planning) && !this.store.getQueuedPrompts(conversationId).length) {
+      controlAccessState(action, expectedRevision, saved.access);
+      await this.ensureRuntime(conversationId);
+      // Another action may have started while restoration was in progress.
+      if (this.planningTransitions.has(conversationId)) throw new Error("Дождитесь переключения режима.");
+    }
     this.planningTransitions.add(conversationId);
     try {
       if (action === "cancel") {
