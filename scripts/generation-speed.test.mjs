@@ -398,6 +398,43 @@ test("a real stalled HTTP telemetry body times out without interrupting SSE", { 
 
 const shownLines = working => working.filter(line => line !== undefined);
 
+test("Gufo prefill uses one active slot among idle sessions before output arrives", async t => {
+  const live = { id: 0, id_task: 1846, is_processing: true, n_prompt_tokens: 8000,
+    n_prompt_tokens_cache: 1000, n_prompt_tokens_processed: 1000, next_token: [{ n_decoded: 0 }] };
+  const h = harness(t, () => json([live, { id: 1, is_processing: false }]), { owner: "gufo" });
+  const stream = await h.open(undefined, { model: "fixture-model" });
+  await settle(); await h.tick(750);
+  assert.match(h.working.at(-1), /Server prompt processing.*25%/);
+  live.n_prompt_tokens_processed = 7000;
+  await h.tick(750);
+  assert.equal(h.working.at(-1), "Server: preparing context…", "100% is not a completed first token");
+  h.emit(stream, chunk("answer")); await settle();
+  assert.equal(h.working.at(-1), undefined);
+  const reads = h.gets.length;
+  await h.tick(750); assert.equal(h.gets.length, reads);
+  await h.close(stream);
+});
+
+test("Gufo slot prefill stops at ambiguity or task changes and stream progress wins", async t => {
+  let slots = slot(0, 11, { n_prompt_tokens: 100, n_prompt_tokens_cache: 10, n_prompt_tokens_processed: 10 });
+  const h = harness(t, () => json(slots), { owner: "gufo" });
+  const one = await h.open(undefined, { model: "fixture-model" });
+  await settle(); await h.tick(750); assert.match(h.working.at(-1), /20%/);
+  slots = slot(0, 12, { n_prompt_tokens: 100, n_prompt_tokens_cache: 10, n_prompt_tokens_processed: 50 });
+  await h.tick(750); assert.equal(h.working.at(-1), undefined);
+  const reads = h.gets.length; await h.tick(3000); assert.equal(h.gets.length, reads);
+  await h.close(one);
+  slots = [...slots, ...slot(0, 13)];
+  const two = await h.open(undefined, { model: "fixture-model" });
+  await settle(); await h.tick(750); assert.equal(h.working.at(-1), undefined);
+  await h.close(two);
+  slots = slot(0, 14, { n_prompt_tokens: 100, n_prompt_tokens_cache: 10, n_prompt_tokens_processed: 10 });
+  const three = await h.open(undefined, { model: "fixture-model" });
+  h.emit(three, { prompt_progress: { total: 100, processed: 80, time_ms: 100 } });
+  await settle(); await h.tick(750); assert.match(h.working.at(-1), /80%/);
+  await h.close(three);
+});
+
 test("prefill remains visible while the completion server withholds HTTP headers", async t => {
   let releaseHeaders;
   const h = harness(t, () => json(bareSlot), {

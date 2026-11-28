@@ -230,7 +230,8 @@ export default function piLlamaGenerationSpeed(pi) {
         supported: supportsTokenRecords(originalFetch, state.endpoint, body.model, state.signal) };
       tokenRecordCapabilities.set(key, capability);
     }
-    if (!await capability.supported) return init;
+    state.gufoSlots = await capability.supported;
+    if (!state.gufoSlots) return init;
     return { ...init, body: JSON.stringify({ ...body, logprobs: true, top_logprobs: 0 }) };
   };
 
@@ -309,6 +310,48 @@ export default function piLlamaGenerationSpeed(pi) {
       showPrefillLine(state, prefillPhaseLine(live.phase, elapsedMs));
     }
   };
+  // Gufo exposes Prometheus /metrics rather than Strata's JSON live section.
+  // During cache preparation its stream can be silent; slots still report work.
+  // This is explicitly server telemetry, and only one active task is usable.
+  const startSlotPrefill = state => {
+    if (!state.gufoSlots || state.sawOutput || state.prefill.fromStream) return;
+    state.metricsTimer = setTimeout(() => void pollSlotPrefill(state), SLOT_POLL_MS);
+  };
+  const pollSlotPrefill = async state => {
+    state.metricsTimer = undefined;
+    if (!current(state) || state.final || state.sawOutput || state.prefill.fromStream || responses.size !== 1) return;
+    const controller = new AbortController();
+    state.metricsAbort = controller;
+    try {
+      const signal = AbortSignal.any([controller.signal, ...(state.signal ? [state.signal] : [])]);
+      const found = await fetchTelemetry(state.endpoint, telemetrySignal(signal));
+      const slots = found ? await found.response.json() : undefined;
+      if (!current(state) || state.final || state.sawOutput || state.prefill.fromStream || responses.size !== 1) return;
+      const active = Array.isArray(slots) ? slots.filter(slot => slot.is_processing === true) : [];
+      if (active.length > 1) { clearPrefill(state); return; }
+      if (active.length === 1) {
+        const slot = active[0], task = countValue(slot.id_task ?? slot.task_id);
+        if (task === undefined || (state.prefill.slotTask !== undefined && state.prefill.slotTask !== task)) {
+          clearPrefill(state); return;
+        }
+        state.prefill.slotTask = task;
+        const total = countValue(slot.n_prompt_tokens);
+        const cached = countValue(slot.n_prompt_tokens_cache);
+        const processed = countValue(slot.n_prompt_tokens_processed);
+        const decoded = countValue(slot.next_token?.[0]?.n_decoded);
+        if (decoded === undefined || decoded > 0) { clearPrefill(state); return; }
+        state.prefill.fromSlots = true;
+        // A fully accounted prompt with no token yet includes preparation and
+        // first-token work. Calling it 100% would falsely imply that work ended.
+        const line = total > 0 && cached !== undefined && processed !== undefined && cached + processed < total
+          ? prefillProgressLine({ total, processed: cached + processed, elapsedMs: 0 }).replace("Prefilling...", "Server prompt processing...")
+          : "Server: preparing context…";
+        showPrefillLine(state, line);
+      } else clearPrefill(state);
+      state.metricsTimer = setTimeout(() => void pollSlotPrefill(state), SLOT_POLL_MS);
+    } catch { if (!state.prefill.fromStream) clearPrefill(state); }
+    finally { if (state.metricsAbort === controller) state.metricsAbort = undefined; }
+  };
   // The server metric describes whichever request it is running, so it may only
   // be taken when this process holds the single request.
   const startMetrics = state => {
@@ -320,7 +363,7 @@ export default function piLlamaGenerationSpeed(pi) {
     state.metricsTimer = undefined;
     if (!current(state) || state.native || state.tokenRecords || state.final || state.metricsOff || !state.metrics) return;
     if (responses.size !== 1) { state.metricsOff = true; clearSlotSpeed(state); return; }
-    if ((unavailableUntil.get(state.metrics.url) ?? 0) > Date.now()) return;
+    if ((unavailableUntil.get(state.metrics.url) ?? 0) > Date.now()) { startSlotPrefill(state); return; }
     // Bound to no single response: the shared probe must not inherit one abort.
     const readMetrics = async signal => {
       try {
@@ -338,7 +381,7 @@ export default function piLlamaGenerationSpeed(pi) {
       metricsCapabilities.set(state.metrics.url, capability);
     }
     let live = await capability.live;
-    if (live === undefined) { state.metricsOff = true; return; }
+    if (live === undefined) { state.metricsOff = true; startSlotPrefill(state); return; }
     const controller = new AbortController();
     state.metricsAbort = controller;
     try {
@@ -350,6 +393,7 @@ export default function piLlamaGenerationSpeed(pi) {
         unavailableUntil.set(state.metrics.url, Date.now() + 60_000);
         state.metricsOff = true;
         clearSlotSpeed(state);
+        startSlotPrefill(state);
         return;
       }
       if (live.state === "reading" && !state.sawOutput && !state.prefill.fromStream) reportLivePrefill(state, live);
@@ -554,6 +598,7 @@ export default function piLlamaGenerationSpeed(pi) {
       state.signal?.addEventListener("abort", state.onAbort, { once: true });
       if (responses.size > 1) for (const active of responses) {
         stopPolling(active); active.window.stopped = true; active.metricsOff = true; clearSlotSpeed(active);
+        if (active.prefill.fromSlots) clearPrefill(active);
         if ((active.tokenRecords || active.metricsLed) && !active.native) showIdle();
       }
     }
